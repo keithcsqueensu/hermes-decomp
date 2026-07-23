@@ -74,7 +74,16 @@ pub fn decompile_function_v2_with_context(
     options: &DecompileOptionsV2,
     closure_ctx: Option<&ClosureContext>,
 ) -> Result<String> {
-    let statements = generate_ir(file, format, function_id, options, closure_ctx, true)?;
+    let mut statements = generate_ir(file, format, function_id, options, closure_ctx, true)?;
+
+    // Strip the meaningless Hermes `this` receiver from calls. In the whole
+    // program pipeline this runs as a later stage (after IPA, which needs the
+    // this slot at arguments[0]); the single function path has no IPA, so strip
+    // here or a method call keeps its receiver duplicated as the first argument
+    // (`x.indexOf(x, y)` instead of `x.indexOf(y)`).
+    if options.simplify {
+        crate::transforms::strip_hermes_this(&mut statements);
+    }
 
     let function_name = get_function_name(file, function_id);
     let params = get_function_params(file, function_id);
