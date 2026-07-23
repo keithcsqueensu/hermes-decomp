@@ -146,19 +146,92 @@ fn parse_case(case_body: &[Statement], state_vars: &std::collections::HashSet<St
     }
 
     let mut pre = Vec::new();
-    let mut i = idx;
-    while i < real.len() {
+    let (value, done) = collect_pre_and_yield(&real[idx..], &mut pre, state_vars)?;
+    Some(ParsedCase { resume_binding, pre, value, done })
+}
+
+// Walk a case body, appending real code to `pre` and returning the suspend
+// point's (value, done). Conditional early exits (`if (guard) { return X }`) that
+// guard the suspend point are flattened: the guard is kept in `pre` and the
+// fall-through (its else branch) continues to the yield.
+fn collect_pre_and_yield(
+    stmts: &[Statement],
+    pre: &mut Vec<Statement>,
+    state_vars: &std::collections::HashSet<String>,
+) -> Option<(Expression, bool)> {
+    let mut i = 0;
+    while i < stmts.len() {
         // The suspend point is the result-object return; everything up to it is
         // real code (minus state bookkeeping and dead inits).
-        if let Some((value, done, consumed)) = parse_result_return(&real[i..]) {
-            if i + consumed != real.len() {
+        if let Some((value, done, consumed)) = parse_result_return(&stmts[i..]) {
+            if i + consumed != stmts.len() {
                 return None; // unexpected trailing code after the return
             }
-            return Some(ParsedCase { resume_binding, pre, value, done });
+            return Some((value, done));
         }
-        let s = &real[i];
-        if !is_bookkeeping(s, state_vars) {
-            pre.push(s.clone());
+        // A trailing `if` where one branch is a terminal exit and the other
+        // continues to the suspend point flattens to a guard `if (cond) { exit }`
+        // plus the continuation branch. Either branch may be the terminal one.
+        if i + 1 == stmts.len() {
+            if let Statement::If { condition, then_body, else_body } = &stmts[i] {
+                if !else_body.is_empty() {
+                    if let Some(exit) = reconstruct_exit_body(then_body, state_vars) {
+                        pre.push(Statement::If {
+                            condition: condition.clone(),
+                            then_body: exit,
+                            else_body: Vec::new(),
+                        });
+                        return collect_pre_and_yield(else_body, pre, state_vars);
+                    }
+                    if let Some(exit) = reconstruct_exit_body(else_body, state_vars) {
+                        pre.push(Statement::If {
+                            condition: Expression::unary(crate::ir::UnaryOp::Not, condition.clone()),
+                            then_body: exit,
+                            else_body: Vec::new(),
+                        });
+                        return collect_pre_and_yield(then_body, pre, state_vars);
+                    }
+                }
+            }
+        }
+        if !is_bookkeeping(&stmts[i], state_vars) {
+            pre.push(stmts[i].clone());
+        }
+        i += 1;
+    }
+    None
+}
+
+// Reconstruct a terminal branch (`{ ...; return {value:V,done:true} }` or
+// `{ ...; throw X }`) into plain `return V` / `throw X`, dropping bookkeeping.
+// Returns None if the branch is not a clean terminal exit.
+fn reconstruct_exit_body(
+    body: &[Statement],
+    state_vars: &std::collections::HashSet<String>,
+) -> Option<Vec<Statement>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < body.len() {
+        if let Statement::Throw(_) = &body[i] {
+            if i + 1 != body.len() {
+                return None;
+            }
+            out.push(body[i].clone());
+            return Some(out);
+        }
+        if let Some((value, done, consumed)) = parse_result_return(&body[i..]) {
+            if !done || i + consumed != body.len() {
+                return None; // not a terminal (done) exit
+            }
+            if !is_undefined(&value) {
+                out.push(Statement::Return(Some(value)));
+            } else {
+                out.push(Statement::Return(None));
+            }
+            return Some(out);
+        }
+        if !is_bookkeeping(&body[i], state_vars) {
+            out.push(body[i].clone());
         }
         i += 1;
     }
