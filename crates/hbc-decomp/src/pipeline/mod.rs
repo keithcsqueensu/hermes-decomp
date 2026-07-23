@@ -76,17 +76,22 @@ pub fn decompile_function_v2_with_context(
 ) -> Result<String> {
     let mut statements = generate_ir(file, format, function_id, options, closure_ctx, true)?;
 
-    // Strip the meaningless Hermes `this` receiver from calls. In the whole
-    // program pipeline this runs as a later stage (after IPA, which needs the
-    // this slot at arguments[0]); the single function path has no IPA, so strip
-    // here or a method call keeps its receiver duplicated as the first argument
-    // (`x.indexOf(x, y)` instead of `x.indexOf(y)`).
-    if options.simplify {
-        crate::transforms::strip_hermes_this(&mut statements);
-    }
-
     let function_name = get_function_name(file, function_id);
     let params = get_function_params(file, function_id);
+
+    // The whole program pipeline runs several post generation stages that the
+    // single function path skipped, so its output kept the receiver duplicated in
+    // calls (`x.indexOf(x, y)`) and left every temporary in place (`tmp = arg0`).
+    // Apply the same intra function cleanup here: strip the Hermes `this`
+    // (single function has no IPA that needs the receiver slot), inline single use
+    // temporaries, drop noise, then insert declarations.
+    if options.simplify {
+        crate::transforms::strip_hermes_this(&mut statements);
+        statements = crate::transforms::inline_named_variables(statements);
+        statements = crate::transforms::cleanup_noise(statements);
+        crate::transforms::rename_reserved_words(&mut statements);
+        crate::transforms::insert_declarations(&mut statements, &params);
+    }
 
     let codegen_options = CodegenOptions::default();
     let mut codegen = Codegen::new(codegen_options);
