@@ -87,6 +87,9 @@ pub fn transform_object_literals(statements: &mut Vec<Statement>) {
 // leaves for non-serializable property values, so a genuine numeric-key write
 // is never absorbed.
 fn fold_slot_index_fills(statements: &mut Vec<Statement>) {
+    // Mark consumed fills and drop them all in one pass. Removing each fill inside
+    // the loop shifts the tail on every fill, which is O(n^2) on a large function.
+    let mut consumed = vec![false; statements.len()];
     let mut i = 0;
     while i < statements.len() {
         let prop_count = match &statements[i] {
@@ -105,7 +108,6 @@ fn fold_slot_index_fills(statements: &mut Vec<Statement>) {
         };
 
         let mut j = i + 1;
-        let mut remove = Vec::new();
         while j < statements.len() {
             if let Some((slot, val)) = slot_index_fill(&statements[j], obj_reg, prop_count) {
                 // Replace the placeholder at `slot` in the literal at `i`.
@@ -114,7 +116,7 @@ fn fold_slot_index_fills(statements: &mut Vec<Statement>) {
                 {
                     if is_placeholder(&properties[slot].value) {
                         properties[slot].value = val;
-                        remove.push(j);
+                        consumed[j] = true;
                         j += 1;
                         continue;
                     }
@@ -128,10 +130,15 @@ fn fold_slot_index_fills(statements: &mut Vec<Statement>) {
             }
             j += 1;
         }
-        for &idx in remove.iter().rev() {
-            statements.remove(idx);
-        }
         i += 1;
+    }
+    if consumed.iter().any(|&c| c) {
+        let mut idx = 0;
+        statements.retain(|_| {
+            let keep = !consumed[idx];
+            idx += 1;
+            keep
+        });
     }
 }
 
@@ -171,46 +178,110 @@ fn is_placeholder(expr: &Expression) -> bool {
 // once, regardless of statement order. Repeats to a fixed point so deep nests
 // collapse fully.
 fn inline_single_use_literals(statements: &mut Vec<Statement>) {
-    loop {
-        let mut def_count: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
-        let mut use_count: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
-        for stmt in statements.iter() {
-            if let Statement::Assign { target: AssignTarget::Register(r), .. } = stmt {
-                *def_count.entry(*r).or_insert(0) += 1;
-            }
-            collect_value_reg_uses(stmt, &mut use_count);
+    use std::collections::HashMap;
+    // Inlining a single-use literal into its one use never changes another
+    // register's def/use count, so the counts are stable and computed once. The
+    // previous version recomputed them and inlined one literal per pass, which was
+    // O(n^2) and pathological on very large functions.
+    let mut def_count: HashMap<u32, usize> = HashMap::new();
+    let mut use_count: HashMap<u32, usize> = HashMap::new();
+    for stmt in statements.iter() {
+        if let Statement::Assign { target: AssignTarget::Register(r), .. } = stmt {
+            *def_count.entry(*r).or_insert(0) += 1;
         }
+        collect_value_reg_uses(stmt, &mut use_count);
+    }
 
-        // Find a register: defined once as a pure object/array literal, used
-        // exactly once. Restricted to composite literals (not bare constants /
-        // register copies), those are handled by the general inliner and folding
-        // them here would wrongly substitute e.g. an accumulator's init `0` into a
-        // later `return`.
-        let mut chosen: Option<(u32, Expression)> = None;
-        for stmt in statements.iter() {
-            if let Statement::Assign { target: AssignTarget::Register(r), value } = stmt {
-                let is_composite =
-                    matches!(value, Expression::Object { .. } | Expression::Array { .. });
-                if is_composite
-                    && def_count.get(r) == Some(&1)
-                    && use_count.get(r) == Some(&1)
-                    && is_pure_literal(value)
-                {
-                    chosen = Some((*r, value.clone()));
-                    break;
+    // A register defined once as a pure object/array literal and used exactly once.
+    // Restricted to composite literals so a bare constant / register copy is left
+    // to the general inliner.
+    let mut map: HashMap<u32, Expression> = HashMap::new();
+    for stmt in statements.iter() {
+        if let Statement::Assign { target: AssignTarget::Register(r), value } = stmt {
+            let is_composite =
+                matches!(value, Expression::Object { .. } | Expression::Array { .. });
+            if is_composite
+                && def_count.get(r) == Some(&1)
+                && use_count.get(r) == Some(&1)
+                && is_pure_literal(value)
+            {
+                map.insert(*r, value.clone());
+            }
+        }
+    }
+    if map.is_empty() {
+        return;
+    }
+
+    // A literal may reference another eligible register (Hermes builds nested
+    // objects across several registers). Resolve the map into itself so each value
+    // embeds the others, to a fixed point bounded by the nesting depth.
+    let keys: Vec<u32> = map.keys().copied().collect();
+    for _ in 0..keys.len() {
+        let mut changed = false;
+        for &k in &keys {
+            let mut v = map[&k].clone();
+            substitute_registers_in_expr(&mut v, &map, Some(k));
+            if v != map[&k] {
+                map.insert(k, v);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // One substitution pass over the whole body, then drop the inlined defs.
+    for stmt in statements.iter_mut() {
+        substitute_registers_in_stmt(stmt, &map);
+    }
+    statements.retain(|stmt| {
+        !matches!(stmt, Statement::Assign { target: AssignTarget::Register(r), .. } if map.contains_key(r))
+    });
+}
+
+// Replace every `Register(r)` for which `map` has an entry with that entry's
+// value, in one traversal. `exclude` skips a register (used while resolving the
+// map into itself so a value is not substituted for its own register).
+fn substitute_registers_in_stmt(stmt: &mut Statement, map: &std::collections::HashMap<u32, Expression>) {
+    use crate::ir::MutVisitor;
+    struct S<'a>(&'a std::collections::HashMap<u32, Expression>);
+    impl<'a> MutVisitor for S<'a> {
+        fn visit_expression(&mut self, e: &mut Expression) {
+            if let Expression::Value(Value::Register(r)) = e {
+                if let Some(v) = self.0.get(r) {
+                    *e = v.clone();
+                    return;
                 }
             }
+            self.walk_expression(e);
         }
-
-        let Some((reg, value)) = chosen else { break };
-        // Substitute the value into its single use, then drop the definition.
-        for stmt in statements.iter_mut() {
-            substitute_register_in_stmt(stmt, reg, &value);
-        }
-        statements.retain(|stmt| {
-            !matches!(stmt, Statement::Assign { target: AssignTarget::Register(r), .. } if *r == reg)
-        });
     }
+    S(map).visit_statement(stmt);
+}
+
+fn substitute_registers_in_expr(
+    e: &mut Expression,
+    map: &std::collections::HashMap<u32, Expression>,
+    exclude: Option<u32>,
+) {
+    use crate::ir::MutVisitor;
+    struct S<'a>(&'a std::collections::HashMap<u32, Expression>, Option<u32>);
+    impl<'a> MutVisitor for S<'a> {
+        fn visit_expression(&mut self, e: &mut Expression) {
+            if let Expression::Value(Value::Register(r)) = e {
+                if Some(*r) != self.1 {
+                    if let Some(v) = self.0.get(r) {
+                        *e = v.clone();
+                        return;
+                    }
+                }
+            }
+            self.walk_expression(e);
+        }
+    }
+    S(map, exclude).visit_expression(e);
 }
 
 fn is_pure_literal(expr: &Expression) -> bool {
@@ -249,25 +320,6 @@ fn collect_value_reg_uses(stmt: &Statement, counts: &mut std::collections::HashM
     C(counts).visit_statement(stmt);
 }
 
-fn substitute_register_in_stmt(stmt: &mut Statement, reg: u32, value: &Expression) {
-    use crate::ir::MutVisitor;
-    struct S<'a> {
-        reg: u32,
-        value: &'a Expression,
-    }
-    impl<'a> MutVisitor for S<'a> {
-        fn visit_expression(&mut self, e: &mut Expression) {
-            if let Expression::Value(Value::Register(r)) = e {
-                if *r == self.reg {
-                    *e = self.value.clone();
-                    return;
-                }
-            }
-            self.walk_expression(e);
-        }
-    }
-    S { reg, value }.visit_statement(stmt);
-}
 
 fn is_new_object(stmt: &Statement) -> Option<(u32, usize)> {
     if let Statement::Assign {

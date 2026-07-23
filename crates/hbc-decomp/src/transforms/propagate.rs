@@ -20,17 +20,28 @@ pub fn propagate(cfg: &mut CFG, config: &PropagationConfig) {
     };
 
     // Global copies of loop-/branch-invariant values (a register defined exactly
-    // once as a Parameter, Global, or Constant). These are valid in every block,
-    // so seed them so a value used across blocks (e.g. a switch discriminant read
-    // in sibling branches) is substituted consistently, not just within the
-    // defining block.
+    // once as a Parameter, Global, or Constant, possibly through a copy chain).
+    // These hold the same value in every block, so substitute them everywhere in a
+    // single pass. The previous code re-seeded a clone of this map into every block
+    // on every iteration, which was O(globals x blocks x iterations) and blew up on
+    // a large, constant-heavy global function.
     let globals = global_invariant_copies(cfg);
+    if !globals.is_empty() {
+        for block in cfg.blocks_mut() {
+            let statements = std::mem::take(&mut block.statements);
+            block.statements = statements
+                .into_iter()
+                .map(|s| substitute_stmt(&s, &globals))
+                .collect();
+            block.terminator = substitute_terminator(&block.terminator, &globals);
+        }
+    }
 
     for _ in 0..max_iter {
         let mut changed = false;
 
         for block_id in cfg.block_ids().collect::<Vec<_>>() {
-            if propagate_block(cfg, block_id, &globals) {
+            if propagate_block(cfg, block_id) {
                 changed = true;
             }
         }
@@ -367,15 +378,15 @@ fn resolve_invariant_register(
     }
 }
 
-fn propagate_block(cfg: &mut CFG, block_id: BlockId, globals: &BTreeMap<u32, Expression>) -> bool {
+fn propagate_block(cfg: &mut CFG, block_id: BlockId) -> bool {
     let block = match cfg.get_mut(block_id) {
         Some(b) => b,
         None => return false,
     };
 
-    // Seed with globally-invariant copies (valid in every block), then track
-    // local copies on top.
-    let mut copies: BTreeMap<u32, Expression> = globals.clone();
+    // Block-local copies only; the globally-invariant ones were already
+    // substituted whole-function in `propagate`.
+    let mut copies: BTreeMap<u32, Expression> = BTreeMap::new();
     let mut changed = false;
 
     // Take ownership instead of cloning
