@@ -117,27 +117,67 @@ pub fn typeof_id_to_string(id: u32) -> &'static str {
     }
 }
 
-// Handle JmpTypeOfIs opcode: branch if typeof(reg) === typeString.
+// TypeOfIsTypes bitmask (HBC >=97 `TypeOfIs` / `JmpTypeOfIs`). The third operand
+// is not a string index, it is a set of type bits. `object` covers both Object
+// and Null because `typeof null === "object"`; every other type is a single bit.
+// Values reverse engineered from hermesc output.
+const TYPEOF_IS_MASKS: &[(u32, &str)] = &[
+    (1, "undefined"),
+    (2 | 256, "object"),
+    (4, "string"),
+    (8, "symbol"),
+    (16, "boolean"),
+    (32, "number"),
+    (64, "bigint"),
+    (128, "function"),
+];
+
+// Build the boolean condition a TypeOfIs / JmpTypeOfIs bitmask represents. One
+// type gives `typeof x === "t"`, the set of every type but one gives
+// `typeof x !== "t"`, and anything else becomes a disjunction of the matched
+// types. Falls back to a raw marker for an unrecognised mask.
+pub fn typeof_is_condition(src: Expression, mask: u32) -> Expression {
+    use crate::ir::{BinaryOp, Constant, Expression as E, UnaryOp, Value};
+    let type_of = |s: Expression| E::unary(UnaryOp::TypeOf, s);
+    let str_val = |t: &str| E::Value(Value::Constant(Constant::String(t.to_string())));
+
+    if let Some((_, t)) = TYPEOF_IS_MASKS.iter().find(|(m, _)| *m == mask) {
+        return E::binary(BinaryOp::StrictEq, type_of(src), str_val(t));
+    }
+    let universe = TYPEOF_IS_MASKS.iter().fold(0u32, |a, (m, _)| a | m);
+    let complement = universe & !mask;
+    if let Some((_, t)) = TYPEOF_IS_MASKS.iter().find(|(m, _)| *m == complement) {
+        return E::binary(BinaryOp::StrictNeq, type_of(src), str_val(t));
+    }
+    let matched: Vec<&str> = TYPEOF_IS_MASKS
+        .iter()
+        .filter(|(m, _)| mask & m == *m)
+        .map(|(_, t)| *t)
+        .collect();
+    let mut it = matched.into_iter();
+    let Some(first) = it.next() else {
+        return E::binary(BinaryOp::StrictEq, type_of(src), str_val(&format!("type{mask}")));
+    };
+    let mut cond = E::binary(BinaryOp::StrictEq, type_of(src.clone()), str_val(first));
+    for t in it {
+        let next = E::binary(BinaryOp::StrictEq, type_of(src.clone()), str_val(t));
+        cond = E::binary(BinaryOp::LogicalOr, cond, next);
+    }
+    cond
+}
+
+// Handle JmpTypeOfIs opcode: branch when `typeof(reg)` is in the type bitmask.
 pub fn handle_jmp_typeof_is(
     inst: &Instruction,
     format: &BytecodeFormat,
-    file: &BytecodeFile,
+    _file: &BytecodeFile,
 ) -> Option<FlowResult> {
     let target = get_jump_target(inst, format)?;
     let src = reg_expr(&inst.operands, 1)?;
     let fallthrough = inst.offset.wrapping_add(inst.length);
 
-    let type_idx = inst.operands.get(2)?.value.as_u32()?;
-    let type_str = file
-        .string_at(type_idx)
-        .map(|e| e.value.clone())
-        .unwrap_or_else(|| format!("type{type_idx}"));
-
-    let condition = Expression::binary(
-        crate::ir::BinaryOp::StrictEq,
-        Expression::unary(crate::ir::UnaryOp::TypeOf, src),
-        Expression::Value(crate::ir::Value::Constant(crate::ir::Constant::String(type_str))),
-    );
+    let mask = inst.operands.get(2)?.value.as_u32()?;
+    let condition = typeof_is_condition(src, mask);
 
     Some(FlowResult::Branch {
         condition,

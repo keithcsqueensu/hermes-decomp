@@ -20,17 +20,28 @@ pub fn propagate(cfg: &mut CFG, config: &PropagationConfig) {
     };
 
     // Global copies of loop-/branch-invariant values (a register defined exactly
-    // once as a Parameter, Global, or Constant). These are valid in every block,
-    // so seed them so a value used across blocks (e.g. a switch discriminant read
-    // in sibling branches) is substituted consistently, not just within the
-    // defining block.
+    // once as a Parameter, Global, or Constant, possibly through a copy chain).
+    // These hold the same value in every block, so substitute them everywhere in a
+    // single pass. The previous code re-seeded a clone of this map into every block
+    // on every iteration, which was O(globals x blocks x iterations) and blew up on
+    // a large, constant-heavy global function.
     let globals = global_invariant_copies(cfg);
+    if !globals.is_empty() {
+        for block in cfg.blocks_mut() {
+            let statements = std::mem::take(&mut block.statements);
+            block.statements = statements
+                .into_iter()
+                .map(|s| substitute_stmt(&s, &globals))
+                .collect();
+            block.terminator = substitute_terminator(&block.terminator, &globals);
+        }
+    }
 
     for _ in 0..max_iter {
         let mut changed = false;
 
         for block_id in cfg.block_ids().collect::<Vec<_>>() {
-            if propagate_block(cfg, block_id, &globals) {
+            if propagate_block(cfg, block_id) {
                 changed = true;
             }
         }
@@ -319,7 +330,11 @@ pub fn propagate_copies(cfg: &mut CFG) {
 
 // Registers defined exactly once with an invariant value (Parameter / Global /
 // Constant). Such a register holds the same value everywhere, so it can be
-// propagated across block boundaries.
+// propagated across block boundaries. A single-def register that copies another
+// single-def register resolves through the chain (`r1 = r0; r0 = Parameter` makes
+// r1 the Parameter too), which SSA makes sound because every version is defined
+// once. Without this, a param staged through a copy across a clobbered register
+// (`Mov r1, r3; r3 = ...; use(r1)` in a later block) is left dangling as `tmp`.
 fn global_invariant_copies(cfg: &CFG) -> BTreeMap<u32, Expression> {
     let mut def_count: BTreeMap<u32, usize> = BTreeMap::new();
     let mut values: BTreeMap<u32, Expression> = BTreeMap::new();
@@ -331,29 +346,47 @@ fn global_invariant_copies(cfg: &CFG) -> BTreeMap<u32, Expression> {
             }
         }
     }
-    values
-        .into_iter()
-        .filter(|(r, v)| {
-            def_count.get(r).copied().unwrap_or(0) == 1
-                && matches!(
-                    v,
-                    Expression::Value(Value::Parameter(_))
-                        | Expression::Value(Value::Global)
-                        | Expression::Value(Value::Constant(_))
-                )
-        })
-        .collect()
+    let mut result = BTreeMap::new();
+    for &r in values.keys() {
+        if let Some(inv) = resolve_invariant_register(r, &values, &def_count, 0) {
+            result.insert(r, inv);
+        }
+    }
+    result
 }
 
-fn propagate_block(cfg: &mut CFG, block_id: BlockId, globals: &BTreeMap<u32, Expression>) -> bool {
+// Resolve a single-def register to its invariant value, following register copy
+// chains. Returns None if any link is redefined more than once or the chain does
+// not end in a Parameter / Global / Constant.
+fn resolve_invariant_register(
+    r: u32,
+    values: &BTreeMap<u32, Expression>,
+    def_count: &BTreeMap<u32, usize>,
+    depth: u8,
+) -> Option<Expression> {
+    if depth > 16 || def_count.get(&r).copied().unwrap_or(0) != 1 {
+        return None;
+    }
+    match values.get(&r)? {
+        v @ Expression::Value(
+            Value::Parameter(_) | Value::Global | Value::Constant(_),
+        ) => Some(v.clone()),
+        Expression::Value(Value::Register(b)) => {
+            resolve_invariant_register(*b, values, def_count, depth + 1)
+        }
+        _ => None,
+    }
+}
+
+fn propagate_block(cfg: &mut CFG, block_id: BlockId) -> bool {
     let block = match cfg.get_mut(block_id) {
         Some(b) => b,
         None => return false,
     };
 
-    // Seed with globally-invariant copies (valid in every block), then track
-    // local copies on top.
-    let mut copies: BTreeMap<u32, Expression> = globals.clone();
+    // Block-local copies only; the globally-invariant ones were already
+    // substituted whole-function in `propagate`.
+    let mut copies: BTreeMap<u32, Expression> = BTreeMap::new();
     let mut changed = false;
 
     // Take ownership instead of cloning
@@ -720,5 +753,35 @@ mod tests {
         } else {
             panic!("expected binary assignment");
         }
+    }
+
+    // A parameter staged through a copy chain (`r1 = r0; r0 = Parameter`) whose use
+    // is in a later block must resolve to the parameter, not stay a dangling copy.
+    // Every register is defined once here (as SSA guarantees), so the chain is safe.
+    #[test]
+    fn test_param_copy_chain_resolves_across_blocks() {
+        // b0:  r0 = Parameter(0)
+        //      r1 = r0            ; copy of the param
+        //      r2 = r1            ; second copy staged for a later use
+        //      -> b1
+        // b1:  return r2          ; must resolve to Parameter(0)
+        let mut builder = CFGBuilder::new();
+        let b1 = builder.create_block();
+        builder.emit(Statement::assign_reg(0, Expression::Value(Value::Parameter(0))));
+        builder.emit(Statement::assign_reg(1, Expression::Value(Value::Register(0))));
+        builder.emit(Statement::assign_reg(2, Expression::Value(Value::Register(1))));
+        builder.emit_jump(b1);
+        builder.set_current_block(b1);
+        builder.emit_return(Some(Expression::Value(Value::Register(2))));
+
+        let mut cfg = builder.finish();
+        propagate(&mut cfg, &PropagationConfig::new());
+
+        let block = cfg.get(b1).unwrap();
+        assert_eq!(
+            block.terminator,
+            crate::ir::Terminator::Return(Some(Expression::Value(Value::Parameter(0)))),
+            "a param copy chain must resolve to the parameter in a later block"
+        );
     }
 }

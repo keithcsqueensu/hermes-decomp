@@ -151,12 +151,20 @@ impl PipelineContext {
     }
 
     fn from_snapshot(snap: PipelineSnapshot) -> Self {
+        // Derived from closure_ctx, so recompute rather than store in the cache.
+        let mut child_functions: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        if let Some(cctx) = snap.closure_ctx.as_ref() {
+            for (&child, &parent) in &cctx.parent_function {
+                child_functions.entry(parent).or_default().push(child);
+            }
+        }
         PipelineContext {
             all_ir: snap.all_ir,
             registry: snap.registry,
             closure_ctx: snap.closure_ctx,
             global_analysis: snap.global_analysis,
             inline_bodies: Arc::new(snap.inline_bodies),
+            child_functions,
             worklet_sources: snap.worklet_sources,
         }
     }
@@ -219,6 +227,7 @@ mod tests {
             closure_ctx: None,
             global_analysis: GlobalAnalysis::new(),
             inline_bodies: Arc::new(BTreeMap::from([(42u32, "body".to_string())])),
+            child_functions: BTreeMap::new(),
             worklet_sources: BTreeMap::new(),
         };
 

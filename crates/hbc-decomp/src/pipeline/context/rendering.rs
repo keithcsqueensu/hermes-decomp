@@ -4,8 +4,9 @@
 // Handles deep nesting chains; 5 passes covers most real-world depths.
 const MAX_INLINE_BODY_PASSES: usize = 5;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use rayon::prelude::*;
 use crate::file::BytecodeFile;
 use crate::ir::Statement;
 use crate::transforms::{self, Codegen, CodegenOptions};
@@ -20,12 +21,58 @@ impl PipelineContext {
         // Precompute IPA-renamed + cleaned statements once to avoid cloning per rendering pass
         let prepared = self.prepare_render_bodies(file);
 
-        // Multi-pass rendering for deep nesting support
-        let mut current = Arc::new(BTreeMap::new());
-        for _ in 0..MAX_INLINE_BODY_PASSES {
-            current = Arc::new(self.render_prepared_bodies(file, &prepared, &current));
+        // Reverse dependency map: child function id -> parents that reference it by
+        // id (`Expression::Function { id }`). A parent's rendered string only
+        // changes between passes when one of the inline bodies it references
+        // changed, so later passes re-render only the affected parents instead of
+        // every function. This turns the multi-pass cost from passes x all
+        // functions into all functions plus a quickly shrinking dirty set.
+        let mut referenced_by: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for (&func_id, (_, body_stmts)) in &prepared {
+            let mut refs = Vec::new();
+            collect_function_refs(body_stmts, &mut refs);
+            refs.sort_unstable();
+            refs.dedup();
+            for child in refs {
+                referenced_by.entry(child).or_default().push(func_id);
+            }
         }
-        self.inline_bodies = current;
+
+        // Pass 1: render every function against an empty inline map. Everything
+        // produced counts as changed relative to that empty starting point.
+        let mut current =
+            self.render_prepared_bodies(file, &prepared, &Arc::new(BTreeMap::new()), None);
+        let mut changed: Vec<u32> = current.keys().copied().collect();
+
+        for _ in 1..MAX_INLINE_BODY_PASSES {
+            // Dirty set: parents that reference a body which changed last pass.
+            let mut dirty: BTreeSet<u32> = BTreeSet::new();
+            for c in &changed {
+                if let Some(parents) = referenced_by.get(c) {
+                    dirty.extend(parents.iter().copied());
+                }
+            }
+            if dirty.is_empty() {
+                break;
+            }
+
+            let shared = Arc::new(std::mem::take(&mut current));
+            let updated = self.render_prepared_bodies(file, &prepared, &shared, Some(&dirty));
+            current = Arc::try_unwrap(shared).unwrap_or_else(|a| (*a).clone());
+
+            changed.clear();
+            for (id, body) in updated {
+                if current.get(&id).is_none_or(|prev| prev != &body) {
+                    changed.push(id);
+                }
+                current.insert(id, body);
+            }
+            if changed.is_empty() {
+                break;
+            }
+        }
+
+        self.inline_bodies = Arc::new(current);
     }
 
     // The recovered worklet source for `func_id`, looked up by the function's
@@ -44,57 +91,82 @@ impl PipelineContext {
         Some(format!("/* worklet (recovered source) */ {src}"))
     }
 
-    // Precompute IPA-renamed, cleaned, and declaration-inserted statements for all non-factory functions.
+    // Precompute IPA-renamed, cleaned, and declaration-inserted statements for all
+    // non-factory functions. Each function is prepared independently from read only
+    // shared state, so fan the work out across cores.
     fn prepare_render_bodies(&self, file: &BytecodeFile) -> BTreeMap<u32, (Vec<String>, Vec<Statement>)> {
-        let mut prepared = BTreeMap::new();
-        for (&func_id, stmts) in &self.all_ir {
-            if self.registry.function_to_module.contains_key(&func_id) {
-                continue;
-            }
-            let params: Vec<String> = if let Some(names) = self.global_analysis.param_names.get(&func_id) {
-                names.iter().enumerate()
-                    .map(|(idx, n)| {
-                        let raw = n.clone().unwrap_or_else(|| format!("arg{idx}"));
-                        crate::util::sanitize_identifier(&raw)
-                    })
-                    .collect()
-            } else {
-                get_function_params(file, func_id)
-                    .into_iter()
-                    .map(|p| crate::util::sanitize_identifier(&p))
-                    .collect()
-            };
+        self.all_ir
+            .par_iter()
+            .filter(|(func_id, _)| !self.registry.function_to_module.contains_key(func_id))
+            .map(|(&func_id, stmts)| {
+                let params: Vec<String> = if let Some(names) = self.global_analysis.param_names.get(&func_id) {
+                    names.iter().enumerate()
+                        .map(|(idx, n)| {
+                            let raw = n.clone().unwrap_or_else(|| format!("arg{idx}"));
+                            crate::util::sanitize_identifier(&raw)
+                        })
+                        .collect()
+                } else {
+                    get_function_params(file, func_id)
+                        .into_iter()
+                        .map(|p| crate::util::sanitize_identifier(&p))
+                        .collect()
+                };
 
-            let mut body_stmts = stmts.clone();
-            if let Some(param_names) = self.global_analysis.param_names.get(&func_id) {
-                transforms::exports::rename_param_registers(&mut body_stmts, param_names);
-            }
-            body_stmts = transforms::cleanup_noise(body_stmts);
-            transforms::rename_reserved_words(&mut body_stmts);
-            let extra = self.extra_writes_for_function(func_id);
-            transforms::insert_declarations_with_extra_writes(&mut body_stmts, &params, &extra);
+                let mut body_stmts = stmts.clone();
+                if let Some(param_names) = self.global_analysis.param_names.get(&func_id) {
+                    transforms::exports::rename_param_registers(&mut body_stmts, param_names);
+                }
+                body_stmts = transforms::cleanup_noise(body_stmts);
+                transforms::rename_reserved_words(&mut body_stmts);
+                let extra = self.extra_writes_for_function(func_id);
+                transforms::insert_declarations_with_extra_writes(&mut body_stmts, &params, &extra);
 
-            prepared.insert(func_id, (params, body_stmts));
-        }
-        prepared
+                (func_id, (params, body_stmts))
+            })
+            .collect()
     }
 
-    // Render all pre-prepared function bodies, using `existing_inline` for nested function references.
+    // Render pre-prepared function bodies, using `existing_inline` for nested
+    // function references. When `only` is `Some`, render just that subset (the
+    // parents whose referenced bodies changed in the previous pass); otherwise
+    // render every function.
     fn render_prepared_bodies(
         &self,
         file: &BytecodeFile,
         prepared: &BTreeMap<u32, (Vec<String>, Vec<Statement>)>,
         existing_inline: &Arc<BTreeMap<u32, String>>,
+        only: Option<&BTreeSet<u32>>,
     ) -> BTreeMap<u32, String> {
-        let mut result = BTreeMap::new();
+        // Each function body renders independently from the shared `existing_inline`
+        // map (read only) into its own entry, so a pass over the functions is
+        // embarrassingly parallel. On a large bundle this is the dominant cost, so
+        // fan it out across cores.
+        prepared
+            .par_iter()
+            .filter(|(func_id, _)| only.is_none_or(|s| s.contains(func_id)))
+            .map(|(&func_id, (params, body_stmts))| {
+                (func_id, self.render_one_body(file, func_id, params, body_stmts, existing_inline))
+            })
+            .collect()
+    }
 
-        for (&func_id, (params, body_stmts)) in prepared {
+    // Render a single function body to its final source string, using
+    // `existing_inline` for any nested function references.
+    fn render_one_body(
+        &self,
+        file: &BytecodeFile,
+        func_id: u32,
+        params: &[String],
+        body_stmts: &[Statement],
+        existing_inline: &Arc<BTreeMap<u32, String>>,
+    ) -> String {
+        {
             // If this is a Reanimated worklet, emit its original source recovered
             // from the embedded `__initData.code` string instead of decompiling
             // (the compiled form often mis-renders, e.g. as a `class`).
             if let Some(src) = self.worklet_source_for(file, func_id) {
-                result.insert(func_id, src);
-                continue;
+                return src;
             }
             // Render the body with existing inline bodies for nested functions
             let mut inner_codegen = Codegen::new(CodegenOptions::default())
@@ -163,10 +235,28 @@ impl PipelineContext {
                 }
             };
 
-            result.insert(func_id, rendered);
+            rendered
         }
+    }
+}
 
-        result
+// Collect the ids of every function referenced by id (`Expression::Function { id }`)
+// anywhere in `stmts`. These are the direct inline-body dependencies of the owning
+// function: it re-renders when one of their rendered bodies changes.
+fn collect_function_refs(stmts: &[crate::ir::Statement], out: &mut Vec<u32>) {
+    use crate::ir::{Expression, Visitor};
+    struct C<'a>(&'a mut Vec<u32>);
+    impl<'a, 'b> Visitor<'b> for C<'a> {
+        fn visit_expression(&mut self, e: &'b Expression) {
+            if let Expression::Function { id, .. } = e {
+                self.0.push(id.0);
+            }
+            self.walk_expression(e);
+        }
+    }
+    let mut c = C(out);
+    for s in stmts {
+        c.visit_statement(s);
     }
 }
 

@@ -190,37 +190,21 @@ pub fn handle_del_by_val(inst: &Instruction) -> Option<Statement> {
     })
 }
 
-// Handle TypeOfIs opcode: dst = (typeof src) === typeString.
-// Operands: Reg8 dst, Reg8 src, UInt16 typeStringIdx
+// Handle TypeOfIs opcode: dst = whether `typeof src` is in the type bitmask.
+// Operands: Reg8 dst, Reg8 src, UInt16 typeBitmask. The third operand is a set of
+// type bits (HBC >=97), not a string index; decode it to a readable condition.
 pub fn handle_typeof_is(
     inst: &Instruction,
-    file: &BytecodeFile,
-    resolve_strings: bool,
+    _file: &BytecodeFile,
+    _resolve_strings: bool,
 ) -> Option<Statement> {
     let dst = get_reg(&inst.operands, 0)?;
     let src = reg_expr(&inst.operands, 1)?;
-
-    let type_idx = inst.operands.get(2)?.value.as_u32()?;
-    let type_str = if resolve_strings {
-        file.string_at(type_idx)
-            .map(|e| e.value.clone())
-            .unwrap_or_else(|| format!("type{type_idx}"))
-    } else {
-        format!("type{type_idx}")
-    };
+    let mask = inst.operands.get(2)?.value.as_u32()?;
 
     Some(Statement::Assign {
         target: AssignTarget::Register(dst),
-        value: Expression::Binary {
-            op: crate::ir::BinaryOp::StrictEq,
-            left: Box::new(Expression::Unary {
-                op: crate::ir::UnaryOp::TypeOf,
-                operand: Box::new(src),
-            }),
-            right: Box::new(Expression::Value(crate::ir::Value::Constant(
-                crate::ir::Constant::String(type_str),
-            ))),
-        },
+        value: crate::ir::builder::opcodes_flow::typeof_is_condition(src, mask),
     })
 }
 

@@ -192,15 +192,14 @@ fn try_prop_handlers(
             handle_typeof_is(inst, file, resolve_strings).map(FlowResult::Statement)
         }
         "TypeOfIsNot" => {
+            // The inverse of TypeOfIs. The decoded condition may be any boolean
+            // shape (a single compare or a disjunction), so negate the whole
+            // expression rather than flipping one operator.
             handle_typeof_is(inst, file, resolve_strings).map(|stmt| {
-                if let Statement::Assign { target, value: crate::ir::Expression::Binary { op: crate::ir::BinaryOp::StrictEq, left, right } } = stmt {
+                if let Statement::Assign { target, value } = stmt {
                     FlowResult::Statement(Statement::Assign {
                         target,
-                        value: crate::ir::Expression::Binary {
-                            op: crate::ir::BinaryOp::StrictNeq,
-                            left,
-                            right,
-                        },
+                        value: crate::ir::Expression::unary(crate::ir::UnaryOp::Not, value),
                     })
                 } else {
                     FlowResult::Statement(stmt)

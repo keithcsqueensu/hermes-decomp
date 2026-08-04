@@ -29,6 +29,10 @@ pub struct PipelineContext {
     // Pre-rendered inline function bodies (function_id → complete function expression string).
     // Built once after all IR is generated, supports multi-level nesting.
     pub(super) inline_bodies: Arc<BTreeMap<u32, String>>,
+    // parent function id → its direct child function ids, inverted once from the
+    // closure context's child → parent map. `extra_writes_for_function` walks this
+    // per function, so building it per call was quadratic over the whole bundle.
+    pub(super) child_functions: BTreeMap<u32, Vec<u32>>,
     // Recovered Reanimated worklet sources (function name → original source),
     // extracted from `__initData.code` string constants in the bundle.
     pub(super) worklet_sources: BTreeMap<String, String>,
@@ -93,6 +97,15 @@ impl PipelineContext {
         let worklet_sources = transforms::collect_worklet_sources(&all_ir);
         log::debug!("[pipeline] recovered {} worklet sources", worklet_sources.len());
 
+        // Invert the closure child → parent map once (parent → children), so the
+        // per-function extra-writes walk does not rebuild it 100k+ times.
+        let mut child_functions: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        if let Some(cctx) = closure_ctx.as_ref() {
+            for (&child, &parent) in &cctx.parent_function {
+                child_functions.entry(parent).or_default().push(child);
+            }
+        }
+
         // STAGE W17: Inline body rendering
         let mut ctx = PipelineContext {
             all_ir,
@@ -100,6 +113,7 @@ impl PipelineContext {
             closure_ctx,
             global_analysis,
             inline_bodies: Arc::new(BTreeMap::new()),
+            child_functions,
             worklet_sources,
         };
 
@@ -530,14 +544,11 @@ impl PipelineContext {
     // Write counts for free variables mutated in descendant closures of `function_id`.
     // Used so parent scopes emit `let` instead of `const` when children reassign.
     fn extra_writes_for_function(&self, function_id: u32) -> BTreeMap<String, usize> {
-        let Some(ctx) = self.closure_ctx.as_ref() else {
+        if self.closure_ctx.is_none() {
             return BTreeMap::new();
-        };
-        // child -> parent is stored; invert to parent -> children
-        let mut children: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-        for (&child, &parent) in &ctx.parent_function {
-            children.entry(parent).or_default().push(child);
         }
+        // parent -> children was inverted once at build time (self.child_functions).
+        let children = &self.child_functions;
         // Collect all descendants (BFS)
         let mut nested_ids = Vec::new();
         let mut stack: Vec<u32> = children.get(&function_id).cloned().unwrap_or_default();

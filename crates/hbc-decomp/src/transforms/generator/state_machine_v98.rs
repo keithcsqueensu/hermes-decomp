@@ -38,6 +38,16 @@ pub fn reconstruct_generator_v98(body: Vec<Statement>) -> Vec<Statement> {
     try_reconstruct(&body).unwrap_or(body)
 }
 
+// A parsed state-machine case: the value the case resumes with (`x = <resume>`),
+// the real code before the suspend point, the yielded/returned value and whether
+// this is the terminal (done) case.
+struct ParsedCase {
+    resume_binding: Option<AssignTarget>,
+    pre: Vec<Statement>,
+    value: Expression,
+    done: bool,
+}
+
 fn try_reconstruct(body: &[Statement]) -> Option<Vec<Statement>> {
     let dispatch = find_label_dispatch(body)?;
     let cases = collect_label_cases(dispatch)?;
@@ -45,15 +55,262 @@ fn try_reconstruct(body: &[Statement]) -> Option<Vec<Statement>> {
     if cases.len() < 2 {
         return None;
     }
-    let mut out = Vec::new();
-    for (_label, case_body) in &cases {
-        emit_case(case_body, &mut out)?;
+
+    // Variables compared against an integer literal anywhere in the machine are
+    // the status / label slots and their copies (`c0`, `c1`, `tmp3`...). Their
+    // assignments are bookkeeping and get dropped from the reconstructed body.
+    let state_vars = collect_state_vars(body);
+
+    let parsed: Vec<ParsedCase> = cases
+        .iter()
+        .map(|(_, b)| parse_case(b, &state_vars))
+        .collect::<Option<_>>()?;
+
+    // The last case must be the terminal (done) one; every earlier case suspends.
+    let (last, rest) = parsed.split_last()?;
+    if !last.done || rest.iter().any(|c| c.done) {
+        return None;
     }
+
+    // Thread the resume protocol: case i suspends yielding `value_i`, and case i+1
+    // resumes binding that yield's result. So `case[i+1].binding = yield value_i`.
+    let mut out = Vec::new();
+    for (i, case) in parsed.iter().enumerate() {
+        if i > 0 {
+            let prev_value = parsed[i - 1].value.clone();
+            let yielded = Expression::Yield {
+                value: Box::new(prev_value),
+                delegate: false,
+            };
+            match &case.resume_binding {
+                Some(target) => out.push(Statement::Assign {
+                    target: target.clone(),
+                    value: yielded,
+                }),
+                None => out.push(Statement::Expr(yielded)),
+            }
+        }
+        out.extend(case.pre.iter().cloned());
+    }
+    // Terminal return, unless it returns undefined (a bare `return`).
+    if !is_undefined(&last.value) {
+        out.push(Statement::Return(Some(last.value.clone())));
+    }
+
     // Sanity: a reconstructed generator must contain at least one yield.
-    if !out.iter().any(stmt_has_yield) {
+    if !out.iter().any(stmt_has_yield_deep) {
         return None;
     }
     Some(out)
+}
+
+// Collect every variable name that is compared against an integer literal; these
+// are the state-machine status / label slots, never user data.
+fn collect_state_vars(body: &[Statement]) -> std::collections::HashSet<String> {
+    use crate::ir::Visitor;
+    struct C(std::collections::HashSet<String>);
+    impl<'b> Visitor<'b> for C {
+        fn visit_expression(&mut self, e: &'b Expression) {
+            if let Expression::Binary { op: BinaryOp::StrictEq, left, right } = e {
+                for (a, b) in [(left, right), (right, left)] {
+                    if int_const(a).is_some() {
+                        if let Expression::Value(Value::Variable(n)) = b.as_ref() {
+                            self.0.insert(n.clone());
+                        }
+                    }
+                }
+            }
+            self.walk_expression(e);
+        }
+    }
+    let mut c = C(std::collections::HashSet::new());
+    for s in body {
+        c.visit_statement(s);
+    }
+    c.0
+}
+
+// Parse one case body into (resume binding, real pre-code, yielded value, done).
+fn parse_case(case_body: &[Statement], state_vars: &std::collections::HashSet<String>) -> Option<ParsedCase> {
+    let real = strip_arg_protocol(case_body);
+
+    // A leading `x = <resume param>` binds the value the generator was resumed
+    // with (the result of the previous yield / await).
+    let mut resume_binding = None;
+    let mut idx = 0;
+    if let Some(Statement::Assign { target, value }) = real.first() {
+        if is_resume_param(value) {
+            resume_binding = Some(target.clone());
+            idx = 1;
+        }
+    }
+
+    let mut pre = Vec::new();
+    let (value, done) = collect_pre_and_yield(&real[idx..], &mut pre, state_vars)?;
+    Some(ParsedCase { resume_binding, pre, value, done })
+}
+
+// Walk a case body, appending real code to `pre` and returning the suspend
+// point's (value, done). Conditional early exits (`if (guard) { return X }`) that
+// guard the suspend point are flattened: the guard is kept in `pre` and the
+// fall-through (its else branch) continues to the yield.
+fn collect_pre_and_yield(
+    stmts: &[Statement],
+    pre: &mut Vec<Statement>,
+    state_vars: &std::collections::HashSet<String>,
+) -> Option<(Expression, bool)> {
+    let mut i = 0;
+    while i < stmts.len() {
+        // The suspend point is the result-object return; everything up to it is
+        // real code (minus state bookkeeping and dead inits).
+        if let Some((value, done, consumed)) = parse_result_return(&stmts[i..]) {
+            if i + consumed != stmts.len() {
+                return None; // unexpected trailing code after the return
+            }
+            return Some((value, done));
+        }
+        // A trailing `if` where one branch is a terminal exit and the other
+        // continues to the suspend point flattens to a guard `if (cond) { exit }`
+        // plus the continuation branch. Either branch may be the terminal one.
+        if i + 1 == stmts.len() {
+            if let Statement::If { condition, then_body, else_body } = &stmts[i] {
+                if !else_body.is_empty() {
+                    if let Some(exit) = reconstruct_exit_body(then_body, state_vars) {
+                        pre.push(Statement::If {
+                            condition: condition.clone(),
+                            then_body: exit,
+                            else_body: Vec::new(),
+                        });
+                        return collect_pre_and_yield(else_body, pre, state_vars);
+                    }
+                    if let Some(exit) = reconstruct_exit_body(else_body, state_vars) {
+                        pre.push(Statement::If {
+                            condition: Expression::unary(crate::ir::UnaryOp::Not, condition.clone()),
+                            then_body: exit,
+                            else_body: Vec::new(),
+                        });
+                        return collect_pre_and_yield(then_body, pre, state_vars);
+                    }
+                }
+            }
+        }
+        if !is_bookkeeping(&stmts[i], state_vars) {
+            pre.push(stmts[i].clone());
+        }
+        i += 1;
+    }
+    None
+}
+
+// Reconstruct a terminal branch (`{ ...; return {value:V,done:true} }` or
+// `{ ...; throw X }`) into plain `return V` / `throw X`, dropping bookkeeping.
+// Returns None if the branch is not a clean terminal exit.
+fn reconstruct_exit_body(
+    body: &[Statement],
+    state_vars: &std::collections::HashSet<String>,
+) -> Option<Vec<Statement>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < body.len() {
+        if let Statement::Throw(_) = &body[i] {
+            if i + 1 != body.len() {
+                return None;
+            }
+            out.push(body[i].clone());
+            return Some(out);
+        }
+        if let Some((value, done, consumed)) = parse_result_return(&body[i..]) {
+            if !done || i + consumed != body.len() {
+                return None; // not a terminal (done) exit
+            }
+            if !is_undefined(&value) {
+                out.push(Statement::Return(Some(value)));
+            } else {
+                out.push(Statement::Return(None));
+            }
+            return Some(out);
+        }
+        if !is_bookkeeping(&body[i], state_vars) {
+            out.push(body[i].clone());
+        }
+        i += 1;
+    }
+    None
+}
+
+// Drop state-slot writes, dead `x = undefined` inits and label copies.
+fn is_bookkeeping(s: &Statement, state_vars: &std::collections::HashSet<String>) -> bool {
+    if let Statement::Assign { target: AssignTarget::Variable(n), value } = s {
+        if state_vars.contains(n) {
+            return true;
+        }
+        if matches!(value, Expression::Value(Value::Constant(Constant::Undefined))) {
+            return true;
+        }
+        if let Expression::Value(Value::Variable(src)) = value {
+            if state_vars.contains(src) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// Recognise the two result-object shapes the frontend emits:
+//   return { value: V, done: D }
+//   obj = { value: <ignored>, done: D }; obj[0] = V; return obj
+// Returns (value, done, statements_consumed).
+fn parse_result_return(stmts: &[Statement]) -> Option<(Expression, bool, usize)> {
+    // Direct literal return.
+    if let Statement::Return(Some(expr)) = &stmts[0] {
+        if let Some((v, d)) = parse_result_object(expr) {
+            return Some((v, d, 1));
+        }
+    }
+    // Incremental object build then return.
+    if stmts.len() >= 3 {
+        if let (
+            Statement::Assign { target: AssignTarget::Variable(o1), value: Expression::Object { properties } },
+            Statement::Assign { target: AssignTarget::Index { object, key }, value: real_value },
+            Statement::Return(Some(Expression::Value(Value::Variable(o3)))),
+        ) = (&stmts[0], &stmts[1], &stmts[2])
+        {
+            let obj_is = |e: &Expression, name: &str| matches!(e, Expression::Value(Value::Variable(v)) if v == name);
+            let key_is_zero = matches!(key, Expression::Value(Value::Constant(Constant::Integer(0))));
+            if o1 == o3 && obj_is(object, o1) && key_is_zero {
+                let done = properties.iter().find_map(|p| match &p.key {
+                    PropertyKey::Ident(k) | PropertyKey::String(k) if k == "done" => Some(is_truthy(&p.value)),
+                    _ => None,
+                })?;
+                return Some((real_value.clone(), done, 3));
+            }
+        }
+    }
+    None
+}
+
+fn is_resume_param(e: &Expression) -> bool {
+    matches!(e, Expression::Value(Value::Parameter(1)))
+}
+
+fn is_undefined(e: &Expression) -> bool {
+    matches!(e, Expression::Value(Value::Constant(Constant::Undefined)))
+}
+
+fn stmt_has_yield_deep(s: &Statement) -> bool {
+    use crate::ir::Visitor;
+    struct C(bool);
+    impl<'b> Visitor<'b> for C {
+        fn visit_expression(&mut self, e: &'b Expression) {
+            if matches!(e, Expression::Yield { .. }) {
+                self.0 = true;
+            }
+            self.walk_expression(e);
+        }
+    }
+    let mut c = C(false);
+    c.visit_statement(s);
+    c.0
 }
 
 // --- locating the label dispatch ---
@@ -153,40 +410,6 @@ fn collect_label_cases(mut s: &Statement) -> Option<Vec<(i32, Vec<Statement>)>> 
 
 // --- per-case extraction ---
 
-fn emit_case(case_body: &[Statement], out: &mut Vec<Statement>) -> Option<()> {
-    let real = strip_arg_protocol(case_body);
-    let mut pre: Vec<Statement> = Vec::new();
-    for s in real {
-        match s {
-            // Drop the state-machine bookkeeping assignments (status / label).
-            // The env slots are ClosureVar; an intermediate label copy is a tmp.
-            Statement::Assign { target: AssignTarget::ClosureVar { .. }, .. } => {}
-            Statement::Assign { target: AssignTarget::Variable(n), .. } if is_state_var(n) => {}
-            Statement::Return(Some(expr)) => {
-                let (val, done) = parse_result_object(expr)?;
-                // A resume value flowing into user code (`x = yield v`) shows up
-                // as a reference to the synthetic resume params; we only handle the
-                // value-less form here, bail otherwise so we never emit `arg1`.
-                if pre.iter().any(stmt_uses_resume_param) || expr_uses_resume_param(&val) {
-                    return None;
-                }
-                out.append(&mut pre);
-                if !done {
-                    out.push(Statement::Expr(Expression::Yield {
-                        value: Box::new(val),
-                        delegate: false,
-                    }));
-                }
-                return Some(());
-            }
-            // Any other statement is real generator code before the yield.
-            other => pre.push(other.clone()),
-        }
-    }
-    // No `{value,done}` return found in this case, not the shape we handle.
-    None
-}
-
 // Navigate past the `if (arg0===1) {throw} else if (arg0===2) {return} else {..}`
 // resume-protocol wrapper to the real (next) branch.
 fn strip_arg_protocol(body: &[Statement]) -> &[Statement] {
@@ -208,11 +431,6 @@ fn is_resume_protocol_cond(cond: &Expression) -> bool {
         return (is_p0(left) && is_12(right)) || (is_p0(right) && is_12(left));
     }
     false
-}
-
-fn is_state_var(name: &str) -> bool {
-    // Generator env slots render as closure_N; intermediate copies as tmpN.
-    name.starts_with("closure_") || name.starts_with("tmp")
 }
 
 // Extract (value, done) from an `{value: V, done: D}` object literal.
@@ -242,36 +460,4 @@ fn is_truthy(e: &Expression) -> bool {
         Expression::Value(Value::Constant(Constant::Integer(n))) => *n != 0,
         _ => false,
     }
-}
-
-// --- resume-param detection (to bail on `x = yield v` generators) ---
-
-fn stmt_uses_resume_param(s: &Statement) -> bool {
-    match s {
-        Statement::Assign { value, .. } => expr_uses_resume_param(value),
-        Statement::Expr(e) | Statement::Return(Some(e)) | Statement::Throw(e) => {
-            expr_uses_resume_param(e)
-        }
-        _ => false,
-    }
-}
-
-fn expr_uses_resume_param(e: &Expression) -> bool {
-    use crate::ir::Visitor;
-    struct C(bool);
-    impl<'b> Visitor<'b> for C {
-        fn visit_expression(&mut self, e: &'b Expression) {
-            if matches!(e, Expression::Value(Value::Parameter(0)) | Expression::Value(Value::Parameter(1))) {
-                self.0 = true;
-            }
-            self.walk_expression(e);
-        }
-    }
-    let mut c = C(false);
-    c.visit_expression(e);
-    c.0
-}
-
-fn stmt_has_yield(s: &Statement) -> bool {
-    matches!(s, Statement::Expr(Expression::Yield { .. }))
 }
