@@ -22,12 +22,62 @@ pub(crate) const GENERIC_EXACT_NAMES: &[&str] = &[
     "item", "self", "key", "value", "merged",
     "exports", "wrapper", "require", "anonymous", "global",
     "__esModule", "module", "dependencyMap",
+    // React Native codegen gives every native component the same export key,
+    // holding the view config. `infer_name_from_view_config` reads the real
+    // component name out of it instead.
+    "__INTERNAL_VIEW_CONFIG",
     // Metro factory parameter role names (and their reserved-word-escaped
     // `_`-prefixed forms) must never be mistaken for a module's own name.
     "_module", "_exports", "_require", "_global", "_dependencyMap",
     "importDefault", "importAll", "_importDefault", "_importAll",
     "Object", "Object2", "Object3", "Array", "Array2", "Array3",
     "num", "str", "val", "res",
+    // Names the decompiler synthesizes for unnamed registers (see
+    // `transforms::var_naming::suggestions`). They describe what a value came
+    // from, never what the module is.
+    "items", "keys", "values", "entries", "result", "results", "prototype",
+    "call", "apply", "toString", "arr", "obj", "fn",
+];
+
+// Helper functions the transpiler injects into every module that needs them, so
+// each copy carries the same name. A bundle has hundreds of identical
+// `_getRequireWildcardCache` / `_callSuper` definitions, and a hoisted helper is
+// often the first function in a factory body, which makes these by far the most
+// common wrong module name in a large bundle.
+pub(crate) const TRANSPILER_HELPER_NAMES: &[&str] = &[
+    // Babel: module interop
+    "_getRequireWildcardCache", "ownKeys",
+    // Babel: classes
+    "_typeof", "_classCallCheck", "_defineProperties", "_createClass",
+    "_callSuper", "_createSuper", "_inherits", "_inheritsLoose",
+    "_possibleConstructorReturn", "_assertThisInitialized",
+    "_isNativeReflectConstruct", "_isNativeFunction", "_getPrototypeOf",
+    "_setPrototypeOf", "_superPropBase", "_superPropGet", "_wrapNativeSuper",
+    "_construct", "_newArrowCheck", "_instanceof", "_readOnlyError",
+    "_writeOnlyError", "_applyDecoratedDescriptor", "_initializerDefineProperty",
+    "_classPrivateFieldGet", "_classPrivateFieldSet", "_classPrivateMethodGet",
+    // Babel: spread / destructuring
+    "_toConsumableArray", "_arrayWithoutHoles", "_iterableToArray",
+    "_unsupportedIterableToArray", "_nonIterableSpread", "_arrayLikeToArray",
+    "_slicedToArray", "_arrayWithHoles", "_iterableToArrayLimit",
+    "_nonIterableRest", "_createForOfIteratorHelper",
+    "_createForOfIteratorHelperLoose", "_objectSpread", "_objectSpread2",
+    "_defineProperty", "_objectWithoutProperties",
+    "_objectWithoutPropertiesLoose", "_extends", "_toPrimitive",
+    "_toPropertyKey", "_taggedTemplateLiteral", "_taggedTemplateLiteralLoose",
+    // Babel: async / generators
+    "_asyncToGenerator", "_asyncIterator", "_awaitAsyncGenerator",
+    "_wrapAsyncGenerator", "_asyncGeneratorDelegate", "_skipFirstGeneratorNext",
+    "_regeneratorRuntime", "_regenerator", "_usingCtx",
+    // graphql-tag: every generated document module defines this deduper
+    "_unique",
+    // TypeScript (tslib)
+    "__importDefault", "__importStar", "__awaiter", "__generator", "__extends",
+    "__assign", "__rest", "__decorate", "__param", "__metadata",
+    "__spreadArray", "__spread", "__spreadArrays", "__values", "__read",
+    "__exportStar", "__createBinding", "__makeTemplateObject", "__await",
+    "__asyncValues", "__asyncGenerator", "__asyncDelegator",
+    "__classPrivateFieldGet", "__classPrivateFieldSet",
 ];
 
 // Check if a name is obviously generic (decompiler-generated, too vague, or a common placeholder).
@@ -36,13 +86,89 @@ pub(crate) const GENERIC_EXACT_NAMES: &[&str] = &[
 // `propagation::is_meaningful_require_name()`. Each caller adds its own
 // additional checks (e.g., `f1234` pattern, register patterns, length checks).
 pub(crate) fn is_obviously_generic(name: &str) -> bool {
+    // A module name becomes a file name and an import specifier, so anything
+    // that is not one token cannot be one (`get registerCallableModule` is an
+    // accessor key picked up from a barrel module's property table).
+    if name.chars().any(char::is_whitespace) { return true; }
+    if is_generic_ident(name) { return true; }
+    // Colliding names get a numeric suffix during register naming (`keys1`,
+    // `_default2`, `fnResult3`), so judge those by the name they were made from.
+    let base = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    base != name && !base.is_empty() && is_generic_ident(base)
+}
+
+fn is_generic_ident(name: &str) -> bool {
     // Reject exact matches from shared list
     if GENERIC_EXACT_NAMES.contains(&name) { return true; }
+    // Reject transpiler-injected helpers, which every module redefines
+    if TRANSPILER_HELPER_NAMES.contains(&name) { return true; }
     // Reject generic prefixes from shared list
     if GENERIC_NAME_PREFIXES.iter().any(|p| name.starts_with(p)) { return true; }
     // Reject decompiler-generated *Result names (fnResult, fn2Result, definePropertyResult, etc.)
     if name.ends_with("Result") { return true; }
     false
+}
+
+#[cfg(test)]
+mod generic_name_tests {
+    use super::is_obviously_generic;
+
+    #[test]
+    fn transpiler_helpers_never_name_a_module() {
+        // Every module using `import * as ns` redefines this one, and it is
+        // hoisted to the top of the factory where name inference looks first.
+        for name in [
+            "_getRequireWildcardCache",
+            "_callSuper",
+            "_typeof",
+            "_classCallCheck",
+            "_toConsumableArray",
+            "__importStar",
+            "__awaiter",
+            // graphql-tag emits this in every generated document module
+            "_unique",
+        ] {
+            assert!(is_obviously_generic(name), "{name} should be rejected");
+        }
+    }
+
+    #[test]
+    fn framework_protocol_keys_are_not_names() {
+        // Every RN codegen'd native component exports this same key.
+        assert!(is_obviously_generic("__INTERNAL_VIEW_CONFIG"));
+    }
+
+    #[test]
+    fn numeric_suffix_does_not_launder_a_generic_name() {
+        for name in ["keys1", "_default2", "result10", "self2", "fnResult3"] {
+            assert!(is_obviously_generic(name), "{name} should be rejected");
+        }
+        // Only the base name decides: a real name that ends in a digit stays.
+        for name in ["Base64", "Sha256", "H264", "S3Client"] {
+            assert!(!is_obviously_generic(name), "{name} should be kept");
+        }
+    }
+
+    #[test]
+    fn multi_token_names_are_rejected() {
+        // Accessor keys from a barrel's property table, never a module name.
+        assert!(is_obviously_generic("get registerCallableModule"));
+        assert!(is_obviously_generic("set FlatList"));
+    }
+
+    #[test]
+    fn real_module_names_survive() {
+        for name in [
+            "AccessibilityInfo",
+            "UIManager",
+            "PlatformConstants",
+            "keyExtractor",
+            "useSections",
+            "RNCSafeAreaProvider",
+        ] {
+            assert!(!is_obviously_generic(name), "{name} should be kept");
+        }
+    }
 }
 
 pub use detection::MetroDetector;

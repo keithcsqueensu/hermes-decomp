@@ -1,5 +1,7 @@
 use super::{default_roles, is_meaningful_require_name};
-use super::define_property::{infer_name_from_all_define_properties, infer_name_from_define_property};
+use super::define_property::{
+    infer_name_from_all_define_properties, infer_name_from_define_property, is_export_barrel,
+};
 use crate::analysis::metro::detection::is_meaningful_name;
 use crate::ir::{target_to_key, Expression, PropertyKey, Statement, Value};
 use std::collections::HashMap;
@@ -10,6 +12,16 @@ pub(super) fn infer_module_name_from_stmts(
     functions: &BTreeMap<u32, Vec<Statement>>,
     visited: &mut std::collections::HashSet<u32>,
 ) -> Option<String> {
+    // A React Native codegen'd native component carries its real name in the
+    // view config it exports. Nothing else in the body identifies it, and its
+    // only named export is the fixed `__INTERNAL_VIEW_CONFIG` protocol key.
+    if let Some(name) = infer_name_from_view_config(stmts) {
+        return Some(name);
+    }
+
+    // A barrel's export keys are its dependencies' names, not its own.
+    let barrel = is_export_barrel(stmts);
+
     // Pre-pass: collect variable definitions for descriptor/value lookup
     let mut var_defs: HashMap<String, &Expression> = HashMap::new();
     for stmt in stmts {
@@ -72,8 +84,10 @@ pub(super) fn infer_module_name_from_stmts(
                 }
             }
             Statement::Expr(expr) => {
-                if let Some(name) = infer_name_from_define_property(expr, &var_defs, functions, visited) {
-                    return Some(name);
+                if !barrel {
+                    if let Some(name) = infer_name_from_define_property(expr, &var_defs, functions, visited) {
+                        return Some(name);
+                    }
                 }
                 if let Some(name) = infer_from_expr(expr, functions, visited) {
                     return Some(name);
@@ -150,8 +164,10 @@ pub(super) fn infer_module_name_from_stmts(
     }
 
     // Last resort: check for named export properties
-    if let Some(name) = infer_name_from_all_define_properties(stmts) {
-        return Some(name);
+    if !barrel {
+        if let Some(name) = infer_name_from_all_define_properties(stmts) {
+            return Some(name);
+        }
     }
 
     // Final fallback: first meaningful Let/const function definition
@@ -263,6 +279,46 @@ pub(super) fn infer_module_name_from_stmts(
     None
 }
 
+// The `uiViewClassName` of a React Native view config (`{ uiViewClassName:
+// "RNCSafeAreaProvider", validAttributes: … }`), which is the native component
+// name the module exists to register.
+fn infer_name_from_view_config(stmts: &[Statement]) -> Option<String> {
+    use crate::ir::{Constant, Visitor};
+
+    struct ViewClassName(Option<String>);
+
+    impl<'a> Visitor<'a> for ViewClassName {
+        fn visit_expression(&mut self, expr: &'a Expression) {
+            if self.0.is_none() {
+                if let Expression::Object { properties } = expr {
+                    for prop in properties {
+                        let is_key = matches!(&prop.key,
+                            PropertyKey::Ident(k) | PropertyKey::String(k) if k == "uiViewClassName");
+                        if is_key {
+                            if let Expression::Value(Value::Constant(Constant::String(s))) = &prop.value {
+                                if is_meaningful_name(s) {
+                                    self.0 = Some(s.clone());
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                self.walk_expression(expr);
+            }
+        }
+    }
+
+    let mut finder = ViewClassName(None);
+    for stmt in stmts {
+        finder.visit_statement(stmt);
+        if finder.0.is_some() {
+            break;
+        }
+    }
+    finder.0
+}
+
 // Extract the name from X.getEnforcing("Name") calls (React Native native module pattern).
 fn extract_native_module_name(expr: &Expression) -> Option<String> {
     use crate::ir::{Constant, Value};
@@ -356,5 +412,86 @@ pub(super) fn infer_from_expr(
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{AssignTarget, Constant, ObjectProperty, VarKind};
+
+    // `const c = { uiViewClassName: "RNCSafeAreaProvider", … };`
+    fn view_config_stmt(class_name: &str) -> Statement {
+        Statement::Let {
+            name: "c".into(),
+            value: Expression::Object {
+                properties: vec![
+                    ObjectProperty {
+                        key: PropertyKey::Ident("uiViewClassName".into()),
+                        value: Expression::constant(Constant::String(class_name.into())),
+                    },
+                    ObjectProperty {
+                        key: PropertyKey::Ident("validAttributes".into()),
+                        value: Expression::Object { properties: vec![] },
+                    },
+                ],
+            },
+            kind: VarKind::Const,
+        }
+    }
+
+    #[test]
+    fn view_config_names_the_native_component() {
+        let stmts = vec![
+            view_config_stmt("RNCSafeAreaProvider"),
+            // The module's only named export is the fixed protocol key.
+            Statement::Assign {
+                target: AssignTarget::Member {
+                    object: Expression::Value(Value::Variable("exports".into())),
+                    property: "__INTERNAL_VIEW_CONFIG".into(),
+                },
+                value: Expression::Value(Value::Variable("c".into())),
+            },
+        ];
+        assert_eq!(
+            infer_name_from_view_config(&stmts).as_deref(),
+            Some("RNCSafeAreaProvider")
+        );
+    }
+
+    #[test]
+    fn view_config_is_found_inside_nested_expressions() {
+        // Codegen wraps the config in a registration call.
+        let stmts = vec![Statement::Return(Some(Expression::call(
+            Expression::Value(Value::Variable("registerComponent".into())),
+            vec![view_config_stmt_value("AndroidProgressBar")],
+        )))];
+        assert_eq!(
+            infer_name_from_view_config(&stmts).as_deref(),
+            Some("AndroidProgressBar")
+        );
+    }
+
+    fn view_config_stmt_value(class_name: &str) -> Expression {
+        match view_config_stmt(class_name) {
+            Statement::Let { value, .. } => value,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn a_module_without_a_view_config_is_unaffected() {
+        let stmts = vec![Statement::Let {
+            name: "x".into(),
+            value: Expression::Object {
+                properties: vec![ObjectProperty {
+                    key: PropertyKey::Ident("uiViewClassName".into()),
+                    // Not a string constant: not a view config we can read.
+                    value: Expression::Value(Value::Variable("dynamic".into())),
+                }],
+            },
+            kind: VarKind::Const,
+        }];
+        assert_eq!(infer_name_from_view_config(&stmts), None);
     }
 }

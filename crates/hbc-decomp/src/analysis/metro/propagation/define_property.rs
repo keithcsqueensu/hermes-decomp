@@ -144,13 +144,31 @@ pub(super) fn infer_name_from_define_property(
     None
 }
 
+// A module re-exporting more than this many names through `defineProperty`
+// getters is a barrel (`react-native/index.js` has 79), and none of its keys
+// names it. Below the threshold the first key is a real signal: `exports.Foo`.
+const MAX_NAMED_EXPORTS_FOR_NAMING: usize = 4;
+
+// Whether a factory body is such a barrel. Both defineProperty naming
+// strategies pick a key (or what a key's getter requires), which is arbitrary
+// once there are many: naming the RN barrel after its first getter labelled 91
+// other modules `registerCallableModule` through dependency propagation.
+pub(super) fn is_export_barrel(stmts: &[Statement]) -> bool {
+    named_export_keys(stmts, MAX_NAMED_EXPORTS_FOR_NAMING + 1).len()
+        > MAX_NAMED_EXPORTS_FOR_NAMING
+}
+
 // For unnamed modules, try to infer a name from the first meaningful named export property.
-pub(super) fn infer_name_from_all_define_properties(
-    stmts: &[Statement],
-) -> Option<String> {
+pub(super) fn infer_name_from_all_define_properties(stmts: &[Statement]) -> Option<String> {
+    named_export_keys(stmts, 1).into_iter().next()
+}
+
+// The `defineProperty` export keys of a factory body, in order, stopping once
+// `limit` have been collected.
+fn named_export_keys(stmts: &[Statement], limit: usize) -> Vec<String> {
     use crate::ir::Constant;
 
-    let mut first_named_export: Option<String> = None;
+    let mut keys: Vec<String> = Vec::new();
 
     for stmt in stmts {
         if let Statement::Expr(expr) = stmt {
@@ -178,8 +196,9 @@ pub(super) fn infer_name_from_all_define_properties(
 
                 if let Expression::Value(Value::Constant(Constant::String(s))) = &arguments[name_idx] {
                     if s != "__esModule" && s != "default" && is_meaningful_name(s) {
-                        if first_named_export.is_none() {
-                            first_named_export = Some(s.clone());
+                        keys.push(s.clone());
+                        if keys.len() >= limit {
+                            return keys;
                         }
                     }
                 }
@@ -187,5 +206,47 @@ pub(super) fn infer_name_from_all_define_properties(
         }
     }
 
-    first_named_export
+    keys
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::Constant;
+
+    // `Object.defineProperty(obj, "<key>", { get: … })`
+    fn define_property(key: &str) -> Statement {
+        Statement::Expr(Expression::call(
+            Expression::member(Expression::Value(Value::Variable("Object".into())), "defineProperty"),
+            vec![
+                Expression::Value(Value::Variable("obj".into())),
+                Expression::constant(Constant::String(key.into())),
+                Expression::Object { properties: vec![] },
+            ],
+        ))
+    }
+
+    #[test]
+    fn single_named_export_still_names_the_module() {
+        let stmts = vec![define_property("Button")];
+        assert!(!is_export_barrel(&stmts));
+        assert_eq!(
+            infer_name_from_all_define_properties(&stmts).as_deref(),
+            Some("Button")
+        );
+    }
+
+    #[test]
+    fn barrel_is_not_named_after_its_first_key() {
+        let keys = [
+            "registerCallableModule",
+            "AccessibilityInfo",
+            "ActivityIndicator",
+            "Button",
+            "DrawerLayoutAndroid",
+            "FlatList",
+        ];
+        let stmts: Vec<Statement> = keys.iter().map(|k| define_property(k)).collect();
+        assert!(is_export_barrel(&stmts));
+    }
 }
