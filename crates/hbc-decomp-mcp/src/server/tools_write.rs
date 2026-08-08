@@ -46,7 +46,7 @@ impl HermesService {
     }
 
     #[tool(
-        description = "Patch a string table entry and write a new .hbc. A same length value patches in place. A different length rebuilds the string table. Works on legacy and modern (v97 plus) files, including identifiers and UTF-16 strings. Provide id or old_value."
+        description = "Patch a string table entry and write a new .hbc. Any length is accepted. Hermes packs string storage so entries overlap ('a' can live inside 'Animated'), and an in place overwrite would corrupt the neighbour, so most patches rebuild the string table and the output grows; only an entry with exclusive storage and an identical byte length is patched in place. Works on legacy and modern (v97 plus) files, including identifiers and UTF-16 strings. Provide id or old_value."
     )]
     fn patch_string(
         &self,

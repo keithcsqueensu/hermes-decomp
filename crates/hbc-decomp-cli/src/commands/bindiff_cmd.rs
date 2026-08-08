@@ -22,42 +22,62 @@ pub fn run_bindiff(
 
     println!("Comparing functions...");
 
-    // Name -> FunctionID
-    let map1 = build_function_map(&file1);
-    let map2 = build_function_map(&file2);
+    // Name -> every FunctionID carrying that name, ascending
+    let groups1 = build_function_groups(&file1);
+    let groups2 = build_function_groups(&file2);
 
     let mut added = Vec::new();
     let mut removed = Vec::new();
     let mut modified = Vec::new();
-    let mut identical = 0;
+    let mut identical = 0usize;
+    let mut compared = 0usize;
 
-    // Comparaison
-    for (name, id1) in &map1 {
-        if let Some(id2) = map2.get(name) {
-            let mode = if diff_code {
-                DiffMode::Code
-            } else {
-                DiffMode::Assembly
-            };
-            let status = compare_functions(&file1, &format1, *id1, &file2, &format2, *id2, mode);
+    let mode = if diff_code {
+        DiffMode::Code
+    } else {
+        DiffMode::Assembly
+    };
 
+    // Pair positionally within each name group. Both sides are in ascending id
+    // order, so for two builds of the same bundle this pairs like with like;
+    // whatever a group has left over is an add or a remove.
+    for (name, ids1) in &groups1 {
+        let ids2 = groups2.get(name).map(Vec::as_slice).unwrap_or(&[]);
+        let paired = ids1.len().min(ids2.len());
+
+        for k in 0..paired {
+            let (id1, id2) = (ids1[k], ids2[k]);
+            let status = compare_functions(&file1, &format1, id1, &file2, &format2, id2, mode);
+            compared += 1;
             if status != DiffStatus::Identical {
-                modified.push((name.clone(), *id1, *id2));
+                modified.push((display_name(name, id1), id1, id2));
             } else {
                 identical += 1;
             }
-        } else {
-            removed.push(name.clone());
+        }
+        for &id in &ids1[paired..] {
+            removed.push((display_name(name, id), id));
         }
     }
 
-    for name in map2.keys() {
-        if !map1.contains_key(name) {
-            added.push(name.clone());
+    for (name, ids2) in &groups2 {
+        let len1 = groups1.get(name).map_or(0, Vec::len);
+        for &id in ids2.iter().skip(len1) {
+            added.push((display_name(name, id), id));
         }
     }
+
+    // HashMap iteration order is arbitrary; sort so runs are reproducible.
+    modified.sort_by_key(|&(_, id1, _)| id1);
+    removed.sort_by_key(|&(_, id)| id);
+    added.sort_by_key(|&(_, id)| id);
 
     println!("\n--- BinDiff Result ---");
+    println!(
+        "Compared:  {compared} pairs ({} functions in base, {} in new)",
+        file1.function_headers.len(),
+        file2.function_headers.len()
+    );
     println!("Identical: {identical}");
     println!("Modified:  {}", modified.len());
     println!("Removed:   {}", removed.len());
@@ -92,16 +112,35 @@ pub fn run_bindiff(
     Ok(())
 }
 
-fn build_function_map(file: &BytecodeFile) -> HashMap<String, u32> {
-    let mut map = HashMap::new();
+// Group every function id under its name.
+//
+// This used to be a `HashMap<String, u32>`, which silently dropped most of a
+// real bundle: an anonymous function carries the *empty* name rather than a
+// missing one, so the `f{i}` fallback never fired and all of them collapsed
+// onto the single `""` key, as did every set of same-named functions. On a
+// 62,526-function bundle that left 17,262 pairs actually compared and 45,264
+// functions never looked at — with nothing in the output saying so, which is
+// the worst way to miss a patched function.
+fn build_function_groups(file: &BytecodeFile) -> HashMap<String, Vec<u32>> {
+    let mut map: HashMap<String, Vec<u32>> = HashMap::new();
     for (i, header) in file.function_headers.iter().enumerate() {
         let name = file
             .string_at(header.function_name())
             .map(|e| e.value.clone())
-            .unwrap_or_else(|| format!("f{i}"));
-        map.insert(name, i as u32);
+            .unwrap_or_default();
+        map.entry(name).or_default().push(i as u32);
     }
     map
+}
+
+// Anonymous functions all share the empty name, so it can't identify one on its
+// own; fall back to the id.
+fn display_name(name: &str, id: u32) -> String {
+    if name.is_empty() {
+        format!("fn#{id} (anonymous)")
+    } else {
+        name.to_string()
+    }
 }
 
 // are_functions_identical and strip_offsets removed (using shared module)

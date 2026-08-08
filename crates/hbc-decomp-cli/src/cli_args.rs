@@ -419,7 +419,7 @@ pub enum Command {
         #[arg(long, value_enum, default_value = "auto")]
         function_layout: FunctionLayoutArg,
     },
-    /// Patch a string table entry (same-length only for now).
+    /// Patch a string table entry (any length; usually rebuilds the table).
     PatchString {
         input: PathBuf,
         #[arg(short = 'o', long)]

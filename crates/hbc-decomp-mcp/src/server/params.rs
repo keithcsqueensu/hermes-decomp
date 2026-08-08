@@ -110,7 +110,7 @@ pub struct PatchStringParams {
     pub id: Option<u32>,
     #[schemars(description = "Existing string value to replace (use this or id)")]
     pub old_value: Option<String>,
-    #[schemars(description = "New string value. A same length value patches in place. A different length rebuilds the string table on legacy and modern files")]
+    #[schemars(description = "New string value, any length. Most patches rebuild the string table (so the output file grows) because packed Hermes storage is shared between entries; only an entry with exclusive storage and an identical byte length is patched in place")]
     pub new_value: String,
     #[schemars(description = "Path to write the patched .hbc")]
     pub output_path: String,
