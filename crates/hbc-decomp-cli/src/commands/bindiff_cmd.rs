@@ -1,7 +1,10 @@
 use crate::cli_args::{FunctionLayoutArg, LayoutArg};
-use crate::tui::diff::{compare_functions, DiffMode, DiffStatus};
-use hbc_decomp::{decompile_function_v2, BytecodeFile, DecompileOptionsV2};
-use std::collections::HashMap;
+use crate::tui::diff::{compare_functions, strip_offsets, DiffMode, DiffStatus};
+use crate::tui::disasm_or_log;
+use hbc_decomp::{decompile_function_v2, BytecodeFile, BytecodeFormat, DecompileOptionsV2};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 pub fn run_bindiff(
@@ -38,15 +41,12 @@ pub fn run_bindiff(
         DiffMode::Assembly
     };
 
-    // Pair positionally within each name group. Both sides are in ascending id
-    // order, so for two builds of the same bundle this pairs like with like;
-    // whatever a group has left over is an add or a remove.
     for (name, ids1) in &groups1 {
-        let ids2 = groups2.get(name).map(Vec::as_slice).unwrap_or(&[]);
-        let paired = ids1.len().min(ids2.len());
+        let empty = Vec::new();
+        let ids2 = groups2.get(name).unwrap_or(&empty);
+        let (pairs, only1, only2) = pair_group(&file1, &format1, ids1, &file2, &format2, ids2);
 
-        for k in 0..paired {
-            let (id1, id2) = (ids1[k], ids2[k]);
+        for (id1, id2) in pairs {
             let status = compare_functions(&file1, &format1, id1, &file2, &format2, id2, mode);
             compared += 1;
             if status != DiffStatus::Identical {
@@ -55,15 +55,20 @@ pub fn run_bindiff(
                 identical += 1;
             }
         }
-        for &id in &ids1[paired..] {
+        for id in only1 {
             removed.push((display_name(name, id), id));
+        }
+        for id in only2 {
+            added.push((display_name(name, id), id));
         }
     }
 
+    // A name present only on the right is entirely new.
     for (name, ids2) in &groups2 {
-        let len1 = groups1.get(name).map_or(0, Vec::len);
-        for &id in ids2.iter().skip(len1) {
-            added.push((display_name(name, id), id));
+        if !groups1.contains_key(name) {
+            for &id in ids2 {
+                added.push((display_name(name, id), id));
+            }
         }
     }
 
@@ -131,6 +136,72 @@ fn build_function_groups(file: &BytecodeFile) -> HashMap<String, Vec<u32>> {
         map.entry(name).or_default().push(i as u32);
     }
     map
+}
+
+// Identity key for pairing: the disassembly with offsets stripped, hashed. Two
+// functions with the same key are byte-identical code wherever they sit.
+fn body_key(file: &BytecodeFile, format: &BytecodeFormat, id: u32) -> u64 {
+    let mut h = DefaultHasher::new();
+    strip_offsets(&disasm_or_log(file, format, id)).hash(&mut h);
+    h.finish()
+}
+
+// Pair up one name group across the two bundles: (pairs, only-in-1, only-in-2).
+//
+// Content first, position second. Pairing purely by position is exact for two
+// builds of the *same* bundle, where ids line up -- but across a version bump a
+// single inserted function shifts every later ordinal, and since ~28k functions
+// in this bundle share the one empty name, that mis-pairs the whole tail and
+// reports tens of thousands of spurious modifications. So identical bodies claim
+// each other first, in order, and only what is left over is matched positionally.
+//
+// A hash collision is harmless: it just yields a pair that `compare_functions`
+// then reports as Modified, exactly as the positional fallback would have.
+fn pair_group(
+    file1: &BytecodeFile,
+    format1: &BytecodeFormat,
+    ids1: &[u32],
+    file2: &BytecodeFile,
+    format2: &BytecodeFormat,
+    ids2: &[u32],
+) -> (Vec<(u32, u32)>, Vec<u32>, Vec<u32>) {
+    // Single-element groups are the overwhelmingly common case (a real name);
+    // skip the hashing entirely.
+    if ids1.len() == 1 && ids2.len() == 1 {
+        return (vec![(ids1[0], ids2[0])], Vec::new(), Vec::new());
+    }
+
+    let mut available: HashMap<u64, VecDeque<u32>> = HashMap::new();
+    for &id in ids2 {
+        available
+            .entry(body_key(file2, format2, id))
+            .or_default()
+            .push_back(id);
+    }
+
+    let mut pairs = Vec::new();
+    let mut left1 = Vec::new();
+    let mut claimed = HashSet::new();
+    for &id1 in ids1 {
+        match available
+            .get_mut(&body_key(file1, format1, id1))
+            .and_then(VecDeque::pop_front)
+        {
+            Some(id2) => {
+                claimed.insert(id2);
+                pairs.push((id1, id2));
+            }
+            None => left1.push(id1),
+        }
+    }
+
+    // Whatever nobody claimed, in id order, paired positionally with the rest.
+    let mut left2: Vec<u32> = ids2.iter().copied().filter(|i| !claimed.contains(i)).collect();
+    let n = left1.len().min(left2.len());
+    for k in 0..n {
+        pairs.push((left1[k], left2[k]));
+    }
+    (pairs, left1.split_off(n), left2.split_off(n))
 }
 
 // Anonymous functions all share the empty name, so it can't identify one on its
