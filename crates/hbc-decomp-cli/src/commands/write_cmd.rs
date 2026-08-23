@@ -164,7 +164,8 @@ pub fn run_add_string(
     let opts = PatchOptions::default();
     let (out, new_id) = add_string(&mut file, &format, &value, identifier, &opts)?;
     std::fs::write(output, out)?;
-    println!("added string id {new_id}");
+    // Bare id on stdout for script consumption; human text on stderr.
+    println!("{new_id}");
     eprintln!(
         "Added string {:?} (id {}, identifier={}) → {}",
         value, new_id, identifier, output.display()
