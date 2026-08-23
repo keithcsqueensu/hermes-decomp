@@ -1,8 +1,8 @@
 # Implementation Plan — Wire String into Instructions
 
-> Status: **draft / not started.** Feasibility: **high** — builds on the existing
-> `add_string`, `patch_string_by_id`, `patch_function_body`, xref and HASM infrastructure.
-> Estimated ~2–3 days total across three commands.
+> Status: **commands 1–2 implemented** on branch `feat/wire-string` (merged to main,
+> PR #3). `retarget-string` (6 tests) and `patch-operand` (3 tests) are complete.
+> Command 3 (`asm --auto-add-strings`) is deferred — independently useful convenience.
 > File-path/line-number citations below are accurate as of the commit this doc was
 > written against; re-grep before relying on an exact line.
 
