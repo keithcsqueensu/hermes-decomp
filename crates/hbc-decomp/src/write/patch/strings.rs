@@ -1062,6 +1062,93 @@ mod tests {
         }
     }
 
+    // Modern v98 layout: append + reparse (mirrors inject_stub_modern_v98).
+    #[test]
+    fn add_string_modern_v98_reparses() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/react-native/v98/expressions/class_basic/bytecode.hbc"
+        );
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let (mut file, format) = load(path);
+        assert!(matches!(
+            file.header.function_header_layout,
+            crate::format::FunctionHeaderLayout::Modern12
+        ));
+        let old_count = file.header.string_count;
+        let opts = PatchOptions::default();
+        let (out, new_id) =
+            add_string(&mut file, &format, "modernTestProp", true, &opts)
+                .expect("add_string on modern v98");
+        assert_eq!(new_id, old_count);
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out)
+            .expect("reparse after modern add_string");
+        assert_eq!(re.header.string_count, old_count + 1);
+        assert_eq!(re.strings[new_id as usize].value, "modernTestProp");
+        assert!(re.strings[new_id as usize].is_identifier);
+        // All function headers must still parse (overflowed large headers
+        // relocated correctly).
+        assert_eq!(
+            re.function_headers.len(),
+            file.function_headers.len(),
+            "function count changed after modern add_string"
+        );
+    }
+
+    // After an append, a function that references existing strings must still
+    // disassemble correctly (downstream offsets intact).
+    #[test]
+    fn add_string_downstream_offsets_intact() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let opts = PatchOptions::default();
+        // Disassemble function 0 before the append.
+        let disasm_opts = crate::DisasmOptions {
+            show_offsets: false,
+            show_labels: true,
+            resolve_strings: true,
+            enable_color: false,
+        };
+        let before = crate::disassemble_function(&file, &format, 0, &disasm_opts)
+            .expect("disasm before add_string");
+        let (out, _) = add_string(&mut file, &format, "offset_check", false, &opts)
+            .expect("add_string for offset check");
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        let fmt2 = BytecodeFormat::for_version(re.header.version).unwrap();
+        let after = crate::disassemble_function(&re, &fmt2, 0, &disasm_opts)
+            .expect("disasm after add_string");
+        assert_eq!(before, after, "function 0 disassembly changed after add_string");
+    }
+
+    // Overflow threshold: exercise the overflow path by appending a string whose
+    // length exceeds the small-entry 8-bit limit (0xff = 255).
+    #[test]
+    fn add_string_overflow_entry() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let opts = PatchOptions::default();
+        // A string of 256 characters exceeds the small-entry length field (max 254).
+        let long_value = "A".repeat(256);
+        let (out, new_id) = add_string(&mut file, &format, &long_value, false, &opts)
+            .expect("add_string with overflow-length string");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert_eq!(re.strings[new_id as usize].value, long_value);
+        // The overflow table must have grown (the new entry must have been routed
+        // through the overflow table since its length >= 0xff).
+        assert!(
+            re.header.overflow_string_count > 0,
+            "expected at least one overflow entry for the long string"
+        );
+    }
+
     // A patch that stays pure ASCII keeps the one-byte encoding.
     #[test]
     fn patch_ascii_stays_one_byte() {
