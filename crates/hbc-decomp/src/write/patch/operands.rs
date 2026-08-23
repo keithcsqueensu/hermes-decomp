@@ -389,4 +389,79 @@ mod tests {
         );
         assert!(result.is_err(), "should reject instruction with no string operand");
     }
+
+    // Regression: string id past the end of the string table should error,
+    // not create invalid bytecode. (Copilot PR #3 finding.)
+    #[test]
+    fn patch_operand_nonexistent_string_id_rejected() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let raw = file.raw_bytes.as_ref().unwrap();
+        let hdr = &file.function_headers[0];
+        let body_off = hdr.offset() as usize;
+        let body_len = hdr.bytecode_size_in_bytes() as usize;
+        // Find an instruction with a string operand.
+        let mut found = None;
+        let mut pos = body_off;
+        while pos < body_off + body_len {
+            if let Ok((insn, _)) = decode_one_at(raw, pos, &format) {
+                if insn.operands.iter().any(|op| {
+                    matches!(op.ty, OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S)
+                }) {
+                    found = Some(pos as u32);
+                    break;
+                }
+                pos += insn.length as usize;
+            } else {
+                break;
+            }
+        }
+        let Some(target_off) = found else { return };
+        let bad_id = file.header.string_count + 999;
+        let opts = PatchOptions::default();
+        let result = patch_string_operand(
+            &mut file,
+            &format,
+            OperandTarget::AbsoluteOffset(target_off),
+            bad_id,
+            None,
+            &opts,
+        );
+        assert!(result.is_err(), "nonexistent string id should be rejected");
+        assert!(
+            result.unwrap_err().to_string().contains("out of range"),
+            "error should mention out of range"
+        );
+    }
+
+    // Regression: insn_offset past the function body should error, not patch
+    // outside the function. (Copilot PR #3 finding.)
+    #[test]
+    fn patch_operand_insn_offset_out_of_bounds_rejected() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let hdr = &file.function_headers[0];
+        let body_size = hdr.bytecode_size_in_bytes();
+        let opts = PatchOptions::default();
+        let result = patch_string_operand(
+            &mut file,
+            &format,
+            OperandTarget::FunctionRelative {
+                function: 0,
+                insn_offset: body_size + 100, // way past the end
+            },
+            0,
+            None,
+            &opts,
+        );
+        assert!(result.is_err(), "insn_offset past body should be rejected");
+        assert!(
+            result.unwrap_err().to_string().contains("function body size"),
+            "error should mention function body size"
+        );
+    }
 }

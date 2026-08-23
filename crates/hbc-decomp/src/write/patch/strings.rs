@@ -1131,6 +1131,33 @@ mod tests {
         );
     }
 
+    // Regression: the overflow detection in retarget_string originally checked
+    // `off == 0x800000` which is unreachable after a 23-bit mask. Verify that
+    // the corrected check (length == 0xff) still catches overflow entries.
+    // We test indirectly: create a file with an overflow entry via add_string
+    // (a 256-char string forces overflow), then try to retarget from/to it.
+    #[test]
+    fn retarget_string_overflow_entry_refused() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let opts = PatchOptions::default();
+        // Append a long string to force an overflow entry.
+        let long_val = "X".repeat(256);
+        let (_, overflow_id) = add_string(&mut file, &format, &long_val, false, &opts)
+            .expect("add long string for overflow test");
+        // Re-parse so sections are fresh for retarget_string.
+        let reparsed = BytecodeFile::parse_auto(file.raw_bytes.as_ref().unwrap()).unwrap();
+        let mut file2 = reparsed;
+        let result = retarget_string(&mut file2, &format, 0, overflow_id, &opts);
+        assert!(result.is_err(), "retarget to overflow entry should fail");
+        assert!(
+            result.unwrap_err().to_string().contains("overflow"),
+            "error should mention overflow"
+        );
+    }
+
     // ---- add_string tests ----
 
     #[test]
