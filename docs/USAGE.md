@@ -119,9 +119,9 @@ refuses to patch Hermes packed strings whose storage overlaps another entry.
 Modern files (HBC 97 and above, with 12 byte headers) are supported for string
 patches (same length and length changing), `add-string`, function body resize,
 and `inject-stub` resize, including relocation of the out of line large function
-headers. All of these are verified on a real v98 Hermes engine. `create` is the
-only write command that still requires a legacy file (v96 or below). The CLI
-prints a note when it detects a modern file.
+headers. All of these are verified on a real v98 Hermes engine. `create` builds a
+minimal file from scratch, legacy layout for v96 and lower and modern layout for
+v97 and newer. The CLI prints a note when a write command targets a modern file.
 
 `patch-operand` rewrites a single string-id operand inside one instruction
 without rebuilding the function body. Addresses by absolute file offset (`--at`)

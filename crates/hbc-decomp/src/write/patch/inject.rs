@@ -193,10 +193,18 @@ fn build_log_entry(
 
     // Keep the injected size a multiple of 4 so downstream functions shift by a
     // 4-aligned delta and their SwitchImm jump tables stay aligned. Pad with the
-    // 1-byte AsyncBreakCheck (a runtime no-op) when available.
-    if let Some(op_abc) = opc("AsyncBreakCheck") {
-        let injected_len = encode_function_body(format, &seq)?.len();
-        let pad = (4 - injected_len % 4) % 4;
+    // 1-byte AsyncBreakCheck (a runtime no-op). If padding is actually required but
+    // this version has no AsyncBreakCheck, fail loudly rather than silently emit a
+    // non-4-aligned prologue that misaligns every downstream large header (I5 / Q8).
+    let injected_len = encode_function_body(format, &seq)?.len();
+    if injected_len % 4 != 0 {
+        let op_abc = opc("AsyncBreakCheck").ok_or_else(|| {
+            Error::Write(format!(
+                "cannot 4-byte-align injected prologue ({injected_len} bytes) — this \
+                 bytecode version has no AsyncBreakCheck instruction to pad with"
+            ))
+        })?;
+        let pad = 4 - injected_len % 4;
         for _ in 0..pad {
             seq.push(mk(op_abc, vec![]));
         }
@@ -318,5 +326,82 @@ mod tests {
                 "function count changed for {kind:?}"
             );
         }
+    }
+
+    // The two tests above are fixture-gated and skip in CI. The tests below build
+    // a real legacy image with `create_minimal`, exercising the legacy LogEntry
+    // branch and its precondition errors that WRITE_PATH_GUIDE flags as untested.
+    use crate::write::create::{create_minimal, CreateOptions};
+
+    fn make_legacy(strings: Vec<String>) -> (BytecodeFile, BytecodeFormat) {
+        let bytes = create_minimal(&CreateOptions {
+            version: 96,
+            strings,
+            ..Default::default()
+        })
+        .expect("create_minimal v96");
+        let file = BytecodeFile::parse_auto(&bytes).expect("parse created file");
+        let format = BytecodeFormat::for_version_or_latest(96).expect("format").0;
+        (file, format)
+    }
+
+    // Legacy LogEntry: a non-overflowed v96 function with a "print" string in the
+    // table takes the legacy frame/cache branch of build_log_entry, grows, and
+    // reparses.
+    #[test]
+    fn legacy_log_entry_grows_and_reparses() {
+        let (mut file, format) = make_legacy(vec!["global".into(), "print".into()]);
+        // Skip if this version lacks any opcode the log prologue needs.
+        let has = |n: &str| format.definitions.iter().any(|d| d.name == n);
+        if !["GetGlobalObject", "TryGetById", "LoadConstUndefined", "LoadConstString", "Call2"]
+            .iter()
+            .all(|n| has(n))
+        {
+            return;
+        }
+        assert!(matches!(
+            file.function_headers[0],
+            FunctionHeader::Legacy(_)
+        ));
+        let before = file.function_headers[0].bytecode_size_in_bytes();
+        let out = inject_stub(&mut file, &format, 0, InjectStubKind::LogEntry, &PatchOptions::default())
+            .expect("legacy log entry inject");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).expect("reparse after legacy log inject");
+        assert!(
+            re.function_headers[0].bytecode_size_in_bytes() > before,
+            "the injected prologue must grow the body"
+        );
+    }
+
+    // LogEntry with no "print" string in the table must be rejected before any
+    // bytes are written.
+    #[test]
+    fn log_entry_without_print_string_errors() {
+        let (mut file, format) = make_legacy(vec!["global".into()]);
+        let err = inject_stub(&mut file, &format, 0, InjectStubKind::LogEntry, &PatchOptions::default())
+            .expect_err("must fail without a print string");
+        assert!(
+            err.to_string().contains("print"),
+            "error should mention the missing print string, got: {err}"
+        );
+    }
+
+    // An overflowed legacy function is refused by build_log_entry. We set the
+    // overflow flag on the in-memory header to hit the guard deterministically
+    // without needing a real overflowed fixture.
+    #[test]
+    fn overflowed_legacy_log_entry_refused() {
+        let (mut file, format) = make_legacy(vec!["global".into(), "print".into()]);
+        match &mut file.function_headers[0] {
+            FunctionHeader::Legacy(leg) => leg.flags |= crate::format::FLAG_OVERFLOWED,
+            _ => panic!("expected a legacy function header"),
+        }
+        let err = inject_stub(&mut file, &format, 0, InjectStubKind::LogEntry, &PatchOptions::default())
+            .expect_err("overflowed legacy must be refused");
+        assert!(
+            err.to_string().contains("overflow"),
+            "error should mention overflow, got: {err}"
+        );
     }
 }

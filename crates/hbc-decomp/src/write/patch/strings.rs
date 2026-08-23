@@ -263,16 +263,10 @@ pub fn retarget_string(
         ));
     }
 
-    // Warn on cross-kind retarget.
+    // A cross-kind retarget (from_id and to_id differ in is_identifier) is
+    // allowed but noteworthy; the CLI warns. The library stays silent so
+    // programmatic callers get no unsolicited stderr output.
     let from_is_id = file.strings[from_id as usize].is_identifier;
-    let to_is_id = file.strings[to_id as usize].is_identifier;
-    if from_is_id != to_is_id {
-        eprintln!(
-            "warning: retarget crosses string/identifier boundary \
-             (from_id {} is_identifier={}, to_id {} is_identifier={})",
-            from_id, from_is_id, to_id, to_is_id
-        );
-    }
 
     // Copy the 4-byte entry.
     let entry_bytes: [u8; 4] = raw[to_slot..to_slot + 4].try_into().unwrap();
@@ -456,8 +450,10 @@ fn patch_string_resize(
     // body offset shifts. The small function header is before the region and
     // keeps its slot; we edit it in place. When a function is overflowed the
     // small header only holds a pointer to an out-of-line large header (also in
-    // the moved region): we shift that pointer and the large header's own
-    // offset fields, then shift the offsets in its exception handler table.
+    // the moved region): we shift that pointer and the large header's own body
+    // offset (plus its info offset for legacy). Exception-handler tables are
+    // body-relative and are NOT rewritten here — a whole-region shift moves the
+    // table and the code it points into together, so those offsets stay valid.
     let fh_sec = section_offset(file, "function_headers")
         .ok_or_else(|| Error::Write("function_headers section missing".into()))?
         as usize;
@@ -589,16 +585,9 @@ pub fn add_string(
     }
     let old_region_len = array_off - kinds_off;
 
-    // Duplicate check: warn (to stderr) if value already exists but still append.
-    for (i, s) in file.strings.iter().enumerate() {
-        if s.value == value && s.is_identifier == is_identifier {
-            eprintln!(
-                "note: string {:?} already exists at id {} (is_identifier={}); appending anyway as id {}",
-                value, i, is_identifier, new_id
-            );
-            break;
-        }
-    }
+    // A duplicate value is allowed (ids are append-only, so it still gets a new
+    // id); the CLI notes it. The library stays silent so programmatic callers
+    // get no unsolicited stderr output.
 
     // ---- Rebuild storage + small/overflow tables (N+1 entries) ----
     let mut new_storage: Vec<u8> = Vec::new();
@@ -1408,5 +1397,65 @@ mod tests {
         let re = BytecodeFile::parse_auto(&out).unwrap();
         assert!(!re.strings[id].is_utf16, "ascii value must stay one byte");
         assert_eq!(re.strings[id].value, "PLAINASCII");
+    }
+
+    // ---- patch_string_replace (--old) tests ----
+    //
+    // WRITE_PATH_GUIDE flags patch_string_replace (the by-value entry point behind the
+    // CLI's --old) as having no test. These build a real image with create_minimal
+    // so they run in CI.
+    fn make_v96(strings: Vec<String>) -> (BytecodeFile, BytecodeFormat) {
+        let bytes = crate::write::create::create_minimal(&crate::write::create::CreateOptions {
+            version: 96,
+            strings,
+            ..Default::default()
+        })
+        .expect("create_minimal v96");
+        let file = BytecodeFile::parse_auto(&bytes).expect("parse created file");
+        let format = BytecodeFormat::for_version_or_latest(96).expect("format").0;
+        (file, format)
+    }
+
+    // Same-length replace located by value: the old value is found and rewritten.
+    #[test]
+    fn patch_string_replace_by_value_same_length() {
+        let (mut file, format) = make_v96(vec!["global".into(), "hello".into()]);
+        let out = patch_string_replace(&mut file, &format, "hello", "world", &PatchOptions::default())
+            .expect("replace hello→world");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert!(re.strings.iter().any(|s| s.value == "world"));
+        assert!(!re.strings.iter().any(|s| s.value == "hello"));
+    }
+
+    // Length-changing replace located by value: the lookup path also drives the
+    // resize/rebuild.
+    #[test]
+    fn patch_string_replace_by_value_grow() {
+        let (mut file, format) = make_v96(vec!["global".into(), "hello".into()]);
+        let out = patch_string_replace(
+            &mut file,
+            &format,
+            "hello",
+            "hello_world_longer",
+            &PatchOptions::default(),
+        )
+        .expect("replace hello→hello_world_longer");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert!(re.strings.iter().any(|s| s.value == "hello_world_longer"));
+        assert!(!re.strings.iter().any(|s| s.value == "hello"));
+    }
+
+    // A value not in the table is an error, not a panic or silent no-op.
+    #[test]
+    fn patch_string_replace_not_found_errors() {
+        let (mut file, format) = make_v96(vec!["global".into()]);
+        let err = patch_string_replace(&mut file, &format, "nonexistent", "x", &PatchOptions::default())
+            .expect_err("missing old value must error");
+        assert!(
+            err.to_string().contains("not found"),
+            "error should say the value was not found, got: {err}"
+        );
     }
 }

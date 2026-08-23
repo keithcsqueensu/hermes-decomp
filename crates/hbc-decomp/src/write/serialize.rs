@@ -87,9 +87,13 @@ pub fn build_minimal_legacy(
     strings: &[String],
     global_body: &[u8],
 ) -> Result<Vec<u8>> {
+    // Legacy layout only. `create` emits modern layout for v97 and newer, which
+    // `build_minimal_modern` handles; `create_minimal` dispatches there before
+    // reaching this builder, so hitting this guard means `build_minimal_legacy`
+    // was called directly with a modern version.
     if version >= 97 {
         return Err(Error::Write(
-            "create_minimal: modern headers (v>=97) not yet supported, use v96 or lower".into(),
+            "build_minimal_legacy: v97 and newer use modern layout (build_minimal_modern)".into(),
         ));
     }
 

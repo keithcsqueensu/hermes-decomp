@@ -30,34 +30,61 @@ pub fn patch_function_body(
     let encoded = encode_function_body(format, new_body)?;
     let delta = encoded.len() as i64 - old_size as i64;
 
+    // A size-changing edit shifts every body-relative offset. Exception-handler
+    // tables (start/end/target) are body-relative and are NOT relocated yet
+    // (WRITE_PATH_GUIDE Q3), so refuse to resize a function that declares one rather than
+    // ship stale handler offsets. Keyed on the parser's own "has handlers" gate,
+    // FLAG_HAS_EXCEPTION_HANDLER (bit 3) — this is precise for both layouts and,
+    // unlike `info_offset != 0`, does not over-reject debug-only legacy functions
+    // or (fatally) every overflowed modern function. Same-size edits are allowed:
+    // they neither move the table nor shift body offsets.
+    if delta != 0 {
+        if let Some(fh) = file.function_headers.get(function_id as usize) {
+            if fh.flags() & crate::format::FLAG_HAS_EXCEPTION_HANDLER != 0 {
+                return Err(Error::Write(format!(
+                    "function {function_id} has an exception-handler table; \
+                     size-changing edits are not supported (handler offsets are \
+                     body-relative and would be left stale). See WRITE_PATH_GUIDE Q3."
+                )));
+            }
+        }
+    }
+
     // Keep the size delta a multiple of 4 so the FunctionInfo region that follows
     // the code stays 4 byte aligned. Pad with the 1 byte AsyncBreakCheck (a runtime
     // no-op) inserted just before the terminator so the function still ends on a
-    // terminating instruction.
+    // terminating instruction. When padding is required but this bytecode version
+    // has no AsyncBreakCheck to pad with, fail loudly rather than silently emit a
+    // non-4-aligned delta that misaligns every downstream large header (I5 / Q8).
     if delta != 0 && delta.rem_euclid(4) != 0 {
-        if let Some(op_abc) = format
+        let Some(op_abc) = format
             .definitions
             .iter()
             .find(|d| d.name == "AsyncBreakCheck")
             .map(|d| d.opcode)
-        {
-            let pad = (4 - delta.rem_euclid(4)) as usize;
-            let mut padded = new_body.to_vec();
-            let insert_at = padded.len().saturating_sub(1);
-            for _ in 0..pad {
-                padded.insert(
-                    insert_at,
-                    Instruction {
-                        offset: 0,
-                        opcode: op_abc,
-                        operands: vec![],
-                        length: 1,
-                    },
-                );
-            }
-            let encoded = encode_function_body(format, &padded)?;
-            return patch_function_bytes(file, function_id, &encoded);
+        else {
+            return Err(Error::Write(format!(
+                "cannot 4-byte-align function {function_id} body (size delta {delta} \
+                 is not a multiple of 4) — this bytecode version has no \
+                 AsyncBreakCheck instruction to pad with"
+            )));
+        };
+        let pad = (4 - delta.rem_euclid(4)) as usize;
+        let mut padded = new_body.to_vec();
+        let insert_at = padded.len().saturating_sub(1);
+        for _ in 0..pad {
+            padded.insert(
+                insert_at,
+                Instruction {
+                    offset: 0,
+                    opcode: op_abc,
+                    operands: vec![],
+                    length: 1,
+                },
+            );
         }
+        let encoded = encode_function_body(format, &padded)?;
+        return patch_function_bytes(file, function_id, &encoded);
     }
     patch_function_bytes(file, function_id, &encoded)
 }
@@ -319,5 +346,206 @@ mod tests {
         let re = BytecodeFile::parse_auto(&out).unwrap();
         let body2 = re.decode_function_instructions(&format, 0).unwrap();
         assert_eq!(body.len(), body2.len());
+    }
+
+    // The fixture-based test above silently skips without a checked-in .hbc. The
+    // tests below build a real image with `create_minimal`, so they run in CI and
+    // exercise the grow / shrink / alignment-pad / modern-resize branches that
+    // WRITE_PATH_GUIDE flags as never independently tested.
+    use crate::write::create::{create_minimal, CreateOptions};
+
+    fn make(version: u32) -> (BytecodeFile, BytecodeFormat) {
+        let bytes = create_minimal(&CreateOptions {
+            version,
+            ..Default::default()
+        })
+        .expect("create_minimal");
+        let file = BytecodeFile::parse_auto(&bytes).expect("parse created file");
+        let format = BytecodeFormat::for_version_or_latest(version)
+            .expect("format")
+            .0;
+        (file, format)
+    }
+
+    // Grow a body by a 4-aligned delta: the size field is rewritten and the image
+    // reparses with the larger instruction stream.
+    #[test]
+    fn grow_body_reparses() {
+        let (mut file, format) = make(96);
+        let old_size = file.function_headers[0].bytecode_size_in_bytes();
+        let mut body = file.decode_function_instructions(&format, 0).unwrap();
+        // Duplicate the leading (non-terminator) instruction twice → +4 bytes.
+        let first = body[0].clone();
+        body.insert(0, first.clone());
+        body.insert(0, first);
+        let out =
+            patch_function_body(&mut file, &format, 0, &body, &PatchOptions::default()).unwrap();
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert_eq!(re.function_headers[0].bytecode_size_in_bytes(), old_size + 4);
+        let body2 = re.decode_function_instructions(&format, 0).unwrap();
+        assert_eq!(body2.len(), body.len());
+    }
+
+    // Shrink a previously-grown body: the size field decreases and the image still
+    // reparses.
+    #[test]
+    fn shrink_body_reparses() {
+        let (mut file, format) = make(96);
+        let mut body = file.decode_function_instructions(&format, 0).unwrap();
+        let orig_len = body.len();
+        let first = body[0].clone();
+        body.insert(0, first.clone());
+        body.insert(0, first);
+        let grown =
+            patch_function_body(&mut file, &format, 0, &body, &PatchOptions::default()).unwrap();
+        let mut file2 = BytecodeFile::parse_auto(&grown).unwrap();
+        let grown_size = file2.function_headers[0].bytecode_size_in_bytes();
+        let mut small = file2.decode_function_instructions(&format, 0).unwrap();
+        small.drain(0..2); // remove the two duplicates
+        assert_eq!(small.len(), orig_len);
+        let out =
+            patch_function_body(&mut file2, &format, 0, &small, &PatchOptions::default()).unwrap();
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert!(re.function_headers[0].bytecode_size_in_bytes() < grown_size);
+    }
+
+    // A non-4-aligned raw delta must be padded (AsyncBreakCheck) so the emitted
+    // size delta is a multiple of 4 (I5).
+    #[test]
+    fn alignment_pad_makes_delta_4_aligned() {
+        let (mut file, format) = make(96);
+        if !format.definitions.iter().any(|d| d.name == "AsyncBreakCheck") {
+            return; // pad instruction unavailable on this version
+        }
+        let old_size = file.function_headers[0].bytecode_size_in_bytes();
+        let mut body = file.decode_function_instructions(&format, 0).unwrap();
+        // Add one 2-byte instruction → raw delta +2 (not 4-aligned).
+        let first = body[0].clone();
+        body.insert(0, first);
+        let out =
+            patch_function_body(&mut file, &format, 0, &body, &PatchOptions::default()).unwrap();
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        let delta = re.function_headers[0].bytecode_size_in_bytes() as i64 - old_size as i64;
+        assert_eq!(delta % 4, 0, "size delta {delta} must be 4-aligned after padding");
+        assert!(delta >= 4, "the +2 body should have been padded up to +4, got {delta}");
+    }
+
+    // Modern (v98) global is overflowed, so a body resize goes through
+    // resize_overflowed_function on the modern large-header layout.
+    #[test]
+    fn modern_v98_overflowed_resize_reparses() {
+        let (mut file, format) = make(98);
+        assert!(matches!(
+            file.header.function_header_layout,
+            crate::format::FunctionHeaderLayout::Modern12
+        ));
+        let old_size = file.function_headers[0].bytecode_size_in_bytes();
+        let mut body = file.decode_function_instructions(&format, 0).unwrap();
+        let first = body[0].clone();
+        body.insert(0, first.clone());
+        body.insert(0, first);
+        let out =
+            patch_function_body(&mut file, &format, 0, &body, &PatchOptions::default()).unwrap();
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert_eq!(re.function_headers.len(), file.function_headers.len());
+        assert_eq!(re.function_headers[0].bytecode_size_in_bytes(), old_size + 4);
+    }
+
+    // A grow must shift debug_info_offset (in the header and in the model) by the
+    // body delta. create_minimal images carry no debug info, so this needs a real
+    // fixture and skips when one is absent.
+    #[test]
+    fn debug_info_offset_shifts_on_grow() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/react-native/v96/expressions/generator/bytecode.hbc"
+        );
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let bytes = std::fs::read(path).unwrap();
+        let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
+        if file.header.debug_info_offset == 0 {
+            return;
+        }
+        // The Q3 guard rejects size-changing edits on functions that declare an
+        // exception-handler table; skip if function 0 happens to have one.
+        if file.function_headers[0].flags() & crate::format::FLAG_HAS_EXCEPTION_HANDLER != 0 {
+            return;
+        }
+        let format = BytecodeFormat::for_version(file.header.version).unwrap();
+        let old_debug = file.header.debug_info_offset;
+        let old_size = file.function_headers[0].bytecode_size_in_bytes();
+        let mut body = file.decode_function_instructions(&format, 0).unwrap();
+        let first = body[0].clone();
+        body.insert(0, first.clone());
+        body.insert(0, first);
+        let out =
+            patch_function_body(&mut file, &format, 0, &body, &PatchOptions::default()).unwrap();
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        let delta = re.function_headers[0].bytecode_size_in_bytes() as i64 - old_size as i64;
+        assert!(delta > 0);
+        assert_eq!(
+            re.header.debug_info_offset as i64,
+            old_debug as i64 + delta,
+            "debug_info_offset in the reparsed image must shift by the body delta"
+        );
+        assert_eq!(
+            file.header.debug_info_offset as i64,
+            old_debug as i64 + delta,
+            "the in-memory header must be updated too"
+        );
+    }
+
+    // Q4/Q3 guard: a size-changing edit on a function that declares an
+    // exception-handler table is rejected (handler offsets are body-relative and
+    // not yet relocated). A same-size edit is still allowed.
+    #[test]
+    fn size_change_on_function_with_handlers_is_rejected() {
+        let (mut file, format) = make(96);
+        match &mut file.function_headers[0] {
+            FunctionHeader::Legacy(l) => l.flags |= crate::format::FLAG_HAS_EXCEPTION_HANDLER,
+            FunctionHeader::Modern(m) => m.flags |= crate::format::FLAG_HAS_EXCEPTION_HANDLER,
+        }
+        let mut body = file.decode_function_instructions(&format, 0).unwrap();
+        let first = body[0].clone();
+        body.insert(0, first.clone());
+        body.insert(0, first);
+        let err = patch_function_body(&mut file, &format, 0, &body, &PatchOptions::default())
+            .expect_err("size change on a handler function must be rejected");
+        assert!(
+            err.to_string().contains("exception-handler"),
+            "error should mention the exception-handler table, got: {err}"
+        );
+        // The guard did not mutate the file, so a same-size edit still works.
+        let same = file.decode_function_instructions(&format, 0).unwrap();
+        patch_function_body(&mut file, &format, 0, &same, &PatchOptions::default())
+            .expect("same-size edit on a handler function should be allowed");
+    }
+
+    // Q8: when a size-changing edit needs 4-byte padding but the version has no
+    // AsyncBreakCheck (v40–60), fail loudly instead of silently emitting a
+    // non-4-aligned delta.
+    #[test]
+    fn missing_asyncbreakcheck_pad_is_hard_error() {
+        let (mut file, format) = make(56); // v56 has no AsyncBreakCheck
+        assert!(
+            !format.definitions.iter().any(|d| d.name == "AsyncBreakCheck"),
+            "v56 unexpectedly has AsyncBreakCheck"
+        );
+        let mut body = file.decode_function_instructions(&format, 0).unwrap();
+        // Add one 2-byte instruction → delta +2, not a multiple of 4.
+        let first = body[0].clone();
+        body.insert(0, first);
+        let err = patch_function_body(&mut file, &format, 0, &body, &PatchOptions::default())
+            .expect_err("non-4-aligned delta with no AsyncBreakCheck must hard-error");
+        assert!(
+            err.to_string().contains("AsyncBreakCheck"),
+            "error should mention AsyncBreakCheck, got: {err}"
+        );
     }
 }

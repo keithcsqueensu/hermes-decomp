@@ -93,7 +93,7 @@ pub fn patch_string_operand(
     new_string_id: u32,
     operand_index: Option<usize>,
     _opts: &PatchOptions,
-) -> Result<Vec<u8>> {
+) -> Result<(Vec<u8>, String, Option<String>)> {
     let raw = file
         .raw_bytes
         .clone()
@@ -213,14 +213,37 @@ pub fn patch_string_operand(
         .get(new_string_id as usize)
         .map(|s| s.value.as_str())
         .unwrap_or("<unknown>");
-    eprintln!(
+    // Status line for the CLI to print; the library itself does not write to
+    // stderr so programmatic callers get no unsolicited output.
+    let status = format!(
         "{} at 0x{:x}: operand {} ({:?}) {} ({:?}) → {} ({:?})",
         def.name, abs_off, op_idx, op_ty, old_id, old_str, new_string_id, new_str
     );
 
+    // Q9: `*ById`-family opcodes reference a property NAME, which the runtime
+    // resolves via the identifier hash; pointing one at a non-identifier string
+    // silently breaks the lookup. Warn (never error). Across every version
+    // (v40–99) each opcode whose name contains "ById" has exactly one string
+    // operand — the property name — so the substring test matches precisely that
+    // family. Returned for the CLI to print (library stays silent, cf. Q5).
+    let new_is_identifier = file
+        .strings
+        .get(new_string_id as usize)
+        .map(|s| s.is_identifier)
+        .unwrap_or(false);
+    let warning = if def.name.contains("ById") && !new_is_identifier {
+        Some(format!(
+            "warning: {} takes a property name (identifier), but string id {} ({:?}) \
+             is not an identifier; the property lookup may fail at runtime",
+            def.name, new_string_id, new_str
+        ))
+    } else {
+        None
+    };
+
     let out = finalize_raw_image(out)?;
     file.raw_bytes = Some(out.clone());
-    Ok(out)
+    Ok((out, status, warning))
 }
 
 #[cfg(test)]
@@ -284,7 +307,7 @@ mod tests {
             return;
         }
         let opts = PatchOptions::default();
-        let out = patch_string_operand(
+        let (out, _msg, _warn) = patch_string_operand(
             &mut file,
             &format,
             OperandTarget::AbsoluteOffset(target_off),
@@ -334,7 +357,7 @@ mod tests {
         }
         let Some(rel_off) = found else { return };
         let opts = PatchOptions::default();
-        let out = patch_string_operand(
+        let (out, _msg, _warn) = patch_string_operand(
             &mut file,
             &format,
             OperandTarget::FunctionRelative {
@@ -463,5 +486,99 @@ mod tests {
             result.unwrap_err().to_string().contains("function body size"),
             "error should mention function body size"
         );
+    }
+
+    // ---- Q9: *ById property-name warning ----
+    //
+    // These build a real image with create_minimal (all strings are non-identifier
+    // kind), so they run in CI. A GetById whose property-name operand is repointed
+    // at a non-identifier string yields a warning; a non-*ById opcode does not.
+    use crate::file::Instruction;
+    use crate::opcode::OperandValue;
+    use crate::write::create::{create_minimal, CreateOptions};
+    use crate::write::encode::encode_function_body;
+
+    fn op(ty: OperandType, value: OperandValue) -> Operand {
+        Operand { ty, value }
+    }
+    fn insn(format: &BytecodeFormat, name: &str, operands: Vec<Operand>) -> Instruction {
+        let opcode = format
+            .definitions
+            .iter()
+            .find(|d| d.name == name)
+            .unwrap_or_else(|| panic!("opcode {name} missing"))
+            .opcode;
+        Instruction { offset: 0, opcode, operands, length: 0 }
+    }
+
+    // Build a v96 image whose global body is `body`, with the given strings.
+    fn make_with_body(body: &[Instruction], strings: Vec<String>) -> (BytecodeFile, BytecodeFormat) {
+        let format = BytecodeFormat::for_version_or_latest(96).unwrap().0;
+        let encoded = encode_function_body(&format, body).expect("encode body");
+        let bytes = create_minimal(&CreateOptions {
+            version: 96,
+            global_body: encoded,
+            strings,
+        })
+        .expect("create_minimal");
+        let file = BytecodeFile::parse_auto(&bytes).expect("parse");
+        (file, format)
+    }
+
+    #[test]
+    fn getbyid_to_non_identifier_warns() {
+        // GetById r0, r0, cache 0, str 0 ; Ret r0
+        let format0 = BytecodeFormat::for_version_or_latest(96).unwrap().0;
+        let body = vec![
+            insn(&format0, "GetById", vec![
+                op(OperandType::Reg8, OperandValue::U8(0)),
+                op(OperandType::Reg8, OperandValue::U8(0)),
+                op(OperandType::UInt8, OperandValue::U8(0)),
+                op(OperandType::UInt16S, OperandValue::U16(0)),
+            ]),
+            insn(&format0, "Ret", vec![op(OperandType::Reg8, OperandValue::U8(0))]),
+        ];
+        let (mut file, format) = make_with_body(&body, vec!["global".into(), "other".into()]);
+        // Both strings are non-identifier (create emits only String kind).
+        assert!(!file.strings[1].is_identifier);
+        let func0 = file.function_headers[0].offset();
+        let (_out, status, warning) = patch_string_operand(
+            &mut file,
+            &format,
+            OperandTarget::AbsoluteOffset(func0),
+            1,
+            None,
+            &PatchOptions::default(),
+        )
+        .expect("patch GetById operand");
+        assert!(status.contains("GetById"));
+        let w = warning.expect("expected a *ById non-identifier warning");
+        assert!(w.contains("identifier"), "warning should mention identifier, got: {w}");
+        assert!(w.contains("GetById"), "warning should name the opcode, got: {w}");
+    }
+
+    #[test]
+    fn loadconststring_to_non_identifier_does_not_warn() {
+        // LoadConstString is not a *ById opcode → no property-name warning.
+        let format0 = BytecodeFormat::for_version_or_latest(96).unwrap().0;
+        let body = vec![
+            insn(&format0, "LoadConstString", vec![
+                op(OperandType::Reg8, OperandValue::U8(0)),
+                op(OperandType::UInt16S, OperandValue::U16(0)),
+            ]),
+            insn(&format0, "Ret", vec![op(OperandType::Reg8, OperandValue::U8(0))]),
+        ];
+        let (mut file, format) = make_with_body(&body, vec!["global".into(), "other".into()]);
+        let func0 = file.function_headers[0].offset();
+        let (_out, _status, warning) = patch_string_operand(
+            &mut file,
+            &format,
+            OperandTarget::AbsoluteOffset(func0),
+            1,
+            None,
+            &PatchOptions::default(),
+        )
+        .expect("patch LoadConstString operand");
+        assert!(warning.is_none(), "non-*ById opcode must not warn, got: {warning:?}");
     }
 }

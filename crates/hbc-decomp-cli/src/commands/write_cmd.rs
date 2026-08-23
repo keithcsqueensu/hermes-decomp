@@ -25,9 +25,9 @@ fn warn_modern_write(file: &hbc_decomp::BytecodeFile) {
         eprintln!(
             "note: modern HBC v{} (version 97 or newer, 12 byte headers). String patches,\n  \
              function body resize and stub injection are all supported and verified on a real\n  \
-             engine, including length changes, identifiers and UTF-16. Building a modern file\n  \
-             from scratch with create is not supported yet and stays legacy only.\n  \
-             To run modern output yourself, build the external verifier with\n  \
+             engine, including length changes, identifiers and UTF-16. `create` builds a modern\n  \
+             file from scratch too: legacy layout for v96 and lower, modern layout for v97 and\n  \
+             newer. To run modern output yourself, build the external verifier with\n  \
              scripts/build/build_hermes_v98_toolchain.sh on macOS.",
             file.header.version
         );
@@ -195,7 +195,11 @@ pub fn run_patch_operand(
     };
 
     let opts = PatchOptions::default();
-    let out = patch_string_operand(&mut file, &format, target, new_id, operand_index, &opts)?;
+    let (out, status, warning) = patch_string_operand(&mut file, &format, target, new_id, operand_index, &opts)?;
+    if let Some(w) = warning {
+        eprintln!("{w}");
+    }
+    eprintln!("{status}");
     std::fs::write(output, out)?;
     Ok(())
 }
@@ -241,15 +245,29 @@ pub fn run_retarget_string(
     };
 
     let opts = PatchOptions::default();
-    // retarget_string validates both ids before accessing the string table,
-    // so we read values after it succeeds to avoid panicking on bad ids.
+    // retarget_string validates both ids before accessing the string table, so
+    // read values through .get() to avoid panicking on bad ids. Capture the
+    // kinds before the call for the cross-kind note (retarget never changes
+    // is_identifier, so before/after are equal).
     let to_val = file
         .strings
         .get(tid as usize)
         .map(|s| s.value.clone())
         .unwrap_or_default();
+    let from_is_id = file.strings.get(fid as usize).map(|s| s.is_identifier);
+    let to_is_id = file.strings.get(tid as usize).map(|s| s.is_identifier);
     let out = retarget_string(&mut file, &format, fid, tid, &opts)?;
     std::fs::write(output, out)?;
+    // Cross-kind retarget note (moved here from the library layer).
+    if let (Some(f), Some(t)) = (from_is_id, to_is_id) {
+        if f != t {
+            eprintln!(
+                "warning: retarget crosses string/identifier boundary \
+                 (from_id {} is_identifier={}, to_id {} is_identifier={})",
+                fid, f, tid, t
+            );
+        }
+    }
     eprintln!(
         "Retargeted string {} → {} ({:?}) → {}",
         fid, tid, to_val, output.display()
@@ -271,8 +289,20 @@ pub fn run_add_string(
     let format = load_format(&file, format_version)?;
     warn_modern_write(&file);
     let opts = PatchOptions::default();
+    // Duplicate note (moved here from the library layer): find the first
+    // existing entry with the same value and kind before appending.
+    let dup = file
+        .strings
+        .iter()
+        .position(|s| s.value == value && s.is_identifier == identifier);
     let (out, new_id) = add_string(&mut file, &format, &value, identifier, &opts)?;
     std::fs::write(output, out)?;
+    if let Some(i) = dup {
+        eprintln!(
+            "note: string {:?} already exists at id {} (is_identifier={}); appending anyway as id {}",
+            value, i, identifier, new_id
+        );
+    }
     // Bare id on stdout for script consumption; human text on stderr.
     println!("{new_id}");
     eprintln!(
@@ -369,6 +399,9 @@ pub fn run_create(version: u32, output: &PathBuf, strings: Vec<String>) -> Resul
         ..Default::default()
     };
     let bytes = create_minimal(&opts)?;
+    if let Ok(file) = hbc_decomp::BytecodeFile::parse_auto(&bytes) {
+        warn_modern_write(&file);
+    }
     std::fs::write(output, bytes)?;
     eprintln!("Created minimal HBC v{version} → {}", output.display());
     Ok(())

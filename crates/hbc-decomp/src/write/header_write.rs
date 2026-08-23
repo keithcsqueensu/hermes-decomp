@@ -104,10 +104,12 @@ pub fn patch_legacy_small_header_offset_size(
     Ok(())
 }
 
-// Shift the body `offset` field (bits 0..24) of a Modern12 function header by
-// `delta`, reading and rewriting the field in place so it does not depend on
-// any decoded value. Only valid for non-overflowed modern headers, where this
-// field is the real body offset.
+// Shift the body `offset` field (bits 0..=24, a 25-bit field) of a Modern12
+// function header by `delta`, reading and rewriting the field in place so it
+// does not depend on any decoded value. Only valid for non-overflowed modern
+// headers, where this field is the real body offset. (When overflowed, the same
+// bits hold a packed large-header pointer whose offset portion is only 24 bits
+// — see `read_modern_large_pointer`.)
 pub fn shift_modern_small_header_offset(slot: &mut [u8], delta: i64) -> Result<()> {
     if slot.len() < 12 {
         return Err(Error::Write("modern function header slot too small".into()));
