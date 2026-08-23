@@ -3,9 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use hbc_decomp::{
-    create_minimal, emit_hasm_function, generate_frida_for_file, inject_stub, parse_hasm_with_context,
-    patch_function_body, patch_string_by_id, patch_string_replace, scan_secrets,
-    format_secrets_report, CreateOptions, FridaHookOptions, InjectStubKind, PatchOptions,
+    add_string, create_minimal, emit_hasm_function, generate_frida_for_file, inject_stub,
+    parse_hasm_with_context, patch_function_body, patch_string_by_id, patch_string_replace,
+    scan_secrets, format_secrets_report, CreateOptions, FridaHookOptions, InjectStubKind,
+    PatchOptions,
 };
 
 use crate::cli_args::{FunctionLayoutArg, LayoutArg};
@@ -144,6 +145,30 @@ pub fn run_emit_hasm(
     } else {
         print!("{text}");
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_add_string(
+    input: &PathBuf,
+    output: &PathBuf,
+    value: String,
+    identifier: bool,
+    layout: LayoutArg,
+    function_layout: FunctionLayoutArg,
+    format_version: Option<u32>,
+) -> Result<(), BoxErr> {
+    let mut file = load_file(input, layout, function_layout)?;
+    let format = load_format(&file, format_version)?;
+    warn_modern_write(&file);
+    let opts = PatchOptions::default();
+    let (out, new_id) = add_string(&mut file, &format, &value, identifier, &opts)?;
+    std::fs::write(output, out)?;
+    println!("added string id {new_id}");
+    eprintln!(
+        "Added string {:?} (id {}, identifier={}) → {}",
+        value, new_id, identifier, output.display()
+    );
     Ok(())
 }
 

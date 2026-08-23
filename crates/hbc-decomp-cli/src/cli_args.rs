@@ -419,6 +419,24 @@ pub enum Command {
         #[arg(long, value_enum, default_value = "auto")]
         function_layout: FunctionLayoutArg,
     },
+    /// Append a new string to the string table (returns the new id).
+    AddString {
+        input: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        /// The string value to append.
+        #[arg(long)]
+        value: String,
+        /// Mark the new string as an identifier (property/symbol name with Jenkins hash).
+        #[arg(long)]
+        identifier: bool,
+        #[arg(long)]
+        format_version: Option<u32>,
+        #[arg(long, value_enum, default_value = "auto")]
+        layout: LayoutArg,
+        #[arg(long, value_enum, default_value = "auto")]
+        function_layout: FunctionLayoutArg,
+    },
     /// Patch a string table entry (any length; usually rebuilds the table).
     PatchString {
         input: PathBuf,

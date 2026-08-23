@@ -448,6 +448,274 @@ fn relocate_overflowed_header(
     Ok(())
 }
 
+// Append a new string to the string table. Rebuilds the entire string region
+// (kinds, identifier hashes, small table, overflow table, storage) and
+// relocates the tail. The new string gets id = old `string_count`; every
+// existing id is stable. Returns `(raw_image, new_id)`.
+//
+// `is_identifier`: true for property/symbol names (adds a Jenkins hash slot);
+// false for plain string literals.
+pub fn add_string(
+    file: &mut BytecodeFile,
+    _format: &BytecodeFormat,
+    value: &str,
+    is_identifier: bool,
+    _opts: &PatchOptions,
+) -> Result<(Vec<u8>, u32)> {
+    let modern = matches!(
+        file.header.function_header_layout,
+        crate::format::FunctionHeaderLayout::Modern12
+    );
+    let new_id = file.header.string_count;
+
+    let locs = read_all_string_locs(file)?;
+    let raw = file
+        .raw_bytes
+        .clone()
+        .ok_or_else(|| Error::Write("no raw_bytes".into()))?;
+
+    // Derive section boundaries.
+    let kinds_off = section_offset(file, "string_kinds")
+        .ok_or_else(|| Error::Write("string_kinds section missing".into()))?
+        as usize;
+    // These section offsets are computed to validate presence; the rebuild uses
+    // kinds_off as the splice origin and array_off as the splice end.
+    let _ids_off = section_offset(file, "identifier_hashes")
+        .ok_or_else(|| Error::Write("identifier_hashes section missing".into()))?
+        as usize;
+    let _small_off = section_offset(file, "small_string_table")
+        .ok_or_else(|| Error::Write("small_string_table section missing".into()))?
+        as usize;
+    let storage_off = section_offset(file, "string_storage")
+        .ok_or_else(|| Error::Write("string_storage section missing".into()))?
+        as usize;
+    let array_off = section_offset(file, "array_buffer")
+        .or_else(|| section_offset(file, "literal_value_buffer"))
+        .ok_or_else(|| Error::Write("post-string section missing".into()))?
+        as usize;
+
+    if array_off < kinds_off {
+        return Err(Error::Write("unexpected string section order".into()));
+    }
+    let old_region_len = array_off - kinds_off;
+
+    // Duplicate check: warn (to stderr) if value already exists but still append.
+    for (i, s) in file.strings.iter().enumerate() {
+        if s.value == value && s.is_identifier == is_identifier {
+            eprintln!(
+                "note: string {:?} already exists at id {} (is_identifier={}); appending anyway as id {}",
+                value, i, is_identifier, new_id
+            );
+            break;
+        }
+    }
+
+    // ---- Rebuild storage + small/overflow tables (N+1 entries) ----
+    let mut new_storage: Vec<u8> = Vec::new();
+    let mut new_small: Vec<u32> = Vec::with_capacity(locs.len() + 1);
+    let mut new_overflow: Vec<(u32, u32)> = Vec::new();
+
+    // Existing entries.
+    for loc in locs.iter() {
+        let byte_len = if loc.is_utf16 {
+            loc.len_field as usize * 2
+        } else {
+            loc.len_field as usize
+        };
+        let start = storage_off + loc.storage_off as usize;
+        if start + byte_len > raw.len() {
+            return Err(Error::Write("string storage OOB during rebuild".into()));
+        }
+        let bytes = &raw[start..start + byte_len];
+        let off = new_storage.len() as u32;
+        new_storage.extend_from_slice(bytes);
+        if off >= 0x80_0000 || loc.len_field >= 0xff {
+            let ov_index = new_overflow.len() as u32;
+            new_overflow.push((off, loc.len_field));
+            let e = (0xffu32 << 24) | ((ov_index & 0x7f_ffff) << 1) | (loc.is_utf16 as u32);
+            new_small.push(e);
+        } else {
+            let e = ((loc.len_field & 0xff) << 24) | ((off & 0x7f_ffff) << 1) | (loc.is_utf16 as u32);
+            new_small.push(e);
+        }
+    }
+
+    // Append the new entry.
+    let needs_utf16 = value.bytes().any(|b| b > 0x7f);
+    let (new_bytes, new_len_field, new_is_utf16) = if needs_utf16 {
+        let units: Vec<u16> = value.encode_utf16().collect();
+        let mut b = Vec::with_capacity(units.len() * 2);
+        for u in &units {
+            b.extend_from_slice(&u.to_le_bytes());
+        }
+        (b, units.len() as u32, true)
+    } else {
+        (value.as_bytes().to_vec(), value.len() as u32, false)
+    };
+    let new_off = new_storage.len() as u32;
+    new_storage.extend_from_slice(&new_bytes);
+    if new_off >= 0x80_0000 || new_len_field >= 0xff {
+        let ov_index = new_overflow.len() as u32;
+        new_overflow.push((new_off, new_len_field));
+        let e = (0xffu32 << 24) | ((ov_index & 0x7f_ffff) << 1) | (new_is_utf16 as u32);
+        new_small.push(e);
+    } else {
+        let e = ((new_len_field & 0xff) << 24) | ((new_off & 0x7f_ffff) << 1) | (new_is_utf16 as u32);
+        new_small.push(e);
+    }
+
+    // ---- Rebuild string_kinds ----
+    use crate::file::{StringKindEntry, StringKindType, StringTableEntry};
+
+    let new_kind = if is_identifier {
+        StringKindType::Identifier
+    } else {
+        StringKindType::String
+    };
+    let mut new_kinds = file.string_kinds.clone();
+    if let Some(last) = new_kinds.last_mut() {
+        if last.kind == new_kind {
+            last.count += 1;
+        } else {
+            new_kinds.push(StringKindEntry {
+                kind: new_kind,
+                count: 1,
+            });
+        }
+    } else {
+        new_kinds.push(StringKindEntry {
+            kind: new_kind,
+            count: 1,
+        });
+    }
+
+    // ---- Rebuild identifier_hashes ----
+    let mut new_id_hashes = file.identifier_hashes.clone();
+    if is_identifier {
+        new_id_hashes.push(hermes_identifier_hash(value));
+    }
+
+    // ---- Assemble the new region block ----
+    // Order: string_kinds ++ identifier_hashes ++ small_string_table ++ overflow_string_table ++ string_storage
+    let mut region: Vec<u8> = Vec::new();
+
+    // String kinds (each entry is u32: high bit = kind, low 31 = count).
+    for k in &new_kinds {
+        let raw_k = match k.kind {
+            StringKindType::String => k.count,
+            StringKindType::Identifier => k.count | (1u32 << 31),
+        };
+        region.extend_from_slice(&raw_k.to_le_bytes());
+    }
+    while region.len() % 4 != 0 {
+        region.push(0);
+    }
+
+    // Identifier hashes.
+    for h in &new_id_hashes {
+        region.extend_from_slice(&h.to_le_bytes());
+    }
+    while region.len() % 4 != 0 {
+        region.push(0);
+    }
+
+    // Small string table.
+    for e in &new_small {
+        region.extend_from_slice(&e.to_le_bytes());
+    }
+
+    // Overflow string table.
+    for (off, len) in &new_overflow {
+        region.extend_from_slice(&off.to_le_bytes());
+        region.extend_from_slice(&len.to_le_bytes());
+    }
+
+    // String storage.
+    let storage_size = new_storage.len() as u32;
+    let overflow_count = new_overflow.len() as u32;
+    region.extend_from_slice(&new_storage);
+    while region.len() % 4 != 0 {
+        region.push(0);
+    }
+
+    let delta = region.len() as i64 - old_region_len as i64;
+
+    // ---- Splice: [..kinds_off] + region + [array_off..] ----
+    let mut rebuilt = Vec::with_capacity((raw.len() as i64 + delta) as usize);
+    rebuilt.extend_from_slice(&raw[..kinds_off]);
+    rebuilt.extend_from_slice(&region);
+    rebuilt.extend_from_slice(&raw[array_off..]);
+
+    // ---- Update header counts ----
+    // string_kind_count at bytes 44..48, identifier_count at 48..52, string_count
+    // at 52..56, overflow_string_count at 56..60, string_storage_size at 60..64.
+    let new_string_kind_count = new_kinds.len() as u32;
+    let new_identifier_count = new_id_hashes.len() as u32;
+    let new_string_count = new_id + 1;
+    rebuilt[44..48].copy_from_slice(&new_string_kind_count.to_le_bytes());
+    rebuilt[48..52].copy_from_slice(&new_identifier_count.to_le_bytes());
+    rebuilt[52..56].copy_from_slice(&new_string_count.to_le_bytes());
+    rebuilt[56..60].copy_from_slice(&overflow_count.to_le_bytes());
+    rebuilt[60..64].copy_from_slice(&storage_size.to_le_bytes());
+
+    // ---- Shift downstream offsets by delta ----
+    if file.header.debug_info_offset != 0 {
+        let dpos = if modern {
+            108
+        } else {
+            legacy_debug_info_offset_pos(&file.header)
+        };
+        let shifted = (file.header.debug_info_offset as i64 + delta) as u32;
+        if dpos + 4 <= rebuilt.len() {
+            rebuilt[dpos..dpos + 4].copy_from_slice(&shifted.to_le_bytes());
+        }
+    }
+
+    let fh_sec = section_offset(file, "function_headers")
+        .ok_or_else(|| Error::Write("function_headers section missing".into()))?
+        as usize;
+    let hsize = if modern { 12 } else { 16 };
+    let flag_byte = if modern { 11 } else { 15 };
+    for i in 0..file.function_headers.len() {
+        let slot = fh_sec + i * hsize;
+        if slot + hsize > rebuilt.len() {
+            break;
+        }
+        let overflowed = rebuilt[slot + flag_byte] & crate::format::FLAG_OVERFLOWED != 0;
+        if overflowed {
+            relocate_overflowed_header(&mut rebuilt, slot, modern, delta)?;
+        } else if modern {
+            crate::write::header_write::shift_modern_small_header_offset(
+                &mut rebuilt[slot..slot + 12],
+                delta,
+            )?;
+        } else {
+            crate::write::header_write::shift_legacy_small_header_offsets(
+                &mut rebuilt[slot..slot + 16],
+                delta,
+            )?;
+        }
+    }
+
+    // ---- Sync in-memory model ----
+    file.strings.push(StringTableEntry {
+        value: value.to_string(),
+        is_utf16: new_is_utf16,
+        is_identifier,
+    });
+    file.string_kinds = new_kinds;
+    file.identifier_hashes = new_id_hashes;
+    file.header.string_kind_count = new_string_kind_count;
+    file.header.identifier_count = new_identifier_count;
+    file.header.string_count = new_string_count;
+    file.header.overflow_string_count = overflow_count;
+    file.header.string_storage_size = storage_size;
+
+    let out = finalize_raw_image(rebuilt)?;
+    file.raw_bytes = Some(out.clone());
+    Ok((out, new_id))
+}
+
 // Replace the value of string table entry `id`. Same-length edits patch storage
 // in place; length changes rebuild the string tables and relocate the tail.
 // Hermes packs strings so ranges can overlap (`done`/`next` share storage). We
@@ -646,6 +914,239 @@ mod tests {
         let re2 = BytecodeFile::parse_auto(&out2).unwrap();
         assert!(re2.strings[id].is_utf16);
         assert_eq!(re2.strings[id].value, "a€☕");
+    }
+
+    // ---- add_string tests ----
+
+    #[test]
+    fn add_string_ascii_reparses() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let old_count = file.header.string_count;
+        let opts = PatchOptions::default();
+        let (out, new_id) = add_string(&mut file, &format, "hello_world", false, &opts)
+            .expect("add_string plain ASCII");
+        assert_eq!(new_id, old_count);
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert_eq!(re.header.string_count, old_count + 1);
+        assert_eq!(re.strings[new_id as usize].value, "hello_world");
+        assert!(!re.strings[new_id as usize].is_utf16);
+        assert!(!re.strings[new_id as usize].is_identifier);
+    }
+
+    #[test]
+    fn add_string_utf16() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let opts = PatchOptions::default();
+        let (out, new_id) = add_string(&mut file, &format, "café☕", false, &opts)
+            .expect("add_string UTF-16");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert!(re.strings[new_id as usize].is_utf16);
+        assert_eq!(re.strings[new_id as usize].value, "café☕");
+    }
+
+    #[test]
+    fn add_string_identifier() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let old_id_count = file.header.identifier_count;
+        let opts = PatchOptions::default();
+        let (out, new_id) = add_string(&mut file, &format, "myNewProp", true, &opts)
+            .expect("add_string identifier");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert_eq!(re.header.identifier_count, old_id_count + 1);
+        assert!(re.strings[new_id as usize].is_identifier);
+        assert_eq!(re.strings[new_id as usize].value, "myNewProp");
+        // The hash in the reparsed file should match our Jenkins hash.
+        let expected_hash = hermes_identifier_hash("myNewProp");
+        assert_eq!(
+            *re.identifier_hashes.last().unwrap(),
+            expected_hash,
+            "identifier hash mismatch"
+        );
+    }
+
+    // Appending a string with same kind as the last run should bump the count
+    // but not add a new run.
+    #[test]
+    fn add_string_kind_run_extends() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let old_kind_count = file.header.string_kind_count;
+        let last_kind_is_string = file
+            .string_kinds
+            .last()
+            .map(|k| k.kind == crate::file::StringKindType::String)
+            .unwrap_or(false);
+        let opts = PatchOptions::default();
+        // Append a plain string (kind = String).
+        let (out, _) = add_string(&mut file, &format, "extend_run", false, &opts)
+            .expect("add_string extend run");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        if last_kind_is_string {
+            // Same kind as last run: no new run entry.
+            assert_eq!(re.header.string_kind_count, old_kind_count);
+        } else {
+            // Different kind: new run.
+            assert_eq!(re.header.string_kind_count, old_kind_count + 1);
+        }
+    }
+
+    // Appending a string with different kind than the last run should add a new
+    // string_kind entry.
+    #[test]
+    fn add_string_kind_run_new() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let old_kind_count = file.header.string_kind_count;
+        let last_kind_is_identifier = file
+            .string_kinds
+            .last()
+            .map(|k| k.kind == crate::file::StringKindType::Identifier)
+            .unwrap_or(false);
+        let opts = PatchOptions::default();
+        // Append an identifier (kind = Identifier) -- opposite of the last run's
+        // kind if it was String.
+        if !last_kind_is_identifier {
+            let (out, _) = add_string(&mut file, &format, "newIdent", true, &opts)
+                .expect("add_string new kind run");
+            assert!(verify_footer(&out));
+            let re = BytecodeFile::parse_auto(&out).unwrap();
+            assert_eq!(
+                re.header.string_kind_count,
+                old_kind_count + 1,
+                "expected new string_kind run"
+            );
+        }
+    }
+
+    // Existing strings remain intact after an append.
+    #[test]
+    fn add_string_existing_strings_intact() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let originals: Vec<(String, bool, bool)> = file
+            .strings
+            .iter()
+            .map(|s| (s.value.clone(), s.is_utf16, s.is_identifier))
+            .collect();
+        let opts = PatchOptions::default();
+        let (out, _) = add_string(&mut file, &format, "roundtrip_check", false, &opts)
+            .expect("add_string roundtrip");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        for (i, (val, utf16, ident)) in originals.iter().enumerate() {
+            assert_eq!(&re.strings[i].value, val, "string {i} value changed");
+            assert_eq!(re.strings[i].is_utf16, *utf16, "string {i} utf16 changed");
+            assert_eq!(
+                re.strings[i].is_identifier, *ident,
+                "string {i} identifier changed"
+            );
+        }
+    }
+
+    // Modern v98 layout: append + reparse (mirrors inject_stub_modern_v98).
+    #[test]
+    fn add_string_modern_v98_reparses() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/react-native/v98/expressions/class_basic/bytecode.hbc"
+        );
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let (mut file, format) = load(path);
+        assert!(matches!(
+            file.header.function_header_layout,
+            crate::format::FunctionHeaderLayout::Modern12
+        ));
+        let old_count = file.header.string_count;
+        let opts = PatchOptions::default();
+        let (out, new_id) =
+            add_string(&mut file, &format, "modernTestProp", true, &opts)
+                .expect("add_string on modern v98");
+        assert_eq!(new_id, old_count);
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out)
+            .expect("reparse after modern add_string");
+        assert_eq!(re.header.string_count, old_count + 1);
+        assert_eq!(re.strings[new_id as usize].value, "modernTestProp");
+        assert!(re.strings[new_id as usize].is_identifier);
+        // All function headers must still parse (overflowed large headers
+        // relocated correctly).
+        assert_eq!(
+            re.function_headers.len(),
+            file.function_headers.len(),
+            "function count changed after modern add_string"
+        );
+    }
+
+    // After an append, a function that references existing strings must still
+    // disassemble correctly (downstream offsets intact).
+    #[test]
+    fn add_string_downstream_offsets_intact() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let opts = PatchOptions::default();
+        // Disassemble function 0 before the append.
+        let disasm_opts = crate::DisasmOptions {
+            show_offsets: false,
+            show_labels: true,
+            resolve_strings: true,
+            enable_color: false,
+        };
+        let before = crate::disassemble_function(&file, &format, 0, &disasm_opts)
+            .expect("disasm before add_string");
+        let (out, _) = add_string(&mut file, &format, "offset_check", false, &opts)
+            .expect("add_string for offset check");
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        let fmt2 = BytecodeFormat::for_version(re.header.version).unwrap();
+        let after = crate::disassemble_function(&re, &fmt2, 0, &disasm_opts)
+            .expect("disasm after add_string");
+        assert_eq!(before, after, "function 0 disassembly changed after add_string");
+    }
+
+    // Overflow threshold: exercise the overflow path by appending a string whose
+    // length exceeds the small-entry 8-bit limit (0xff = 255).
+    #[test]
+    fn add_string_overflow_entry() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let opts = PatchOptions::default();
+        // A string of 256 characters exceeds the small-entry length field (max 254).
+        let long_value = "A".repeat(256);
+        let (out, new_id) = add_string(&mut file, &format, &long_value, false, &opts)
+            .expect("add_string with overflow-length string");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert_eq!(re.strings[new_id as usize].value, long_value);
+        // The overflow table must have grown (the new entry must have been routed
+        // through the overflow table since its length >= 0xff).
+        assert!(
+            re.header.overflow_string_count > 0,
+            "expected at least one overflow entry for the long string"
+        );
     }
 
     // A patch that stays pure ASCII keeps the one-byte encoding.

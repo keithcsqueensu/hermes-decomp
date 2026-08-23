@@ -98,6 +98,8 @@ hermes-decomp emit-hasm app.hbc --function 5 -o f5.hasm
 hermes-decomp asm app.hbc f5.hasm --function 5 -o app_patched.hbc
 hermes-decomp asm-check app.hbc --function 5
 
+hermes-decomp add-string app.hbc --value "myNewString" -o app2.hbc
+hermes-decomp add-string app.hbc --value "myProp" --identifier -o app2.hbc
 hermes-decomp patch-string app.hbc --old "done" --new "fini" -o app2.hbc
 hermes-decomp patch-string app.hbc --id 42 --new "hello" -o app2.hbc
 hermes-decomp patch-function app.hbc --function 5 --hasm f5.hasm -o app2.hbc
@@ -110,12 +112,19 @@ Hermes VM. `patch-string` handles both same length edits, done in place, and
 length changes, where it rebuilds the string table and relocates the tail. It
 refuses to patch Hermes packed strings whose storage overlaps another entry.
 
-Modern files (HBC 97 and above, with 12 byte headers) support only same length
-string patches. Length changing string patches, function resize, `inject-stub`
-resize and `create` fail cleanly on modern files. Those cases need relocation of
-the out of line large function headers, which is not implemented yet. The CLI
-prints a warning when it detects a modern file. Nothing broken is ever written,
-because unsupported cases stop with an error.
+Modern files (HBC 97 and above, with 12 byte headers) are supported for string
+patches (same length and length changing), `add-string`, function body resize,
+and `inject-stub` resize, including relocation of the out of line large function
+headers. All of these are verified on a real v98 Hermes engine. `create` is the
+only write command that still requires a legacy file (v96 or below). The CLI
+prints a note when it detects a modern file.
+
+`add-string` appends a new entry to the string table and prints its id to stdout.
+Every existing string id stays stable. Pass `--identifier` for property or symbol
+names (adds a Jenkins hash slot). Encoding is chosen by content: pure ASCII uses
+one byte per character; anything with a non-ASCII character uses UTF-16. If the
+value already exists, a note is emitted to stderr but the string is still appended
+(no silent dedup).
 
 #### Why modern output cannot be verified inside the Rust tool
 

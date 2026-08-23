@@ -505,6 +505,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 format_version,
             )?;
         }
+        Command::AddString {
+            input,
+            output,
+            value,
+            identifier,
+            format_version,
+            layout,
+            function_layout,
+        } => {
+            commands::write_cmd::run_add_string(
+                &input,
+                &output,
+                value,
+                identifier,
+                layout,
+                function_layout,
+                format_version,
+            )?;
+        }
         Command::PatchString {
             input,
             output,

@@ -19,7 +19,7 @@ pub use hasm::{
     parse_hasm_with_context, HasmFunction, HasmModule,
 };
 pub use patch::{
-    inject_stub, patch_function_body, patch_function_bytes, patch_string_by_id,
+    add_string, inject_stub, patch_function_body, patch_function_bytes, patch_string_by_id,
     patch_string_replace, InjectStubKind, PatchOptions,
 };
 pub use reloc::RelocPlan;
