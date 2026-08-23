@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use hbc_decomp::{
     add_string, create_minimal, emit_hasm_function, generate_frida_for_file, inject_stub,
-    parse_hasm_with_context, patch_function_body, patch_string_by_id, patch_string_replace,
-    retarget_string, scan_secrets, format_secrets_report, CreateOptions, FridaHookOptions,
-    InjectStubKind, PatchOptions,
+    parse_hasm_with_context, patch_function_body, patch_string_by_id, patch_string_operand,
+    patch_string_replace, retarget_string, scan_secrets, format_secrets_report, CreateOptions,
+    FridaHookOptions, InjectStubKind, OperandTarget, PatchOptions,
 };
 
 use crate::cli_args::{FunctionLayoutArg, LayoutArg};
@@ -145,6 +145,58 @@ pub fn run_emit_hasm(
     } else {
         print!("{text}");
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_patch_operand(
+    input: &PathBuf,
+    output: &PathBuf,
+    at: Option<u32>,
+    function: Option<u32>,
+    insn_offset: Option<u32>,
+    string: Option<String>,
+    string_id: Option<u32>,
+    operand_index: Option<usize>,
+    layout: LayoutArg,
+    function_layout: FunctionLayoutArg,
+    format_version: Option<u32>,
+) -> Result<(), BoxErr> {
+    let mut file = load_file(input, layout, function_layout)?;
+    let format = load_format(&file, format_version)?;
+    warn_modern_write(&file);
+
+    // Resolve addressing mode.
+    let target = match (at, function, insn_offset) {
+        (Some(off), _, _) => OperandTarget::AbsoluteOffset(off),
+        (None, Some(func), Some(rel)) => OperandTarget::FunctionRelative {
+            function: func,
+            insn_offset: rel,
+        },
+        _ => return Err("provide --at or --function + --insn-offset".into()),
+    };
+
+    // Resolve string value to id.
+    let new_id = match (string_id, string) {
+        (Some(id), _) => id,
+        (None, Some(val)) => {
+            file.strings
+                .iter()
+                .position(|s| s.value == val)
+                .map(|i| i as u32)
+                .ok_or_else(|| {
+                    format!(
+                        "string {:?} not in table; use add-string first",
+                        val
+                    )
+                })?
+        }
+        _ => return Err("provide --string-id or --string".into()),
+    };
+
+    let opts = PatchOptions::default();
+    let out = patch_string_operand(&mut file, &format, target, new_id, operand_index, &opts)?;
+    std::fs::write(output, out)?;
     Ok(())
 }
 

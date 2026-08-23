@@ -505,6 +505,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 format_version,
             )?;
         }
+        Command::PatchOperand {
+            input,
+            output,
+            at,
+            function,
+            insn_offset,
+            string,
+            string_id,
+            operand_index,
+            format_version,
+            layout,
+            function_layout,
+        } => {
+            commands::write_cmd::run_patch_operand(
+                &input,
+                &output,
+                at,
+                function,
+                insn_offset,
+                string,
+                string_id,
+                operand_index,
+                layout,
+                function_layout,
+                format_version,
+            )?;
+        }
         Command::RetargetString {
             input,
             output,

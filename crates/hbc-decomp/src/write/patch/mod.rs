@@ -7,10 +7,12 @@ use crate::write::serialize::SerializeOptions;
 
 pub mod functions;
 pub mod inject;
+pub mod operands;
 pub mod strings;
 
 pub use functions::{patch_function_body, patch_function_bytes};
 pub use inject::{inject_stub, InjectStubKind};
+pub use operands::{patch_string_operand, OperandTarget};
 pub use strings::{add_string, patch_string_by_id, patch_string_replace, retarget_string};
 
 #[derive(Debug, Clone, Default)]
