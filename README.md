@@ -50,7 +50,7 @@ hermes-decomp xref app.hbc --query "loginWithToken"
 | **Read** | `info`, `disasm`, `decompile`, `tui`, `extract`, `modules`, `deps` |
 | **Analyze** | `xref`, `callgraph`, `graphviz`, `closures`, `debug`, `dump`, `bin-diff` |
 | **RE helpers** | `secrets`, `frida-hooks` |
-| **Write** (bytecode only) | `emit-hasm`, `asm`, `asm-check`, `add-string`, `patch-string`, `patch-function`, `inject-stub`, `create` |
+| **Write** (bytecode only) | `emit-hasm`, `asm`, `asm-check`, `add-string`, `retarget-string`, `patch-operand`, `patch-string`, `patch-function`, `inject-stub`, `create` |
 
 Full flags and examples → **[docs/USAGE.md](docs/USAGE.md)**.
 

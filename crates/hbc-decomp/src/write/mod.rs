@@ -20,7 +20,8 @@ pub use hasm::{
 };
 pub use patch::{
     add_string, inject_stub, patch_function_body, patch_function_bytes, patch_string_by_id,
-    patch_string_replace, InjectStubKind, PatchOptions,
+    patch_string_operand, patch_string_replace, retarget_string, InjectStubKind, OperandTarget,
+    PatchOptions,
 };
 pub use reloc::RelocPlan;
 pub use serialize::{finalize_raw_image, serialize_file, write_file, SerializeOptions};

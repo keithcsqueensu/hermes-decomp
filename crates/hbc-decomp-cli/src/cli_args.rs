@@ -419,6 +419,60 @@ pub enum Command {
         #[arg(long, value_enum, default_value = "auto")]
         function_layout: FunctionLayoutArg,
     },
+    /// Patch a single string-id operand in one instruction (no function-body rebuild).
+    PatchOperand {
+        input: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        /// Absolute byte offset of the opcode in the file (e.g. 0xD83E27).
+        #[arg(long, value_parser = parse_hex_or_dec)]
+        at: Option<u32>,
+        /// Function id (used with --insn-offset).
+        #[arg(long)]
+        function: Option<u32>,
+        /// Instruction offset relative to function body start (used with --function).
+        #[arg(long, value_parser = parse_hex_or_dec)]
+        insn_offset: Option<u32>,
+        /// New string value to write (looked up in string table).
+        #[arg(long)]
+        string: Option<String>,
+        /// New string id to write (numeric).
+        #[arg(long)]
+        string_id: Option<u32>,
+        /// Which string operand to patch (0-based), for opcodes with multiple string operands.
+        #[arg(long)]
+        operand_index: Option<usize>,
+        #[arg(long)]
+        format_version: Option<u32>,
+        #[arg(long, value_enum, default_value = "auto")]
+        layout: LayoutArg,
+        #[arg(long, value_enum, default_value = "auto")]
+        function_layout: FunctionLayoutArg,
+    },
+    /// Retarget a string entry to resolve to another entry's value (metadata-only, no table rebuild).
+    RetargetString {
+        input: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        /// Source string id to retarget.
+        #[arg(long)]
+        from_id: Option<u32>,
+        /// Target string id whose value the source will resolve to.
+        #[arg(long)]
+        to_id: Option<u32>,
+        /// Source string value (alternative to --from-id; first match).
+        #[arg(long)]
+        from: Option<String>,
+        /// Target string value (alternative to --to-id; first match).
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        format_version: Option<u32>,
+        #[arg(long, value_enum, default_value = "auto")]
+        layout: LayoutArg,
+        #[arg(long, value_enum, default_value = "auto")]
+        function_layout: FunctionLayoutArg,
+    },
     /// Append a new string to the string table (returns the new id).
     AddString {
         input: PathBuf,
@@ -538,4 +592,13 @@ pub enum FunctionLayoutArg {
     Auto,
     Legacy16,
     Modern12,
+}
+
+/// Parse a u32 from decimal or "0x" hex.
+fn parse_hex_or_dec(s: &str) -> std::result::Result<u32, String> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).map_err(|e| format!("invalid hex: {e}"))
+    } else {
+        s.parse::<u32>().map_err(|e| format!("invalid number: {e}"))
+    }
 }

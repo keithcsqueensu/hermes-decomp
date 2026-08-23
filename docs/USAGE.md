@@ -100,6 +100,10 @@ hermes-decomp asm-check app.hbc --function 5
 
 hermes-decomp add-string app.hbc --value "myNewString" -o app2.hbc
 hermes-decomp add-string app.hbc --value "myProp" --identifier -o app2.hbc
+hermes-decomp retarget-string app.hbc --from "H:mm" --to "HH:mm" -o app2.hbc
+hermes-decomp retarget-string app.hbc --from-id 5 --to-id 42 -o app2.hbc
+hermes-decomp patch-operand app.hbc --at 0xD83E27 --string "black" -o app2.hbc
+hermes-decomp patch-operand app.hbc --function 42 --insn-offset 0x1A --string-id 72 -o app2.hbc
 hermes-decomp patch-string app.hbc --old "done" --new "fini" -o app2.hbc
 hermes-decomp patch-string app.hbc --id 42 --new "hello" -o app2.hbc
 hermes-decomp patch-function app.hbc --function 5 --hasm f5.hasm -o app2.hbc
@@ -118,6 +122,23 @@ and `inject-stub` resize, including relocation of the out of line large function
 headers. All of these are verified on a real v98 Hermes engine. `create` is the
 only write command that still requires a legacy file (v96 or below). The CLI
 prints a note when it detects a modern file.
+
+`patch-operand` rewrites a single string-id operand inside one instruction
+without rebuilding the function body. Addresses by absolute file offset (`--at`)
+or function-relative (`--function` + `--insn-offset`). Resolves the new value
+by string text (`--string`, must already exist in the table) or numeric id
+(`--string-id`). Validates the instruction shape, checks that the new id fits
+the operand width (UInt8S/UInt16S/UInt32S), and read-back verifies after the
+write. For opcodes with multiple string operands (e.g. `CreateRegExp`), use
+`--operand-index`.
+
+`retarget-string` makes one string entry resolve to the same value as another by
+copying its 4-byte `SmallStringTableEntry`. Metadata-only: no table rebuild, no
+storage growth, no code change. Every instruction that references the source id
+now gets the target's value. Accepts `--from-id`/`--to-id` (numeric) or
+`--from`/`--to` (by value, first match). Refuses overflow entries; warns when
+crossing string/identifier boundaries. If the source is an identifier, its hash
+is updated to match the target's value.
 
 `add-string` appends a new entry to the string table and prints its id to stdout.
 Every existing string id stays stable. Pass `--identifier` for property or symbol
