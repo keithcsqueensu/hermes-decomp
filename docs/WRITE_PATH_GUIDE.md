@@ -56,6 +56,9 @@ guard/partial in place, full feature planned), **🔵 planned** (decided, not bu
 | Q7 | Identifier placement (leading/contiguous?) | ✅ resolved — no requirement | Open questions |
 | Q8 | `AsyncBreakCheck` as universal pad | ✅ resolved — hard error when needed+absent | Open questions |
 | Q9 | `patch-operand` `*ById` kind validation | ✅ resolved — warn only | Open questions |
+| Q10 | Chained ops on stale `file.sections`: refresh vs guard? | ⚪ open — drives H1 | Open questions |
+| Q11 | Unrecognized modern version (v99+): reject vs best-effort? | ⚪ open — drives H5 | Open questions |
+| Q12 | Should `create` compute a real `source_hash`? | ⚪ open (minor) | Open questions |
 
 ### Remaining work, ranked
 
@@ -68,6 +71,27 @@ guard/partial in place, full feature planned), **🔵 planned** (decided, not bu
 4. ⚪ **Test matrix gaps that remain** (below): modern-on-VM, `patch-string` shrink,
    identifier-resize hash refresh under resize, HASM error paths + handler round-trip,
    CLI argument-resolution tests. See Test matrix gaps.
+5. 🔵/⚪ **Hardening backlog (H1–H8)** — reduce the residual risks in the risk matrix
+   (High-risk areas → Risk matrix). H1 (chaining/R1) and H5 (modern magic offsets/R8) rank
+   first. See below.
+
+### Hardening backlog
+
+Concrete tasks that reduce the residual risks scored in **High-risk areas → Risk matrix**
+(IDs cross-reference `R#` there). None are blocking; ranked by the residual risk they retire.
+Status: 🔵 planned · ⚪ needs a decision first (see the linked `Q#`). Effort is a rough
+S/M sizing.
+
+| ID | Task | Retires | Effort | Status |
+|---|---|---|---|---|
+| H1 | Refresh (or dirty-guard) `file.sections` after every size-changing op so a chained 2nd op cannot compute against stale offsets | R1 | S–M | ⚪ Q10 |
+| H2 | Extract one `is_overflow_entry` / `encode_overflow_entry` (keyed on `len==0xff`) used by every string path; delete the dead `off==0x800000` branches (`strings.rs:44`, `:124`) | R2 | S | 🔵 |
+| H3 | After `create`/resize, re-parse and assert header fields (esp. `debug_info_offset`, gated section sizes) match the intended layout — a round-trip invariant, not just "it parses" | R3, R14 | S | 🔵 |
+| H4 | `#[cfg(debug_assertions)]` consistency check: after each op, re-parse `out` and assert the structured model (`strings`, `header.*`, `function_headers`) matches the bytes (I1) | R4, R5 | M | 🔵 |
+| H5 | A `modern_large_header` layout descriptor (`len()` + named field offsets); route `resize_overflowed_function`, `reserve_modern_log_regs` and `build_minimal_modern` through it; hard-error on an unrecognized modern version | R8, R11, R15 | M | ⚪ Q11 |
+| H6 | Validate injected opcodes' operand arity/types against the def table at inject time instead of hardcoding `TryGetById`/`Call2` shapes | R12 | S–M | 🔵 |
+| H7 | Guard `NopPad`: if the target function does not end on a terminator, error rather than append a reachable no-op | R13 | S | 🔵 |
+| H8 | CLI/integration test harness: run each write command end-to-end on a `create_minimal` fixture; assert the stdout/stderr contract and that the output re-parses | R14, R17 | M | 🔵 |
 
 ---
 
@@ -220,42 +244,92 @@ files authored once as a monolith (`functions.rs`, `inject.rs`, `create.rs`, `se
 `header_write.rs`) — though `functions.rs` and `inject.rs` have now received their first
 independent tests in the current pass (finding F5, updated).
 
+### Risk matrix (re-evaluated)
+
+Residual risk = likelihood × impact **after** the mitigation currently in the tree (guards,
+tests, centralized helpers) — i.e. the risk that remains today, not the inherent risk. Each
+hazard has an ID (`R#`) reused by the prose bullets below, and points at a hardening task
+(`H#`, in the tracker) or an open question (`Q#`) where one exists. Ratings:
+🟥 high · 🟧 medium · 🟩 low · ⬜ resolved (inherent risk was high; a shipped guard/fix
+retired it — kept here to show the downgrade).
+
+| ID | Hazard | § | Likelihood | Impact | Residual | Mitigation in tree | Harden |
+|---|---|---|---|---|---|---|---|
+| R1 | Chaining a 2nd op on stale `file.sections` (I2) | string/fn | Med | High | 🟥 | written contract only; tests re-parse | H1 · Q10 |
+| R2 | Overflow entry encode/decode (I8) | string | Med | High | 🟧 | create/retarget refuse overflow; dead `0x800000` still in tree | H2 |
+| R3 | Legacy `debug_info_offset` position mis-gated | string/create | Low | High | 🟧 | `legacy_debug_info_offset_pos` centralizes it | H3 |
+| R4 | `string_kinds` / id-hash desync (I9/I12) | string | Low | High | 🟩 | append-only path handled; Q7 | H4 |
+| R5 | Structured model ↔ bytes drift (I1) | all | Med | Med | 🟧 | manual, partial sync per op | H4 |
+| R6 | UTF-16-by-content / %4 padding (I7/I5) | string | Low | Med | 🟩 | content-driven + tested | — |
+| R7 | Non-%4 body delta misaligns FunctionInfo (I5) | fn/inject | Low | High | ⬜ | Q8 hard-error | — |
+| R8 | Modern large-header magic offsets (v99+) | fn | Low | High | 🟧 | none — hardcoded v98 shape | H5 · Q11 |
+| R9 | Exception-handler offsets stale on resize | fn/inject | Med | High | ⬜ | Q3/Q4 guard rejects the edit | Q3 (full fix) |
+| R10 | Relative jump broken by a partial insertion | fn | Low | High | 🟧 | only whole-body / front-insert used today | — |
+| R11 | Reg/cache reservation magic offsets | inject | Low | High | 🟧 | works v97/98; version-fragile | H5 |
+| R12 | Hardcoded injected-opcode operand shapes | inject | Low | High | 🟧 | availability checked, layout assumed | H6 |
+| R13 | `NopPad` appended after a non-terminator | inject | Low | Low | 🟩 | usually terminator-ended | H7 |
+| R14 | `create` section-order / header field gating | create | Med | High | 🟧 | version-gated writer, no round-trip assert | H3 · H8 |
+| R15 | Modern large-header field order in `create` | create | Low | High | 🟧 | matches parser by hand | H5 · H8 |
+| R16 | `create` writes a zero `source_hash` | create | Low | Low | 🟩 | fine for minimal images | Q12 |
+| R17 | No CLI / integration coverage | all | Med | Med | 🟧 | unit-only | H8 |
+
+Grid (residual likelihood × impact; resolved items listed below it for the downgrade earned):
+
+```
+                       IMPACT  →
+             Low             Medium            High
+  High        ·               ·                R1
+L
+I Med         ·               R5  R17          R2  R14
+K
+E Low       R13 R16           R6               R3 R8 R10 R11 R12 R15
+L
+  Resolved (inherent High impact, guard/fix now caps residual): R4 🟩 · R7 ⬜ · R9 ⬜
+```
+
+Reading it: **R1 is the lone standout** — medium-likelihood, high-impact, held only by a
+written contract. Almost everything else sits at **low-likelihood / high-impact**: the
+offset-arithmetic and magic-offset hazards that fire rarely but corrupt *silently*, so the
+hardening payoff there is **loud failure** (asserts, version guards, round-trip checks) over
+silent mis-encode. R7 and R9 show the model working: both were inherent-high and a shipped
+guard (Q8; Q3/Q4) pulled the residual down to ⬜.
+
 ### New string ops
-- **Chaining without re-parse (I2).** The single most likely corruption: running a second
-  string op against a `file` whose `sections` are stale after the first resize.
-- **Overflow handling (I8).** Copying the dead `offset == 0x800000` check instead of
+- **R1 · Chaining without re-parse (I2).** The single most likely corruption: running a second
+  string op against a `file` whose `sections` are stale after the first resize. → H1 / Q10.
+- **R2 · Overflow handling (I8).** Copying the dead `offset == 0x800000` check instead of
   `len == 0xff`; forgetting the 8-byte overflow-slot layout; forgetting to update
-  `overflow_string_count` at `[56..60]` and `string_storage_size` at `[60..64]`.
-- **Header field positions.** String counts sit at fixed offsets `[44..64]` shared across
+  `overflow_string_count` at `[56..60]` and `string_storage_size` at `[60..64]`. → H2.
+- **R3 · Header field positions.** String counts sit at fixed offsets `[44..64]` shared across
   layouts, but `debug_info_offset` differs: **modern fixed at byte 108**, **legacy computed
   by `legacy_debug_info_offset_pos`** (`strings.rs:294`), which itself depends on
   version-gated fields (bigint present? function_source present?). A wrong legacy position
-  writes garbage into a random header field with no immediate error.
-- **`string_kinds` runs (I12)** and **identifier ordering/hash (I9).** Inserting rather
+  writes garbage into a random header field with no immediate error. → H3.
+- **R4 · `string_kinds` runs (I12)** and **identifier ordering/hash (I9).** Inserting rather
   than appending, or appending an identifier without extending the hash table + bumping
-  `identifier_count`, desynchronizes the identifier hash index.
-- **UTF-16-by-content (I7)** and **`%4` storage padding (I5).**
-- **Model sync (I1).** Forgetting to push to `file.strings` / bump `file.header.*` leaves
-  later reads (and the CLI's post-op status text) lying.
+  `identifier_count`, desynchronizes the identifier hash index. → H4.
+- **R6 · UTF-16-by-content (I7)** and **`%4` storage padding (I5).**
+- **R5 · Model sync (I1).** Forgetting to push to `file.strings` / bump `file.header.*` leaves
+  later reads (and the CLI's post-op status text) lying. → H4.
 
 ### New function ops
-- **Alignment (I5).** Any body whose new length isn't `%4`-aligned relative to the old must
+- **R7 · Alignment (I5).** Any body whose new length isn't `%4`-aligned relative to the old must
   be padded; the existing pad trick inserts `AsyncBreakCheck` *before the terminator*
   (`functions.rs:54`) so the function still ends on a terminator. When padding is required
   but the version has no `AsyncBreakCheck`, it now **hard-errors** (Q8) instead of shipping
-  a misaligned delta.
-- **Overflowed functions.** Must relocate the small-header pointer **and** the large
+  a misaligned delta — residual risk retired (⬜).
+- **R8 · Overflowed functions.** Must relocate the small-header pointer **and** the large
   header's internal fields (`resize_overflowed_function`, `functions.rs:277`). Legacy large
   header: body offset, size, info fields rewritten in the `slot..slot+16` copy
   (`functions.rs:219`); modern reads the packed pointer via `read_modern_large_pointer`
   (`functions.rs:287`). These magic offsets are v98-shaped; a version whose large header
-  differs will be silently mis-patched.
-- **Exception handlers are guarded, not relocated (Q3/Q4).** `patch_function_body` now
+  differs will be silently mis-patched. → H5 / Q11.
+- **R9 · Exception handlers are guarded, not relocated (Q3/Q4).** `patch_function_body` now
   **rejects any size-changing edit** on a function that declares an exception-handler table
   (`flags & FLAG_HAS_EXCEPTION_HANDLER`, `functions.rs:43`), because handler start/end/target
-  offsets are body-relative and are not yet rewritten. Same-size edits are allowed. Full
-  relocation is planned — see Pending impl plans.
-- **Relative-jump safety depends on same-shift.** Body-internal `Addr8`/`Addr32` jumps hold
+  offsets are body-relative and are not yet rewritten. Same-size edits are allowed. The guard
+  caps residual risk at ⬜; full relocation is planned — see Pending impl plans (Q3).
+- **R10 · Relative-jump safety depends on same-shift.** Body-internal `Addr8`/`Addr32` jumps hold
   deltas relative to their own instruction; front-insertion keeps caller and target moving
   together, so relative jumps survive — but this is a *property being relied on*, not a
   recomputation. A partial insertion (between a jump and its target) would break it.
@@ -263,40 +337,40 @@ independent tests in the current pass (finding F5, updated).
   correct. See Q2.
 
 ### Stub / inject work
-- **Register/cache reservation must persist and be enough.** `log_frame_size` bumps frame
+- **R11 · Register/cache reservation must persist and be enough.** `log_frame_size` bumps frame
   by `max(4)+8` and reserves one read-cache slot (`inject.rs:19`, `:36`). Legacy edits the
   struct then relies on the resize path rewriting the full header; modern edits raw header
   bytes *before* the splice via `reserve_modern_log_regs` (`inject.rs:28`) at magic offsets
   (small: frame byte `+8`, cache byte `+9`, `inject.rs:61`; large: frame `+28`, cache `+32`,
   `inject.rs:56`). A stub needing more registers must widen this, and the magic offsets are
-  version-fragile.
-- **Hardcoded opcode operand shapes.** `build_log_entry` bakes in `TryGetById reg,reg,u8
+  version-fragile. → H5 (shared large-header descriptor).
+- **R12 · Hardcoded opcode operand shapes.** `build_log_entry` bakes in `TryGetById reg,reg,u8
   cache,u16 string` and `Call2 reg,reg,reg,reg`. Opcode *availability* is checked; operand
-  *layout* is assumed constant across versions.
-- **Exception-handler staleness (above)** applies doubly to inject, which front-inserts a
+  *layout* is assumed constant across versions. → H6 (validate against the def table).
+- **R9 · Exception-handler staleness (above)** applies doubly to inject, which front-inserts a
   prologue into an existing body — hence the Q3/Q4 guard covers `inject-stub` too (it funnels
   through `patch_function_body`).
-- **`NopPad` insertion point.** Inserts `AsyncBreakCheck` before the last `Ret`, or at the
+- **R13 · `NopPad` insertion point.** Inserts `AsyncBreakCheck` before the last `Ret`, or at the
   end if there is none (`inject.rs:232`). "At the end" is only safe if the function already
   ended on a terminator; a function ending in a fallthrough would gain a reachable no-op
-  (usually fine) but the assumption should be stated.
-- **`AsyncBreakCheck` no longer silently skipped (Q8).** If the version lacks it and padding
+  (usually fine) but the assumption should be stated. → H7 (guard the non-terminator case).
+- **R7 · `AsyncBreakCheck` no longer silently skipped (Q8).** If the version lacks it and padding
   is required, both `patch_function_body` and `build_log_entry` hard-error. The no-pad-needed
   path (delta already `%4`, or a version that has `AsyncBreakCheck`) is unchanged.
 
 ### New `create` variants
-- **Section order + header field gating.** `write_legacy_header` (`header_write.rs`) writes
+- **R14 · Section order + header field gating.** `write_legacy_header` (`header_write.rs`) writes
   fields in a version-gated order (bigint if `has_bigint`, segment vs cjs, function_source if
   `v>=84`). Adding a populated section means emitting it in the body **and** matching its
-  size into the correct gated header slot; a mis-gate shifts every later field.
-- **Modern large-header field order** is hand-encoded in `build_minimal_modern`
+  size into the correct gated header slot; a mis-gate shifts every later field. → H3 / H8.
+- **R15 · Modern large-header field order** is hand-encoded in `build_minimal_modern`
   (`serialize.rs:227`) and must match the parser exactly, including the packed small→large
-  pointer and the `ProhibitNone = 0b10` flag semantics (`serialize.rs:313`).
+  pointer and the `ProhibitNone = 0b10` flag semantics (`serialize.rs:313`). → H5 / H8.
 - **No overflow support (design limit above).** A create variant taking large tables must
   add overflow encoding first.
-- **`create` now emits `warn_modern_write`** (`write_cmd.rs:403`) and still sets a zero
+- **R16 · `create` now emits `warn_modern_write`** (`write_cmd.rs:403`) and still sets a zero
   `source_hash` — fine for minimal images, but a variant meant for real use should reconsider
-  the latter.
+  the latter. → Q12.
 
 ---
 
@@ -536,14 +610,14 @@ external (Copilot) review.
 
 Decisions a future impl agent must not guess at.
 
-- **Q1 — `create` and modern (v97+): RESOLVED, docs reconciled.** Intent settled by
+- **Q1 — ✅ `create` and modern (v97+): RESOLVED, docs reconciled.** Intent settled by
   `50cdbf8`'s commit message (finding F6) and the code + `create_minimal_v98_parses`. The
   docs are now brought into line in this pass: `USAGE.md` says create emits "legacy layout
   for v96 and lower and modern layout for v97 and newer"; the `warn_modern_write` note text
   says the same (`write_cmd.rs:25`) and is now emitted by `create` too (`write_cmd.rs:403`);
   the stale `build_minimal_legacy` guard message now reads "v97 and newer use modern layout
   (build_minimal_modern)" (`serialize.rs:94`). Nothing left to decide.
-- **Q2 — Modern small-header body-offset field: 24 or 25 bits? RESOLVED — no-op.** The
+- **Q2 — ✅ Modern small-header body-offset field: 24 or 25 bits? RESOLVED — no-op.** The
   24-bit and 25-bit masks cover *different* fields, and both are correct:
   `read_modern_large_pointer` reads the **overflowed** packed large-header pointer, whose
   offset portion is 24 bits (`function_name << 24 | offset & 0x00ff_ffff`, per parser);
@@ -552,7 +626,7 @@ Decisions a future impl agent must not guess at.
   parser Modern12 bitfield map `offset : (0, 25)`). No non-overflowed read uses 24 bits, so
   there is no single-field inconsistency to align. The `header_write.rs` comment was corrected
   this pass to say so explicitly.
-- **Q3 — Exception-handler tables on size-changing edits: interim guard shipped; full
+- **Q3 — 🟡 Exception-handler tables on size-changing edits: interim guard shipped; 🔵 full
   relocation planned.** Contract chosen: handler `start`/`end`/`target` are **body-relative**
   (0-based, `end` exclusive; confirmed — `decode_function_instructions` emits 0-based offsets
   and the CFG compares handler offsets directly against them, `jump_analysis.rs:134`). They are
@@ -561,8 +635,8 @@ Decisions a future impl agent must not guess at.
   Interim resolution: `patch_function_body` (`functions.rs:43`) **rejects any size-changing
   edit** on a function that declares an exception-handler table, rather than ship stale
   offsets. Full relocation is planned — see Pending impl plans. Remove the guard once it lands.
-- **Q4 — `HasmFunction.exception_handlers`: unimplemented feature, not a drop. Guard shipped;
-  build-vs-guard for whole-body ops is a call for Keith.** The field is *never populated*:
+- **Q4 — ✅/⚪ `HasmFunction.exception_handlers`: unimplemented feature, not a drop. Guard
+  shipped; build-vs-guard for whole-body ops is a call for Keith.** The field is *never populated*:
   `parse_hasm` always sets it to `Vec::new()`, the HASM dialect has no handler syntax, and
   `emit_hasm_function` emits no handler lines. `parse_hasm_with_context` returns only
   `Vec<Instruction>`, so `asm`/`patch-function` can neither carry nor relocate a function's
@@ -574,14 +648,14 @@ Decisions a future impl agent must not guess at.
   — NOT `info_offset != 0`** (which over-rejects debug-only legacy functions and, fatally,
   every overflowed modern function). Same-size edits still allowed. Covered by
   `size_change_on_function_with_handlers_is_rejected`.
-- **Q5 — Should library patch functions write to stderr at all? RESOLVED — no.** All three
+- **Q5 — ✅ Should library patch functions write to stderr at all? RESOLVED — no.** All three
   library `eprintln!`s were removed. `patch_string_operand` now *returns* `(bytes, status,
   warning)`, which `run_patch_operand` prints (`operands.rs`, `write_cmd.rs:200`/`:202`). The
   `retarget_string` cross-kind warning and the `add_string` duplicate note are recomputed and
   printed by their CLI handlers (`run_retarget_string`, `run_add_string`). CLI output is
   byte-identical to before; programmatic callers get no unsolicited stderr. Status ownership
   now lives entirely in the CLI layer.
-- **Q6 — `encode_instruction` operand-type tolerance: RESOLVED — no-op branch; safe.** The
+- **Q6 — ✅ `encode_instruction` operand-type tolerance: RESOLVED — no-op branch; safe.** The
   `if op.ty != *expected_ty { … }` block at `encode.rs:24` is **empty**. Encoding is always
   driven by the definition's `expected_ty`, so the decoded instruction's own `op.ty` tag is
   intentionally ignored. The only "tolerance" with effect is in `write_operand`, which accepts
@@ -589,7 +663,7 @@ Decisions a future impl agent must not guess at.
   returns a hard `Error` on overflow or an incompatible variant. It does **not** mask
   width/overflow bugs. It does not validate operand *kind/role* — that is Q9, not an encoder
   bug.
-- **Q7 — Identifier placement: RESOLVED — no leading/contiguous requirement.** Empirical proof
+- **Q7 — ✅ Identifier placement: RESOLVED — no leading/contiguous requirement.** Empirical proof
   from a real hermesc-compiled bundle (`com.equinoxfitness.equinox_11.39.0`, HBC v96): its
   `string-kinds` table has **four interleaved runs** — `Identifier×255, String×15013,
   Identifier×50267, String×33382` — i.e. hermesc emits `String → Identifier` transitions and
@@ -599,7 +673,7 @@ Decisions a future impl agent must not guess at.
   hermesc already ships. Residual: inference from production layout, not a direct VM run of
   `add_string`'s specific output — but the resulting layout is structurally identical to
   bundles the VM already executes.
-- **Q8 — `AsyncBreakCheck` as universal no-op padding: RESOLVED — hard error when needed and
+- **Q8 — ✅ `AsyncBreakCheck` as universal no-op padding: RESOLVED — hard error when needed and
   absent.** `AsyncBreakCheck` is **absent in `Bytecode40`–`Bytecode60` and present in
   `Bytecode61`–`Bytecode99`** (introduced at v61). Every version the write path realistically
   targets (≥76; Equinox is v96) has it, so the padding path is normally taken. **IMPLEMENTED:**
@@ -608,7 +682,7 @@ Decisions a future impl agent must not guess at.
   required** (size delta not `%4`, or injected prologue not `%4`, and no `AsyncBreakCheck`
   available). The no-pad-needed path is unchanged. Covered by
   `missing_asyncbreakcheck_pad_is_hard_error` (v56).
-- **Q9 — `patch-operand` semantic (kind) validation: RESOLVED — warn only.**
+- **Q9 — ✅ `patch-operand` semantic (kind) validation: RESOLVED — warn only.**
   `patch_string_operand` (`operands.rs:234`) returns an optional warning (printed by
   `run_patch_operand`; the library stays silent, per Q5) when a `*ById`-family opcode's
   property-name operand is repointed at a **non-identifier** string. **Warning, never error** —
@@ -626,6 +700,27 @@ Decisions a future impl agent must not guess at.
   non-identifier property name silently breaks the runtime identifier-hash lookup (a real
   footgun), but a hard error would risk blocking an unusual-but-valid edit, and there is no
   per-operand role metadata to make enforcement airtight.
+- **Q10 — ⚪ Chaining ops on one in-memory `file`: auto-refresh sections, or hard-error?
+  (risk R1 → task H1).** The contract is "re-parse between size-changing ops" (I2) and nothing
+  enforces it — a second op silently corrupts the image. Two ways to close it: **(a)** after
+  each resize op, rebuild `file.sections` from the returned bytes so chaining Just Works — but
+  the rebuild must reproduce `parse_auto`'s section derivation *exactly*, or it trades one
+  silent bug for another; or **(b)** stamp the `file` "dirty" on any size change and have every
+  op refuse to run on a dirty `file` with a clear "re-parse first" error — cheap and safe, but
+  keeps chaining a two-call dance. Recommend (b) first (it removes the footgun immediately),
+  (a) later if ergonomics demand. Decide before building H1.
+- **Q11 — ⚪ Unrecognized modern version (v99+): reject, or best-effort? (risks R8/R11/R15 →
+  task H5).** The write path hardcodes the v97/v98 12-byte large-header shape everywhere (frame
+  `+28`, cache `+32`, the packed pointer, `build_minimal_modern`'s field order). A future v99
+  with a different FunctionInfo shape would be **silently** mis-encoded. Options: hard-error on
+  any modern version not in a known-good allow-list (safe, but blocks a v99 that happens to be
+  layout-compatible), or attempt best-effort and lean on the external verifier. Recommend
+  hard-error + an explicit allow-list, decided alongside H5's shared `modern_large_header`
+  descriptor (which also feeds Q3's Phase-1 handler-table location math).
+- **Q12 — ⚪ Should `create` compute a real `source_hash`? (risk R16).** `create` writes a zero
+  `source_hash` — fine for a smoke-test artifact. If `create` ever backs a real emitter, decide
+  whether to compute the hash the VM expects, or keep zero and document that created files are
+  "unsigned at source." Minor; only matters once `create` graduates past minimal images.
 
 ---
 
