@@ -251,10 +251,11 @@ pub fn retarget_string(
     }
     let from_entry = u32::from_le_bytes(raw[from_slot..from_slot + 4].try_into().unwrap());
     let to_entry = u32::from_le_bytes(raw[to_slot..to_slot + 4].try_into().unwrap());
+    // An overflowed small entry has length == 0xff (the sentinel); the 23-bit
+    // offset field then stores the overflow-table index, not a storage offset.
     let is_overflow = |e: u32| {
         let len = (e >> 24) & 0xff;
-        let off = (e >> 1) & 0x7f_ffff;
-        len == 0xff || off == 0x80_0000
+        len == 0xff
     };
     if is_overflow(from_entry) || is_overflow(to_entry) {
         return Err(Error::Write(

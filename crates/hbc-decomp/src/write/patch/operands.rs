@@ -99,6 +99,14 @@ pub fn patch_string_operand(
         .clone()
         .ok_or_else(|| Error::Write("no raw_bytes".into()))?;
 
+    // Validate string id exists in the table.
+    if new_string_id >= file.header.string_count {
+        return Err(Error::Write(format!(
+            "string id {} out of range (string_count={})",
+            new_string_id, file.header.string_count
+        )));
+    }
+
     // Resolve target to absolute offset.
     let abs_off = match target {
         OperandTarget::AbsoluteOffset(off) => off as usize,
@@ -110,6 +118,13 @@ pub fn patch_string_operand(
                 .function_headers
                 .get(function as usize)
                 .ok_or_else(|| Error::Write(format!("function {function} not found")))?;
+            let body_size = hdr.bytecode_size_in_bytes();
+            if insn_offset >= body_size {
+                return Err(Error::Write(format!(
+                    "insn_offset 0x{:x} >= function body size 0x{:x}",
+                    insn_offset, body_size
+                )));
+            }
             hdr.offset() as usize + insn_offset as usize
         }
     };

@@ -240,14 +240,19 @@ pub fn run_retarget_string(
         _ => return Err("provide --to-id or --to".into()),
     };
 
-    let from_val = file.strings[fid as usize].value.clone();
-    let to_val = file.strings[tid as usize].value.clone();
     let opts = PatchOptions::default();
+    // retarget_string validates both ids before accessing the string table,
+    // so we read values after it succeeds to avoid panicking on bad ids.
+    let to_val = file
+        .strings
+        .get(tid as usize)
+        .map(|s| s.value.clone())
+        .unwrap_or_default();
     let out = retarget_string(&mut file, &format, fid, tid, &opts)?;
     std::fs::write(output, out)?;
     eprintln!(
-        "Retargeted string {} ({:?}) → {} ({:?}) → {}",
-        fid, from_val, tid, to_val, output.display()
+        "Retargeted string {} → {} ({:?}) → {}",
+        fid, tid, to_val, output.display()
     );
     Ok(())
 }
