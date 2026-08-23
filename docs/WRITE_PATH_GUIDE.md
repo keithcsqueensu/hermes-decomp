@@ -262,6 +262,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R15 | Modern large-header field order in `create` | create | L×H | 🟧 | matches parser by hand | Via the shared `modern_large_header` descriptor (see R8). |
 | R16 | `create` writes a zero `source_hash` | create | L×L | 🟩 | fine for minimal images | **Decision:** compute the real `source_hash` vs keep zero and document created files as "unsigned at source". Minor; only once `create` backs a real emitter. |
 | R17 | No CLI / integration coverage | all | M×M | 🟧 | unit-only | CLI/integration harness: run each command on a `create_minimal` fixture; assert stdout/stderr + reparse. |
+| R18 | stderr has no formal log levels — ad-hoc `warning:`/`note:`/plain prefixes | cli | L×M | 🟩 | two-channel split is honored (data→stdout, diagnostics→stderr); ERROR is the `Result`/exit path; implicit severity via wording | Formalize the INFO/WARN prefixes (a tiny `eprintln`-wrapping helper, no external crate — keeps the pure-Rust ethos); keep ERROR on the `Result`/exit path, not a stderr line. **Decision:** local 2-line helper vs a `log`/`tracing` dep — recommend the local helper. See Stdout/stderr discipline. |
 
 Grid (residual likelihood × impact; resolved items listed below it for the downgrade earned):
 
@@ -272,7 +273,7 @@ Grid (residual likelihood × impact; resolved items listed below it for the down
 L
 I Med         ·               R5  R17          R2  R14
 K
-E Low       R13 R16           R6               R3 R8 R10 R11 R12 R15
+E Low       R13 R16           R6 R18            R3 R8 R10 R11 R12 R15
 L
   Resolved (inherent High impact, guard/fix now caps residual): R4 🟩 · R7 ⬜ · R9 ⬜
 ```
@@ -366,9 +367,34 @@ guard (Q8; Q3/Q4) pulled the residual down to ⬜.
 
 ## Stdout/stderr discipline
 
-**The contract as it stands:** *machine-consumable data goes to stdout; human status,
-progress, warnings, and notes go to stderr.* Write commands take a required `-o`/`--output`
-file and print only status to stderr.
+**The two-channel model — the split *is* the contract:**
+
+- **stdout = the requested output data**, and nothing else — the machine-consumable result the
+  invocation was *for*. Only data-producing commands write here: `secrets` (report), `emit-hasm`
+  without `-o` (HASM text), `add-string` (the bare new id). A command that only transforms a
+  file into `-o` writes **nothing** to stdout. This is load-bearing for scripting:
+  `id=$(hbc-decomp add-string …)` must capture the id and *only* the id. `add-string` originally
+  broke it (human text on stdout) — a bug fixed in `316741f` (finding F3), which is why the rule
+  is stated rather than assumed.
+- **stderr = the diagnostics / log channel** — human status, progress, notes and warnings:
+  everything *about* the run rather than the run's output. Redirecting or discarding stderr must
+  never change the captured data.
+
+**On severity levels (your INFO/WARN/ERROR model — agreed in spirit, but implicit today):**
+stderr *is* the log channel, but the levels are not formalized:
+
+- **WARN** — lines prefixed `warning:` (cross-kind retarget, `*ById` non-identifier) or `note:`
+  (duplicate string).
+- **INFO** — plain status lines (`Patched string → …`, `Created minimal HBC …`, `Injected
+  stub …`, the modern-write note). No prefix; the level is only inferable from wording.
+- **ERROR** — **not a stderr log line at all.** Errors bubble as `Result` to `main`, which
+  Debug-prints and sets a non-zero exit code (see Exit codes). So "ERROR level" lives in the
+  exit path, not the log.
+
+There is **no `log`/`tracing` crate**; the prefixes are ad-hoc. So the durable contract is the
+stdout/stderr *split*, not the levels — formalizing the INFO/WARN prefixes is tracked as **R18**
+(low residual). Do **not** teach a consumer to parse stderr by level; parse stdout for data and
+read the exit code for success/failure.
 
 Per-command reality:
 
@@ -393,16 +419,14 @@ cross-kind warning (`write_cmd.rs:264`) and the `add_string` duplicate note
 (`write_cmd.rs:301`) are recomputed and printed by their CLI handlers. Programmatic callers
 of the library functions get no unsolicited stderr.
 
-**Remaining inconsistency:**
+**Remaining inconsistency (an INFO-line gap, part of R18):** `emit-hasm -o` prints no
+confirmation, while every other `-o` writer emits an INFO status. The shared `write_output`
+helper *does* print "Wrote … (N lines, KiB)" — but `run_emit_hasm` uses a bare `std::fs::write`
+(`write_cmd.rs:143`) and bypasses it. Fix alongside R18's prefix formalization.
 
-- **`emit-hasm -o` prints no confirmation**, while every other `-o` writer does. The shared
-  `write_output` helper *does* print "Wrote … (N lines, KiB)" — but `run_emit_hasm` uses a
-  bare `std::fs::write` (`write_cmd.rs:143`) and bypasses it. ⚪ Decide before adding
-  commands.
-
-**Only `add-string` uses stdout for a result** — the deliberate scripting contract ("bare id
-on stdout for script consumption"). New commands that yield a machine value (a new id, an
-offset) should follow this; new commands that only transform a file should keep stdout empty.
+**Guidance for new commands:** a command that yields a machine value (a new id, an offset)
+puts *only* that value on stdout, like `add-string`; a command that only transforms a file into
+`-o` keeps stdout empty and reports on stderr.
 
 **Exit codes** are uniform: handlers return `Result`, errors bubble to `main` which returns
 `Box<dyn Error>` → non-zero exit with the error Debug-printed. Keep new commands on this
