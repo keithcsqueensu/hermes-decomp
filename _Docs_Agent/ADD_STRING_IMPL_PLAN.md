@@ -1,7 +1,8 @@
 # Implementation Plan — `add-string`
 
-> Status: **draft / not started.** Feasibility: **high** — an incremental extension of
-> the existing `patch_string_resize` path. Estimated ~1.5–2 days.
+> Status: **implemented** on branch `feat/add-string`. All algorithm steps, CLI wiring,
+> exports and tests (9 total, including 3 added during plan audit) are complete. The
+> optional shared `rebuild_string_region` refactor is deferred.
 > File-path/line-number citations below are accurate as of the commit this doc was
 > written against; re-grep before relying on an exact line.
 
@@ -64,7 +65,7 @@ Add to `crates/hbc-decomp/src/write/patch/strings.rs`:
 ```rust
 pub fn add_string(
     file: &mut BytecodeFile,
-    format: &FileFormat,
+    format: &BytecodeFormat,
     value: &str,
     is_identifier: bool,
     opts: &PatchOptions,
