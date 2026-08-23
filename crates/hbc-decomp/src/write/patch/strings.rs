@@ -205,6 +205,95 @@ fn update_identifier_hash(
     Ok(())
 }
 
+// Retarget string `from_id` to resolve to the same value as `to_id` by copying
+// the 4-byte SmallStringTableEntry. Metadata-only: no table rebuild, no storage
+// growth, no code change — just 4 bytes + optional identifier hash + SHA-1 footer.
+//
+// This is the "string-table retarget" technique (e.g. `H:mm` → `HH:mm`): every
+// instruction that references `from_id` now gets the value of `to_id`, globally,
+// without touching any function body.
+pub fn retarget_string(
+    file: &mut BytecodeFile,
+    _format: &BytecodeFormat,
+    from_id: u32,
+    to_id: u32,
+    _opts: &PatchOptions,
+) -> Result<Vec<u8>> {
+    let n = file.header.string_count;
+    if from_id >= n {
+        return Err(Error::Write(format!(
+            "retarget: from_id {from_id} out of range (string_count={n})"
+        )));
+    }
+    if to_id >= n {
+        return Err(Error::Write(format!(
+            "retarget: to_id {to_id} out of range (string_count={n})"
+        )));
+    }
+    if from_id == to_id {
+        return Err(Error::Write("retarget: from_id == to_id".into()));
+    }
+
+    let mut raw = file
+        .raw_bytes
+        .clone()
+        .ok_or_else(|| Error::Write("no raw_bytes".into()))?;
+
+    let small_off = section_offset(file, "small_string_table")
+        .ok_or_else(|| Error::Write("small_string_table section missing".into()))?
+        as usize;
+
+    // Check for overflow entries — refuse for now (v1).
+    let from_slot = small_off + from_id as usize * 4;
+    let to_slot = small_off + to_id as usize * 4;
+    if from_slot + 4 > raw.len() || to_slot + 4 > raw.len() {
+        return Err(Error::Write("string table slot out of range".into()));
+    }
+    let from_entry = u32::from_le_bytes(raw[from_slot..from_slot + 4].try_into().unwrap());
+    let to_entry = u32::from_le_bytes(raw[to_slot..to_slot + 4].try_into().unwrap());
+    let is_overflow = |e: u32| {
+        let len = (e >> 24) & 0xff;
+        let off = (e >> 1) & 0x7f_ffff;
+        len == 0xff || off == 0x80_0000
+    };
+    if is_overflow(from_entry) || is_overflow(to_entry) {
+        return Err(Error::Write(
+            "retarget: overflow string entries not supported (use patch-string instead)".into(),
+        ));
+    }
+
+    // Warn on cross-kind retarget.
+    let from_is_id = file.strings[from_id as usize].is_identifier;
+    let to_is_id = file.strings[to_id as usize].is_identifier;
+    if from_is_id != to_is_id {
+        eprintln!(
+            "warning: retarget crosses string/identifier boundary \
+             (from_id {} is_identifier={}, to_id {} is_identifier={})",
+            from_id, from_is_id, to_id, to_is_id
+        );
+    }
+
+    // Copy the 4-byte entry.
+    let entry_bytes: [u8; 4] = raw[to_slot..to_slot + 4].try_into().unwrap();
+    raw[from_slot..from_slot + 4].copy_from_slice(&entry_bytes);
+
+    // If from_id is an identifier, update its hash to match to_id's value.
+    if from_is_id {
+        let to_value = &file.strings[to_id as usize].value;
+        update_identifier_hash(file, &mut raw, from_id, to_value)?;
+    }
+
+    // Sync the in-memory model.
+    let to_val = file.strings[to_id as usize].value.clone();
+    let to_utf16 = file.strings[to_id as usize].is_utf16;
+    file.strings[from_id as usize].value = to_val;
+    file.strings[from_id as usize].is_utf16 = to_utf16;
+
+    let out = finalize_raw_image(raw)?;
+    file.raw_bytes = Some(out.clone());
+    Ok(out)
+}
+
 // Byte position of `debug_info_offset` inside a legacy 128-byte header. Mirrors
 // the field order written by `write_legacy_header`.
 pub(super) fn legacy_debug_info_offset_pos(header: &crate::format::BytecodeHeader) -> usize {
@@ -914,6 +1003,131 @@ mod tests {
         let re2 = BytecodeFile::parse_auto(&out2).unwrap();
         assert!(re2.strings[id].is_utf16);
         assert_eq!(re2.strings[id].value, "a€☕");
+    }
+
+    // ---- retarget_string tests ----
+
+    #[test]
+    fn retarget_string_basic() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        // Find two distinct non-empty strings to retarget.
+        let a = file.strings.iter().position(|s| !s.value.is_empty() && !s.is_utf16);
+        let b = file.strings.iter().rposition(|s| !s.value.is_empty() && !s.is_utf16);
+        let (a, b) = match (a, b) {
+            (Some(a), Some(b)) if a != b => (a as u32, b as u32),
+            _ => return,
+        };
+        let target_val = file.strings[b as usize].value.clone();
+        let opts = PatchOptions::default();
+        let out = retarget_string(&mut file, &format, a, b, &opts)
+            .expect("retarget_string basic");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert_eq!(re.strings[a as usize].value, target_val);
+    }
+
+    #[test]
+    fn retarget_string_file_size_unchanged() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let original_len = file.raw_bytes.as_ref().unwrap().len();
+        // Pick any two distinct strings.
+        let (a, b) = (0u32, 1u32);
+        if file.header.string_count < 2 {
+            return;
+        }
+        let opts = PatchOptions::default();
+        let out = retarget_string(&mut file, &format, a, b, &opts)
+            .expect("retarget_string size check");
+        // File size must not change — metadata-only edit.
+        assert_eq!(out.len(), original_len, "file size changed after retarget");
+    }
+
+    #[test]
+    fn retarget_string_other_strings_unchanged() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        if file.header.string_count < 3 {
+            return;
+        }
+        let originals: Vec<(String, bool)> = file
+            .strings
+            .iter()
+            .map(|s| (s.value.clone(), s.is_utf16))
+            .collect();
+        let opts = PatchOptions::default();
+        let _ = retarget_string(&mut file, &format, 0, 1, &opts)
+            .expect("retarget for unchanged check");
+        let re = BytecodeFile::parse_auto(file.raw_bytes.as_ref().unwrap()).unwrap();
+        for i in 2..originals.len() {
+            assert_eq!(re.strings[i].value, originals[i].0, "string {i} changed");
+        }
+    }
+
+    #[test]
+    fn retarget_string_same_id_rejected() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let opts = PatchOptions::default();
+        let result = retarget_string(&mut file, &format, 0, 0, &opts);
+        assert!(result.is_err(), "retarget same id should fail");
+    }
+
+    #[test]
+    fn retarget_string_out_of_range_rejected() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        let opts = PatchOptions::default();
+        let bad_id = file.header.string_count + 100;
+        let result = retarget_string(&mut file, &format, 0, bad_id, &opts);
+        assert!(result.is_err(), "retarget out of range should fail");
+    }
+
+    #[test]
+    fn retarget_string_identifier_hash_updated() {
+        if !std::path::Path::new(FIXTURE).exists() {
+            return;
+        }
+        let (mut file, format) = load(FIXTURE);
+        // Find two identifiers.
+        let ids: Vec<u32> = file
+            .strings
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.is_identifier)
+            .map(|(i, _)| i as u32)
+            .collect();
+        if ids.len() < 2 {
+            return;
+        }
+        let (a, b) = (ids[0], ids[ids.len() - 1]);
+        let to_val = file.strings[b as usize].value.clone();
+        let opts = PatchOptions::default();
+        let out = retarget_string(&mut file, &format, a, b, &opts)
+            .expect("retarget identifier");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert_eq!(re.strings[a as usize].value, to_val);
+        // The identifier hash for `a` should now match the hash of `to_val`.
+        let idx_a = (0..a as usize)
+            .filter(|&i| re.strings[i].is_identifier)
+            .count();
+        assert_eq!(
+            re.identifier_hashes[idx_a],
+            hermes_identifier_hash(&to_val),
+            "identifier hash not updated"
+        );
     }
 
     // ---- add_string tests ----

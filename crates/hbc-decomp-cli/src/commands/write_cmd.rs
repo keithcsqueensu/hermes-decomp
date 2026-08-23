@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use hbc_decomp::{
     add_string, create_minimal, emit_hasm_function, generate_frida_for_file, inject_stub,
     parse_hasm_with_context, patch_function_body, patch_string_by_id, patch_string_replace,
-    scan_secrets, format_secrets_report, CreateOptions, FridaHookOptions, InjectStubKind,
-    PatchOptions,
+    retarget_string, scan_secrets, format_secrets_report, CreateOptions, FridaHookOptions,
+    InjectStubKind, PatchOptions,
 };
 
 use crate::cli_args::{FunctionLayoutArg, LayoutArg};
@@ -145,6 +145,58 @@ pub fn run_emit_hasm(
     } else {
         print!("{text}");
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_retarget_string(
+    input: &PathBuf,
+    output: &PathBuf,
+    from_id: Option<u32>,
+    to_id: Option<u32>,
+    from: Option<String>,
+    to: Option<String>,
+    layout: LayoutArg,
+    function_layout: FunctionLayoutArg,
+    format_version: Option<u32>,
+) -> Result<(), BoxErr> {
+    let mut file = load_file(input, layout, function_layout)?;
+    let format = load_format(&file, format_version)?;
+    warn_modern_write(&file);
+
+    // Resolve by-value to by-id if needed.
+    let fid = match (from_id, from) {
+        (Some(id), _) => id,
+        (None, Some(val)) => {
+            file.strings
+                .iter()
+                .position(|s| s.value == val)
+                .map(|i| i as u32)
+                .ok_or_else(|| format!("string not found: {:?}", val))?
+        }
+        _ => return Err("provide --from-id or --from".into()),
+    };
+    let tid = match (to_id, to) {
+        (Some(id), _) => id,
+        (None, Some(val)) => {
+            file.strings
+                .iter()
+                .position(|s| s.value == val)
+                .map(|i| i as u32)
+                .ok_or_else(|| format!("string not found: {:?}", val))?
+        }
+        _ => return Err("provide --to-id or --to".into()),
+    };
+
+    let from_val = file.strings[fid as usize].value.clone();
+    let to_val = file.strings[tid as usize].value.clone();
+    let opts = PatchOptions::default();
+    let out = retarget_string(&mut file, &format, fid, tid, &opts)?;
+    std::fs::write(output, out)?;
+    eprintln!(
+        "Retargeted string {} ({:?}) → {} ({:?}) → {}",
+        fid, from_val, tid, to_val, output.display()
+    );
     Ok(())
 }
 

@@ -505,6 +505,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 format_version,
             )?;
         }
+        Command::RetargetString {
+            input,
+            output,
+            from_id,
+            to_id,
+            from,
+            to,
+            format_version,
+            layout,
+            function_layout,
+        } => {
+            commands::write_cmd::run_retarget_string(
+                &input,
+                &output,
+                from_id,
+                to_id,
+                from,
+                to,
+                layout,
+                function_layout,
+                format_version,
+            )?;
+        }
         Command::AddString {
             input,
             output,

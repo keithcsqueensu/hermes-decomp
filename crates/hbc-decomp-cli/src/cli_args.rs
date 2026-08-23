@@ -419,6 +419,30 @@ pub enum Command {
         #[arg(long, value_enum, default_value = "auto")]
         function_layout: FunctionLayoutArg,
     },
+    /// Retarget a string entry to resolve to another entry's value (metadata-only, no table rebuild).
+    RetargetString {
+        input: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        /// Source string id to retarget.
+        #[arg(long)]
+        from_id: Option<u32>,
+        /// Target string id whose value the source will resolve to.
+        #[arg(long)]
+        to_id: Option<u32>,
+        /// Source string value (alternative to --from-id; first match).
+        #[arg(long)]
+        from: Option<String>,
+        /// Target string value (alternative to --to-id; first match).
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        format_version: Option<u32>,
+        #[arg(long, value_enum, default_value = "auto")]
+        layout: LayoutArg,
+        #[arg(long, value_enum, default_value = "auto")]
+        function_layout: FunctionLayoutArg,
+    },
     /// Append a new string to the string table (returns the new id).
     AddString {
         input: PathBuf,

@@ -100,6 +100,8 @@ hermes-decomp asm-check app.hbc --function 5
 
 hermes-decomp add-string app.hbc --value "myNewString" -o app2.hbc
 hermes-decomp add-string app.hbc --value "myProp" --identifier -o app2.hbc
+hermes-decomp retarget-string app.hbc --from "H:mm" --to "HH:mm" -o app2.hbc
+hermes-decomp retarget-string app.hbc --from-id 5 --to-id 42 -o app2.hbc
 hermes-decomp patch-string app.hbc --old "done" --new "fini" -o app2.hbc
 hermes-decomp patch-string app.hbc --id 42 --new "hello" -o app2.hbc
 hermes-decomp patch-function app.hbc --function 5 --hasm f5.hasm -o app2.hbc
@@ -118,6 +120,14 @@ and `inject-stub` resize, including relocation of the out of line large function
 headers. All of these are verified on a real v98 Hermes engine. `create` is the
 only write command that still requires a legacy file (v96 or below). The CLI
 prints a note when it detects a modern file.
+
+`retarget-string` makes one string entry resolve to the same value as another by
+copying its 4-byte `SmallStringTableEntry`. Metadata-only: no table rebuild, no
+storage growth, no code change. Every instruction that references the source id
+now gets the target's value. Accepts `--from-id`/`--to-id` (numeric) or
+`--from`/`--to` (by value, first match). Refuses overflow entries; warns when
+crossing string/identifier boundaries. If the source is an identifier, its hash
+is updated to match the target's value.
 
 `add-string` appends a new entry to the string table and prints its id to stdout.
 Every existing string id stays stable. Pass `--identifier` for property or symbol

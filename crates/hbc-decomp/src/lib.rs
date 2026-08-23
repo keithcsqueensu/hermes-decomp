@@ -114,8 +114,8 @@ pub use write::{
     add_string, assemble_function_hasm, assemble_module, create_minimal, emit_hasm_function,
     encode_function_body, encode_instruction, inject_stub, parse_hasm, parse_hasm_with_context,
     patch_function_body, patch_function_bytes, patch_string_by_id, patch_string_replace,
-    serialize_file, verify_footer, CreateOptions, HasmModule, InjectStubKind, PatchOptions,
-    SerializeOptions,
+    retarget_string, serialize_file, verify_footer, CreateOptions, HasmModule, InjectStubKind,
+    PatchOptions, SerializeOptions,
 };
 
 pub use secrets::{format_secrets_report, scan_secrets, scan_secrets_with_custom, SecretHit};
