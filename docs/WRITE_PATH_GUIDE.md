@@ -33,8 +33,8 @@ Scope: the read/decompile path is out of scope except where a write op depends o
 >
 > ⚠️ **Superseded on the ref, not on the substance.** v99 now means the React Native
 > release branch (`origin/260318099.0.0-stable`, `b7b58dd3c`), built at
-> `C:\src\hermes-v99`; the `static_h` clone was renamed to `C:\src\hermes-src` and its
-> build removed. Every **[source]** claim below survives that move unchanged, because
+> `C:\src\hermes-v99`; the clone that build came from was renamed to `C:\src\hermes-src`
+> and its build removed. Every **[source]** claim below survives that move unchanged, because
 > `BytecodeFileFormat.h` is byte-identical between the two commits — which is exactly
 > why the header layout could not detect the difference and the opcode table had to.
 > See v99 means the release branch.
@@ -498,7 +498,7 @@ bundle we actually ship". Two independent gaps remain:
 |---|---|---|
 | **96** | `2afc7b09f` | **The Equinox bundles.** The only VM that can verify the legacy paths this project actually ships against |
 | **98** | `origin/250829098.0.0-stable` | The RN-shipped v98, and the 37-byte arm of `ModernLayout` |
-| **99** | `origin/260318099.0.0-stable` / `static_h` | The 36-byte arm |
+| **99** | `origin/260318099.0.0-stable` | The 36-byte arm. The release branch specifically — see v99 means the release branch |
 
 Each needs small MSVC/CMake portability patches, applied idempotently by the script and
 explained at each call site (upstream does not build these tools on Windows/MSVC, so these

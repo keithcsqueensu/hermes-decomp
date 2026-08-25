@@ -24,8 +24,12 @@ fixes for a toolchain upstream does not test against on Windows.
 Bytecode version to build: 96, 97, 98 or 99.
 
 .PARAMETER HermesRepo
-Path to an existing facebook/hermes clone with full history. Must contain the
-`static_h` branch and the `origin/*-stable` release branches.
+Path to an existing facebook/hermes clone with full history. Must contain
+`origin/main` and the `origin/*-stable` release branches. That is the whole
+requirement -- no `static_h` checkout is needed, and the clone's own HEAD does not
+matter: 2afc7b09f (v96) is on main, and 16b5ada82 (v97) is an ancestor of both
+`origin/250829098.0.0-stable` and `origin/260318099.0.0-stable`, so every ref below
+is reachable from those branches alone.
 
 .PARAMETER WorktreeRoot
 Where to create the per-version worktrees. Defaults to a sibling of HermesRepo.
