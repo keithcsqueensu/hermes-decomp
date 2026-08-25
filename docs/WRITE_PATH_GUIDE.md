@@ -140,6 +140,11 @@ harness gate.
   upstream checkouts provisioned by `scripts/fetch_pinned_hermes.py` and the pin strict. What is
   left is the two oracles a public runner cannot cheaply have: a per-version Hermes build
   (`vm_verify`) and the production bundle (`corpus`). Both are infrastructure, not code.
+- **One relocation primitive, and an honest `apply_reloc`** → R26. Three hand-rolled copies of
+  "splice a region, shift every offset past it", plus a stub that promises a fourth and cannot
+  work. Small and self-contained, and a prerequisite for `STRING_PACKING_PLAN.md` P1, which
+  splices a differently-sized string region and would otherwise become the fourth copy.
+  → `RELOCATION_PLAN.md`.
 - **A way to *fix* a drifted opcode table** → R19, done. `tests/upstream_pin.rs` detects drift
   and names it precisely; `scripts/gen_bytecode_table.py` applies the fix, preserving each
   file's existing shape rather than imposing one (which is what sank the earlier attempt) and
@@ -320,7 +325,11 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   bytes; it does not recompile decompiled JavaScript (CONTRIBUTING.md scope note).
 - **`apply_reloc` on structured headers is intentionally unimplemented** — it errors and
   points callers at `patch_function_bytes`/`finalize_raw_image` (`reloc.rs:23`).
-  `RelocPlan` is a placeholder type for a future structured-rebuild path.
+  `RelocPlan` is a placeholder type for a future structured-rebuild path: nothing constructs
+  one, and no shipped op needs one. The refusal is right; what is wrong is underneath it —
+  the relocation the write path *does* perform is written out three times by hand
+  (`functions.rs:168`, `strings.rs:461`, `strings.rs:756`), which is R26.
+  → **`RELOCATION_PLAN.md`** for the offset surface and a phased plan.
 - **`retarget_string` refuses overflow entries** (v1 scope) and allows — but the CLI warns
   on — a string↔identifier cross-kind retarget (`strings.rs:258`; note moved to the CLI
   layer, see Q5).
@@ -858,6 +867,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R23 | An op's output is only ever checked against our own model | all | M×H | 🟩 | Three independent oracles now exist: a real VM (does it run), upstream headers and `BytecodeList.def` (does our format model match theirs), and `hbcdump` (does a second implementation read the same instructions) | Keep reaching for an external oracle when adding a check. The three findings this pass — stale model, opcode drift, debug stack overflow — were each invisible to a test written against our own assumptions, and each fell out immediately once something else was asked. |
 | R24 | A size-changing edit silently invalidates a function's debug info | fn/inject | M×M | 🟥 | Nothing. Location streams store bytecode addresses *within* a function as SLEB128 deltas; a resize shifts `debug_info_offset` (the section) and rewrites nothing inside it, so every location past the edit point maps to the wrong instruction. No error, no warning | Exactly R9's defect, minus the guard: `functions.rs:35` refuses to resize a function declaring an exception handler, and **nothing in `write/` so much as references `has_debug_info`**. Fix is P0 in `DEBUG_INFO_AND_REGEXP_PLAN.md` — mirror the handler guard, with an explicit opt-out — then P2 relocates and the guard comes off |
 | R25 | The debug-info reader is hardcoded to the v96 header shape | all | M×M | 🟥 | Nothing. `DebugInfo::parse` takes no version (`debug.rs:88`) and `parse_header` reads seven `u32`s unconditionally (`debug.rs:148`), but `DebugInfoHeader` is **28 B at v96, 20 B at v97, 16 B at v98/v99** — upstream deleted the scope-descriptor, textified-callee and string-table offsets. On a modern file it reads 12 bytes too many and computes `data_start` from the wrong base | Degrades to a silent `Ok(DebugInfo::default())` via the bounds checks, so it reads as "no debug info" rather than failing. Never exercised either: **every committed fixture is built without debug info**. R8's pattern, in a second structure. Fix is P1 step 0 in `DEBUG_INFO_AND_REGEXP_PLAN.md`; pin the three sizes in `upstream_pin.rs` alongside the opcode tables |
+| R26 | Relocation after a splice is implemented three times by hand, and promised a fourth time by a stub that cannot work | string/fn | L×H | 🟧 | All three copies are currently correct, and checked by machine rather than by reading: `vm_verify` runs every op on a real engine, `corpus` sweeps the 62,909-function production bundle, and `commit_image` re-derives the model afterwards so none of them can leave it stale. The one asymmetry — `patch_function_bytes` re-encodes each legacy small header from the model where the string paths shift bits in place — was measured lossless on all 62,894 non-overflowed headers of the 11.39.0 bundle | The copies cannot diverge silently today because nothing compares them: a fix landing in one and not the others is invisible until a bundle is wrong. `RELOCATION_PLAN.md` P1 collapses them into one primitive and adds the differential that would catch it — a string-region grow and a body grow of the same 4-aligned delta must shift every header identically. P0 first: delete `apply_reloc`/`RelocPlan` or give them the real signature, since an exported type with no producer is R20's shape |
 
 Grid (residual likelihood × impact; resolved items listed below it for the downgrade earned):
 
@@ -868,7 +878,7 @@ Grid (residual likelihood × impact; resolved items listed below it for the down
 L
 I Med         ·               R17  R24  R25    R14  R19  R21
 K
-E Low       R13 R16           R6 R18           R3 R10 R12
+E Low       R13 R16           R6 R18           R3 R10 R12 R26
 L
   Fixed (each was a live defect, not a hypothetical):
       R1 ⬜ · R5 ⬜ · R8 ⬜ · R9 ⬜ · R11 ⬜ · R15 ⬜ · R20 ⬜ · R22 ⬜
