@@ -24,4 +24,4 @@ pub use patch::{
     PatchOptions,
 };
 pub use reloc::RelocPlan;
-pub use serialize::{finalize_raw_image, serialize_file, write_file, SerializeOptions};
+pub use serialize::{commit_image, finalize_raw_image, serialize_file, write_file, SerializeOptions};

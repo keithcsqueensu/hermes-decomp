@@ -8,7 +8,7 @@ use crate::format::FunctionHeader;
 use crate::opcode::BytecodeFormat;
 
 use crate::write::encode::encode_function_body;
-use crate::write::serialize::{finalize_raw_image, section_offset};
+use crate::write::serialize::{commit_image, section_offset};
 
 use super::strings::legacy_debug_info_offset_pos;
 use super::PatchOptions;
@@ -123,8 +123,7 @@ pub fn patch_function_bytes(
         if rel + old_size <= file.instructions.len() {
             file.instructions[rel..rel + old_size].copy_from_slice(new_body);
         }
-        let out = finalize_raw_image(raw)?;
-        file.raw_bytes = Some(out.clone());
+        let out = commit_image(file, raw)?;
         return Ok(out);
     }
 
@@ -246,8 +245,7 @@ pub fn patch_function_bytes(
     // Update instruction cache roughly
     file.instructions = rebuilt[file.instruction_offset as usize..].to_vec();
     // Drop footer if present from old slice, finalize will rehash
-    let out = finalize_raw_image(rebuilt)?;
-    file.raw_bytes = Some(out.clone());
+    let out = commit_image(file, rebuilt)?;
     Ok(out)
 }
 

@@ -7,7 +7,7 @@ use crate::file::BytecodeFile;
 use crate::io::ByteReader;
 use crate::opcode::{BytecodeFormat, Operand, OperandType};
 
-use crate::write::serialize::finalize_raw_image;
+use crate::write::serialize::commit_image;
 
 use super::PatchOptions;
 
@@ -241,8 +241,7 @@ pub fn patch_string_operand(
         None
     };
 
-    let out = finalize_raw_image(out)?;
-    file.raw_bytes = Some(out.clone());
+    let out = commit_image(file, out)?;
     Ok((out, status, warning))
 }
 

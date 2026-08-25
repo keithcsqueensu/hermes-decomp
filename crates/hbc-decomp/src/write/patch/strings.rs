@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::file::BytecodeFile;
 use crate::opcode::BytecodeFormat;
 
-use crate::write::serialize::{finalize_raw_image, section_offset};
+use crate::write::serialize::{commit_image, section_offset};
 
 use super::PatchOptions;
 
@@ -284,8 +284,7 @@ pub fn retarget_string(
     file.strings[from_id as usize].value = to_val;
     file.strings[from_id as usize].is_utf16 = to_utf16;
 
-    let out = finalize_raw_image(raw)?;
-    file.raw_bytes = Some(out.clone());
+    let out = commit_image(file, raw)?;
     Ok(out)
 }
 
@@ -492,8 +491,7 @@ fn patch_string_resize(
     file.header.overflow_string_count = overflow_count;
     file.header.string_storage_size = storage_size;
 
-    let out = finalize_raw_image(rebuilt)?;
-    file.raw_bytes = Some(out.clone());
+    let out = commit_image(file, rebuilt)?;
     Ok(out)
 }
 
@@ -790,8 +788,7 @@ pub fn add_string(
     file.header.overflow_string_count = overflow_count;
     file.header.string_storage_size = storage_size;
 
-    let out = finalize_raw_image(rebuilt)?;
-    file.raw_bytes = Some(out.clone());
+    let out = commit_image(file, rebuilt)?;
     Ok((out, new_id))
 }
 
@@ -851,8 +848,7 @@ pub fn patch_string_by_id(
     if let Some(s) = file.strings.get_mut(id as usize) {
         s.value = new_value.to_string();
     }
-    let out = finalize_raw_image(raw)?;
-    file.raw_bytes = Some(out.clone());
+    let out = commit_image(file, raw)?;
     Ok(out)
 }
 

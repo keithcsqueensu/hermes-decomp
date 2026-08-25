@@ -78,6 +78,52 @@ pub fn finalize_raw_image(mut buf: Vec<u8>) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+// Finalize a mutated image, adopt it, and hand the bytes back.
+//
+// Every patch op ends the same way, so this is the one place the write path
+// commits a result -- which makes it the right place to enforce invariant I1
+// (the structured model and the bytes agree) rather than hoping each op
+// remembers to.
+//
+// **The model is refreshed from the finalized bytes, not hand-patched.** That is
+// the whole point. I1 used to be maintained by hand: each op edited raw bytes and
+// then separately updated some subset of `file.strings` / `file.header.*` /
+// `file.function_headers`. Every op got that subset wrong. Adding a
+// debug assertion here found, on its first run:
+//
+//   * `patch_function_bytes` rewrote every function's header bytes but left
+//     `file.function_headers` entirely untouched, so after any `asm` /
+//     `patch-function` / `inject-stub` the model reported the pre-edit body size
+//     and offsets.
+//   * `patch_string_replace` on a growing string shifted every function offset in
+//     the bytes and none in the model.
+//
+// Both are exactly R5, and neither was visible to tests that only assert the
+// bytes reparse. Reparsing here makes the model *derived*, so it cannot drift.
+//
+// It also retires **R1**, which was the highest-residual risk in the register:
+// chaining a second op on a `file` whose `sections` were stale after the first
+// resize silently computed offsets against the old layout and corrupted the
+// image. `sections` is part of what gets refreshed, so I2's written contract
+// ("re-parse before chaining") is now enforced by construction instead of by
+// remembering. The tests that carefully re-parsed between ops no longer have to.
+//
+// Cost is one parse per write op: ~40ms on the 5MB Equinox bundle, and nothing
+// measurable on the fixtures. Callers were already told to pay it (I2) -- this
+// just stops them having to remember.
+pub fn commit_image(file: &mut BytecodeFile, buf: Vec<u8>) -> Result<Vec<u8>> {
+    let out = finalize_raw_image(buf)?;
+    // Note this also promotes "the finalized image reparses" from something the
+    // individual op tests assert to something every write op checks, always.
+    let refreshed = BytecodeFile::parse_auto(&out).map_err(|e| {
+        Error::Write(format!(
+            "write produced an image that does not reparse: {e}. The edit reached              finalization, so this is a malformed layout rather than a rejected input."
+        ))
+    })?;
+    *file = refreshed;
+    Ok(out)
+}
+
 // ---- create-from-scratch helpers (legacy layout, non-overflow headers) ----
 
 // Build a minimal v96-style legacy HBC: one global function with the given body

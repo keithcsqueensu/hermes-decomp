@@ -403,3 +403,56 @@ fn string_id(file: &BytecodeFile, value: &str) -> u32 {
         .position(|s| s.value == value)
         .unwrap_or_else(|| panic!("fixture should contain the string {value:?}")) as u32
 }
+
+// ---------------------------------------------------------------------------
+// R1/I2 -- chaining ops on one file, without re-parsing between them
+// ---------------------------------------------------------------------------
+
+/// Historically the single highest-residual risk: `file.sections` was not
+/// refreshed by a resize, so a *second* op on the same in-memory file computed
+/// offsets against the pre-resize layout and silently corrupted the image. The
+/// only mitigation was a written contract ("re-parse before chaining") and tests
+/// that dutifully re-parsed, which is precisely why it never showed up.
+///
+/// `commit_image` now re-derives the model from the finalized bytes, so this
+/// chains three size-changing ops with no re-parse at all and requires the result
+/// to still run. Before that change this produced a corrupt image.
+#[test]
+fn chained_size_changing_ops_need_no_reparse() {
+    for version in FIXTURE_VERSIONS {
+        let bytes = fixture("plain", version);
+        let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
+        let format = format_for(&file);
+
+        // 1. Grow a string: shifts every function offset downstream.
+        patch_string_replace(
+            &mut file,
+            &format,
+            "alpha",
+            "alpha-GROWN",
+            &Default::default(),
+        )
+        .expect("grow");
+        // 2. Append a string on the *same* file object: rebuilds the string
+        //    region again, on top of the first resize.
+        add_string(&mut file, &format, "CHAINED", false, &Default::default())
+            .unwrap_or_else(|e| panic!("v{version}: second op on an unre-parsed file: {e}"));
+        // 3. And a third, so the "one stale op is survivable" reading is excluded.
+        let (out2, _) = add_string(&mut file, &format, "CHAINED_AGAIN", true, &Default::default())
+            .unwrap_or_else(|e| panic!("v{version}: third op on an unre-parsed file: {e}"));
+
+        let reparsed = BytecodeFile::parse_auto(&out2).expect("chained image reparses");
+        assert_eq!(
+            reparsed.header.string_count,
+            BytecodeFile::parse_auto(&bytes).unwrap().header.string_count + 2,
+            "v{version}: both appended strings should be present"
+        );
+        assert_runs(
+            version,
+            &out2,
+            "hi bob alpha-GROWN
+10",
+            &format!("chained-v{version}"),
+        );
+    }
+}
