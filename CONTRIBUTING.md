@@ -16,8 +16,10 @@
 > - **`origin` (`keithcsqueensu/hermes-decomp`) is the only push target.**
 > - **`upstream` is fetch-only.** Its push URL is deliberately set to a non-URL, so
 >   `git push upstream` fails rather than succeeding by accident. Do not restore it.
-> - **Never open a pull request against `SymbioticSec/hermes-decomp`** — no
->   `gh pr create -R SymbioticSec/...`, and leave `gh repo set-default` pointing at the fork.
+> - **Never open a pull request, issue or discussion against `SymbioticSec/hermes-decomp`** —
+>   nothing with `-R SymbioticSec/...`. `gh repo set-default` governs all of them at once and
+>   is set to the fork; leave it there. Feature requests and bug reports for work happening
+>   here belong on the fork's own tracker.
 > - Syncing *from* upstream is fine and expected; that is what the fetch URL is for.
 >
 > Everything below this line is upstream's own contribution guide, kept unmodified for
