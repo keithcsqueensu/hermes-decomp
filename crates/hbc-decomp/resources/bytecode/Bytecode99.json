@@ -103,6 +103,7 @@
       "Name": "NewFastArray",
       "OperandTypes": [
         "Reg8",
+        "Reg8",
         "UInt16"
       ],
       "IsJump": false
@@ -2037,86 +2038,6 @@
     },
     {
       "Opcode": 208,
-      "Name": "JGreaterN",
-      "OperandTypes": [
-        "Addr8",
-        "Reg8",
-        "Reg8"
-      ],
-      "IsJump": true
-    },
-    {
-      "Opcode": 209,
-      "Name": "JGreaterNLong",
-      "OperandTypes": [
-        "Addr32",
-        "Reg8",
-        "Reg8"
-      ],
-      "IsJump": true
-    },
-    {
-      "Opcode": 210,
-      "Name": "JNotGreaterN",
-      "OperandTypes": [
-        "Addr8",
-        "Reg8",
-        "Reg8"
-      ],
-      "IsJump": true
-    },
-    {
-      "Opcode": 211,
-      "Name": "JNotGreaterNLong",
-      "OperandTypes": [
-        "Addr32",
-        "Reg8",
-        "Reg8"
-      ],
-      "IsJump": true
-    },
-    {
-      "Opcode": 212,
-      "Name": "JGreaterEqualN",
-      "OperandTypes": [
-        "Addr8",
-        "Reg8",
-        "Reg8"
-      ],
-      "IsJump": true
-    },
-    {
-      "Opcode": 213,
-      "Name": "JGreaterEqualNLong",
-      "OperandTypes": [
-        "Addr32",
-        "Reg8",
-        "Reg8"
-      ],
-      "IsJump": true
-    },
-    {
-      "Opcode": 214,
-      "Name": "JNotGreaterEqualN",
-      "OperandTypes": [
-        "Addr8",
-        "Reg8",
-        "Reg8"
-      ],
-      "IsJump": true
-    },
-    {
-      "Opcode": 215,
-      "Name": "JNotGreaterEqualNLong",
-      "OperandTypes": [
-        "Addr32",
-        "Reg8",
-        "Reg8"
-      ],
-      "IsJump": true
-    },
-    {
-      "Opcode": 216,
       "Name": "JEqual",
       "OperandTypes": [
         "Addr8",
@@ -2126,7 +2047,7 @@
       "IsJump": true
     },
     {
-      "Opcode": 217,
+      "Opcode": 209,
       "Name": "JEqualLong",
       "OperandTypes": [
         "Addr32",
@@ -2136,7 +2057,7 @@
       "IsJump": true
     },
     {
-      "Opcode": 218,
+      "Opcode": 210,
       "Name": "JNotEqual",
       "OperandTypes": [
         "Addr8",
@@ -2146,7 +2067,7 @@
       "IsJump": true
     },
     {
-      "Opcode": 219,
+      "Opcode": 211,
       "Name": "JNotEqualLong",
       "OperandTypes": [
         "Addr32",
@@ -2156,7 +2077,7 @@
       "IsJump": true
     },
     {
-      "Opcode": 220,
+      "Opcode": 212,
       "Name": "JStrictEqual",
       "OperandTypes": [
         "Addr8",
@@ -2166,7 +2087,7 @@
       "IsJump": true
     },
     {
-      "Opcode": 221,
+      "Opcode": 213,
       "Name": "JStrictEqualLong",
       "OperandTypes": [
         "Addr32",
@@ -2176,7 +2097,7 @@
       "IsJump": true
     },
     {
-      "Opcode": 222,
+      "Opcode": 214,
       "Name": "JStrictNotEqual",
       "OperandTypes": [
         "Addr8",
@@ -2186,7 +2107,7 @@
       "IsJump": true
     },
     {
-      "Opcode": 223,
+      "Opcode": 215,
       "Name": "JStrictNotEqualLong",
       "OperandTypes": [
         "Addr32",
@@ -2196,7 +2117,7 @@
       "IsJump": true
     },
     {
-      "Opcode": 224,
+      "Opcode": 216,
       "Name": "JmpBuiltinIs",
       "OperandTypes": [
         "Addr8",
@@ -2206,7 +2127,7 @@
       "IsJump": true
     },
     {
-      "Opcode": 225,
+      "Opcode": 217,
       "Name": "JmpBuiltinIsLong",
       "OperandTypes": [
         "Addr32",
@@ -2216,7 +2137,7 @@
       "IsJump": true
     },
     {
-      "Opcode": 226,
+      "Opcode": 218,
       "Name": "JmpBuiltinIsNot",
       "OperandTypes": [
         "Addr8",
@@ -2226,7 +2147,7 @@
       "IsJump": true
     },
     {
-      "Opcode": 227,
+      "Opcode": 219,
       "Name": "JmpBuiltinIsNotLong",
       "OperandTypes": [
         "Addr32",
@@ -2237,5 +2158,5 @@
     }
   ],
   "AbstractDefinitions": [],
-  "GitCommitHash": "913d31acd10aff31e0856657c9c566c3e72bd24a"
+  "GitCommitHash": "e9edc8b52832df9be82163fc17d2459aa456b0e2"
 }
