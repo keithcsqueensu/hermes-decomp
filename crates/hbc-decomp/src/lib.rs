@@ -57,6 +57,7 @@ pub mod error;
 pub mod file;
 pub mod format;
 pub mod io;
+pub mod modern_layout;
 pub mod opcode;
 pub mod pipeline;
 pub mod util;

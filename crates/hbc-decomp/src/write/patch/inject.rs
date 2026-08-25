@@ -7,6 +7,9 @@ use crate::format::FunctionHeader;
 use crate::opcode::BytecodeFormat;
 
 use crate::write::encode::encode_function_body;
+use crate::modern_layout::{
+    MODERN_LARGE_FRAME_SIZE, MODERN_SMALL_FLAGS_POS, MODERN_SMALL_HEADER_SIZE,
+};
 use crate::write::header_write::read_modern_large_pointer;
 use crate::write::serialize::section_offset;
 
@@ -34,6 +37,11 @@ fn reserve_modern_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<
         return Err(Error::Write("inject log: read cache full".into()));
     }
     let new_frame = log_frame_size(frame_now);
+    // Version-keyed large-header layout (WRITE_PATH_GUIDE R8/R11). The eight u32
+    // fields are the same in every supported modern version, so frame_size and
+    // read_cache_size happen not to have moved -- but go through the descriptor
+    // so that stays a checked fact rather than a lucky constant.
+    let layout = crate::modern_layout::ModernLayout::for_version(file.header.version)?;
     let fh_sec = section_offset(file, "function_headers")
         .ok_or_else(|| Error::Write("function_headers section missing".into()))?
         as usize;
@@ -45,16 +53,19 @@ fn reserve_modern_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<
     // The overflow bit lives in the small header (byte 11). For an overflowed
     // function the parsed struct flags come from the large header instead, which
     // does not carry the bit, so read it straight from the small header here.
-    let overflowed = raw[slot + 11] & crate::format::FLAG_OVERFLOWED != 0;
+    let overflowed =
+        raw[slot + MODERN_SMALL_FLAGS_POS] & crate::format::FLAG_OVERFLOWED != 0;
     if overflowed {
-        // Large header layout: frame_size is the u32 at +28, read_cache_size the
-        // u8 at +32.
-        let lp = read_modern_large_pointer(&raw[slot..slot + 12])? as usize;
-        if lp + 33 > raw.len() {
-            return Err(Error::Write("inject log: large header out of range".into()));
+        let lp = read_modern_large_pointer(&raw[slot..slot + MODERN_SMALL_HEADER_SIZE])? as usize;
+        if lp + layout.large_size() > raw.len() {
+            return Err(Error::Write(format!(
+                "inject log: large header at {lp} (+{} bytes) is out of range",
+                layout.large_size()
+            )));
         }
-        raw[lp + 28..lp + 32].copy_from_slice(&new_frame.to_le_bytes());
-        raw[lp + 32] = (cache_now + 1) as u8;
+        let frame_pos = lp + MODERN_LARGE_FRAME_SIZE;
+        raw[frame_pos..frame_pos + 4].copy_from_slice(&new_frame.to_le_bytes());
+        raw[lp + layout.large_read_cache_size_pos()] = (cache_now + 1) as u8;
     } else {
         // Small 12-byte header: frame_size at bits 64..72, read_cache_size at bits
         // 72..80 (the ninth and tenth bytes).

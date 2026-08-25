@@ -4,6 +4,11 @@ use crate::format::{
     ModernFunctionHeader, FLAG_OVERFLOWED,
 };
 use crate::io::ByteReader;
+use crate::modern_layout::{
+    ModernLayout, MODERN_LARGE_BYTECODE_SIZE, MODERN_LARGE_FRAME_SIZE,
+    MODERN_LARGE_FUNCTION_NAME, MODERN_LARGE_LOOP_DEPTH, MODERN_LARGE_NON_PTR_REG_COUNT,
+    MODERN_LARGE_NUMBER_REG_COUNT, MODERN_LARGE_OFFSET, MODERN_LARGE_PARAM_COUNT,
+};
 
 // When a function header is marked `FLAG_OVERFLOWED`, the inline header no
 // longer holds the real field values; instead it packs the byte offset to the
@@ -22,6 +27,13 @@ pub fn parse_function_headers(
     reader: &mut ByteReader<'_>,
     header: &BytecodeHeader,
 ) -> Result<Vec<FunctionHeader>> {
+    // Modern images need a version-keyed layout descriptor for the out-of-line
+    // large header; resolve it once so an unsupported modern version fails here,
+    // loudly, instead of silently mis-decoding every overflowed function.
+    let modern_layout = match header.function_header_layout {
+        FunctionHeaderLayout::Modern12 => Some(ModernLayout::for_version(header.version)?),
+        FunctionHeaderLayout::Legacy16 => None,
+    };
     let mut headers = Vec::with_capacity(reader.capacity_hint(header.function_count as usize));
     for function_id in 0..header.function_count {
         let current_pos = reader.position();
@@ -101,10 +113,13 @@ pub fn parse_function_headers(
                 //   non_ptr_reg_count       : (59,  5)
                 //   frame_size              : (64,  8)
                 //   read_cache_size         : (72,  8)
-                //   write_cache_size        : (80,  6)
-                //   num_cache_new_object    : (86,  1)
+                //   write_cache_size        : (80,  6 on v98 / 7 on v99)
+                //   num_cache_new_object    : (86,  1) -- v98 only, gone at v99
                 //   private_name_cache_size : (87,  1)
                 //   flags                   : (88,  8)
+                // Only the write_cache/num_cache_new_object split moves between
+                // the supported versions; everything else is fixed, which is why
+                // `flags` at bit 88 is reliable in the *small* header.
                 let offset = (raw & ((1u128 << 25) - 1)) as u32;
                 let param_count = ((raw >> 25) & ((1u128 << 5) - 1)) as u32;
                 let loop_depth = ((raw >> 30) & ((1u128 << 2) - 1)) as u32;
@@ -114,16 +129,25 @@ pub fn parse_function_headers(
                 let non_ptr_reg_count = ((raw >> 59) & ((1u128 << 5) - 1)) as u32;
                 let frame_size = ((raw >> 64) & 0xff) as u32;
                 let read_cache_size = ((raw >> 72) & 0xff) as u8;
-                let write_cache_size = ((raw >> 80) & 0x3f) as u8;
-                let num_cache_new_object = ((raw >> 86) & 0x1) as u8;
+                let layout = modern_layout.expect("Modern12 layout resolved above");
+                let wc_bits = layout.small_write_cache_bits();
+                let write_cache_size = ((raw >> 80) & ((1u128 << wc_bits) - 1)) as u8;
+                let num_cache_new_object = match layout.large_num_cache_new_object_pos() {
+                    Some(_) => ((raw >> 86) & 0x1) as u8,
+                    None => 0,
+                };
                 let private_name_cache_size = ((raw >> 87) & 0x1) as u8;
                 let flags = ((raw >> 88) & 0xff) as u8;
 
                 if flags & FLAG_OVERFLOWED != 0 {
                     let large_offset = ((function_name as u64) << MODERN_LARGE_OFFSET_SHIFT)
                         | (offset as u64 & MODERN_LARGE_OFFSET_MASK);
-                    let large_header =
-                        parse_large_header_modern(reader, large_offset as usize, function_id)?;
+                    let large_header = parse_large_header_modern(
+                        reader,
+                        large_offset as usize,
+                        function_id,
+                        layout,
+                    )?;
                     reader.seek(current_pos + 12)?;
                     FunctionHeader::Modern(large_header)
                 } else {
@@ -182,34 +206,51 @@ fn parse_large_header_modern(
     reader: &mut ByteReader<'_>,
     offset: usize,
     function_id: u32,
+    layout: ModernLayout,
 ) -> Result<ModernFunctionHeader> {
     let current = reader.position();
-    reader.seek(offset)?;
 
-    let mut header = ModernFunctionHeader {
-        function_id,
-        offset: reader.read_u32()?,
-        param_count: reader.read_u32()?,
-        loop_depth: reader.read_u32()?,
-        bytecode_size_in_bytes: reader.read_u32()?,
-        function_name: reader.read_u32()?,
-        number_reg_count: reader.read_u32()?,
-        non_ptr_reg_count: reader.read_u32()?,
-        frame_size: reader.read_u32()?,
-        read_cache_size: reader.read_u8()?,
-        write_cache_size: reader.read_u8()?,
-        num_cache_new_object: reader.read_u8()?,
-        private_name_cache_size: reader.read_u8()?,
-        flags: reader.read_u8()?,
-        info_offset: 0,
+    // Read the whole header as one slice and index it through the layout, rather
+    // than streaming fields in declaration order. The u8 tail after the eight u32s
+    // is exactly what changed at v99 (NumCacheNewObject was removed), so reading
+    // sequentially is what made the old code silently take `flags` from one byte
+    // past the header.
+    reader.seek(offset)?;
+    let raw = reader.read_bytes(layout.large_size())?;
+    let u32_at = |pos: usize| -> u32 {
+        u32::from_le_bytes(raw[pos..pos + 4].try_into().expect("4 bytes in range"))
     };
 
-    // The FunctionInfo (exception handler table, then debug info) is laid out
-    // immediately after the large header, 4-byte aligned. HBC >=97 small headers
-    // carry no info_offset field, so a function with exception handlers / debug
-    // info is emitted overflowed and its info section is located here.
-    let after = reader.position();
-    header.info_offset = ((after + 3) & !3) as u32;
+    let header = ModernFunctionHeader {
+        function_id,
+        offset: u32_at(MODERN_LARGE_OFFSET),
+        param_count: u32_at(MODERN_LARGE_PARAM_COUNT),
+        loop_depth: u32_at(MODERN_LARGE_LOOP_DEPTH),
+        bytecode_size_in_bytes: u32_at(MODERN_LARGE_BYTECODE_SIZE),
+        function_name: u32_at(MODERN_LARGE_FUNCTION_NAME),
+        number_reg_count: u32_at(MODERN_LARGE_NUMBER_REG_COUNT),
+        non_ptr_reg_count: u32_at(MODERN_LARGE_NON_PTR_REG_COUNT),
+        frame_size: u32_at(MODERN_LARGE_FRAME_SIZE),
+        read_cache_size: raw[layout.large_read_cache_size_pos()],
+        write_cache_size: raw[layout.large_write_cache_size_pos()],
+        num_cache_new_object: layout
+            .large_num_cache_new_object_pos()
+            .map_or(0, |p| raw[p]),
+        private_name_cache_size: raw[layout.large_private_name_cache_size_pos()],
+        // Hermes' `SmallFuncHeader(uint32_t largeHeaderOffset)` zeroes the whole
+        // small header and sets only `Overflowed`, so the large header never
+        // carries that bit. Reinstate it here, otherwise every accessor built on
+        // `flags()` -- `is_overflowed`, `has_overflowed_functions` -- reports
+        // "not overflowed" for a modern function that plainly is. The remaining
+        // bits are the large header's own, which is where the VM reads them from.
+        flags: raw[layout.large_flags_pos()] | crate::format::FLAG_OVERFLOWED,
+        // The FunctionInfo (exception handler table, then debug offsets) is laid
+        // out immediately after the large header, 4-byte aligned. HBC >=97 small
+        // headers carry no info_offset field, so a function with exception
+        // handlers / debug info is emitted overflowed and its info section is
+        // located here. Size is version-dependent -- see ModernLayout.
+        info_offset: layout.info_offset_for(offset) as u32,
+    };
 
     reader.seek(current)?;
     Ok(header)

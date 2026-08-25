@@ -291,28 +291,32 @@ pub fn build_minimal_modern(
     buf.extend_from_slice(global_body);
     align4(&mut buf);
 
-    // Out-of-line large header (FunctionInfo), 4 byte aligned. Field order matches
-    // the parser: offset, param, loop_depth, size, name, numReg, nonPtrReg, frame,
-    // then read/write/newObj/privateName caches and the flags byte.
+    // Out-of-line large header (FunctionInfo), 4 byte aligned. The u32 prefix is
+    // the same in every supported modern version; the u8 tail is NOT -- v98 has a
+    // NumCacheNewObject byte that v99 removed, so the header is 37 bytes on one
+    // and 36 on the other and the flags byte lands in a different place. Writing
+    // the v98 shape into a v99 file put `flags` one byte past where the engine
+    // reads it, which made every created v99 image throw at entry (ProhibitInvoke
+    // read as 0 = ProhibitCall). Hence the descriptor. See WRITE_PATH_GUIDE R15.
+    let layout = crate::modern_layout::ModernLayout::for_version(version)?;
     let large_header_pos = buf.len() as u32;
-    let large: [u32; 8] = [
-        instruction_offset,       // body offset
-        1,                        // param_count (this)
-        0,                        // loop_depth
-        global_body.len() as u32, // bytecode_size
-        0,                        // function_name string index "global"
-        0,                        // number_reg_count
-        1,                        // non_ptr_reg_count (r0 holds undefined)
-        1,                        // frame_size
-    ];
-    for v in large {
-        buf.extend_from_slice(&v.to_le_bytes());
-    }
-    // read/write/newObj/private caches = 0, then the flags byte. In Hermes the low
-    // two bits are ProhibitInvoke where 0 means ProhibitCall (must use `new`), so a
-    // plain callable global needs ProhibitNone, value 2.
-    const PROHIBIT_NONE: u8 = 0b10;
-    buf.extend_from_slice(&[0u8, 0, 0, 0, PROHIBIT_NONE]);
+    let mut large = vec![0u8; layout.large_size()];
+    let mut put_u32 = |at: usize, v: u32| large[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    use crate::modern_layout as ml;
+    put_u32(ml::MODERN_LARGE_OFFSET, instruction_offset);
+    put_u32(ml::MODERN_LARGE_PARAM_COUNT, 1); // `this`
+    put_u32(ml::MODERN_LARGE_LOOP_DEPTH, 0);
+    put_u32(ml::MODERN_LARGE_BYTECODE_SIZE, global_body.len() as u32);
+    put_u32(ml::MODERN_LARGE_FUNCTION_NAME, 0); // string index of "global"
+    put_u32(ml::MODERN_LARGE_NUMBER_REG_COUNT, 0);
+    put_u32(ml::MODERN_LARGE_NON_PTR_REG_COUNT, 1); // r0 holds undefined
+    put_u32(ml::MODERN_LARGE_FRAME_SIZE, 1);
+    // Cache-size bytes stay 0. The flags byte carries ProhibitInvoke in its low
+    // two bits, and that enum is `Call = 0, Construct = 1, None = 2` -- so a
+    // zeroed flags byte means "plain calls prohibited", not "no restrictions".
+    // A callable global must set ProhibitNone explicitly.
+    large[layout.large_flags_pos()] = crate::format::PROHIBIT_NONE;
+    buf.extend_from_slice(&large);
     align4(&mut buf);
 
     // Small header points at the large header. large_ptr = (name << 24) | (ptr &
@@ -366,6 +370,8 @@ pub fn section_offset(file: &BytecodeFile, name: &str) -> Option<u32> {
 }
 
 // Check whether any function header is overflowed (large header out-of-line).
+// For Modern headers the overflow bit is reinstated by the parser (the on-disk
+// large header does not carry it); see parse_large_header_modern.
 pub fn has_overflowed_functions(file: &BytecodeFile) -> bool {
     file.function_headers.iter().any(|h| match h {
         crate::format::FunctionHeader::Legacy(l) => l.flags & FLAG_OVERFLOWED != 0,

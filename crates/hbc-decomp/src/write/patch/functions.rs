@@ -158,6 +158,14 @@ pub fn patch_function_bytes(
     // large header and its internal offset / size / info fields.
     let threshold = abs_off + old_size;
     let modern = header_size == 12;
+    // Version-keyed byte layout of the out-of-line large header. Resolved once so
+    // an unsupported modern version fails here rather than mis-encoding silently
+    // (WRITE_PATH_GUIDE R8/R15).
+    let layout = if modern {
+        Some(crate::modern_layout::ModernLayout::for_version(file.header.version)?)
+    } else {
+        None
+    };
     for i in 0..file.function_headers.len() {
         let slot = fh_sec + i * header_size;
         if slot + header_size > rebuilt.len() {
@@ -170,7 +178,7 @@ pub fn patch_function_bytes(
             resize_overflowed_function(
                 &mut rebuilt,
                 slot,
-                modern,
+                layout,
                 threshold,
                 delta,
                 is_target.then_some(new_body.len() as u32),
@@ -274,15 +282,22 @@ fn resize_modern_small(
 // Relocate an overflowed function during a body resize: shift the small header
 // pointer and the large header's body offset when they sit past `threshold`, set
 // the size when this is the patched function, and shift the legacy info offset.
+// `layout` is `Some` for Modern images and carries that version's large-header
+// byte layout; `None` means Legacy16.
 fn resize_overflowed_function(
     rebuilt: &mut [u8],
     slot: usize,
-    modern: bool,
+    layout: Option<crate::modern_layout::ModernLayout>,
     threshold: usize,
     delta: i64,
     new_size: Option<u32>,
 ) -> Result<()> {
+    use crate::modern_layout::MODERN_LARGE_BYTECODE_SIZE;
     use crate::write::header_write as hw;
+    let modern = layout.is_some();
+    // Legacy large headers are a fixed 20 bytes up to and including info_offset
+    // at +16; modern is version-dependent.
+    let large_size = layout.map_or(20, |l| l.large_size());
     let large_ptr = if modern {
         hw::read_modern_large_pointer(&rebuilt[slot..slot + 12])?
     } else {
@@ -298,17 +313,20 @@ fn resize_overflowed_function(
     } else {
         large_ptr
     };
-    if new_lh + 16 > rebuilt.len() {
-        return Err(Error::Write("large header out of range".into()));
+    if new_lh + large_size > rebuilt.len() {
+        return Err(Error::Write(format!(
+            "large header at {new_lh} (+{large_size} bytes) is out of range for a              {}-byte image",
+            rebuilt.len()
+        )));
     }
     // Body offset is the first u32; shift it if the body moved.
     let body_off = u32::from_le_bytes(rebuilt[new_lh..new_lh + 4].try_into().unwrap()) as usize;
     if body_off >= threshold {
         hw::shift_u32_at(rebuilt, new_lh, delta)?;
     }
-    // Size field: legacy at +8, modern at +12.
+    // Size field: legacy at +8, modern at MODERN_LARGE_BYTECODE_SIZE.
     if let Some(sz) = new_size {
-        let size_pos = new_lh + if modern { 12 } else { 8 };
+        let size_pos = new_lh + if modern { MODERN_LARGE_BYTECODE_SIZE } else { 8 };
         rebuilt[size_pos..size_pos + 4].copy_from_slice(&sz.to_le_bytes());
     }
     // Legacy large headers keep info_offset at +16.

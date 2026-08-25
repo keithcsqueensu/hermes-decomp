@@ -7,7 +7,7 @@ pub const HEADER_SIZE: usize = 128;
 pub const LEGACY_BIGINT_MIN_VERSION: u32 = 87;
 pub const LEGACY_SEGMENT_ID_MIN_VERSION: u32 = 78;
 pub const LEGACY_FUNCTION_SOURCE_MIN_VERSION: u32 = 84;
-pub const MODERN_FUNCTION_HEADER_MIN_VERSION: u32 = 97;
+pub use crate::modern_layout::MODERN_FUNCTION_HEADER_MIN_VERSION;
 
 pub fn infer_function_header_layout(version: u32) -> FunctionHeaderLayout {
     if version >= MODERN_FUNCTION_HEADER_MIN_VERSION {
