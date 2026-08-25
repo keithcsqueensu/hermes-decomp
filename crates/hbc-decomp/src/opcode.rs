@@ -94,6 +94,14 @@ pub struct BytecodeFormat {
     pub version: u32,
     pub definitions: Vec<InstructionDef>,
     pub abstract_definitions: Vec<AbstractDefinition>,
+    /// The upstream commit this table was derived from.
+    ///
+    /// This is the pin half of R19. The tables used to record it as decoration
+    /// that nothing read, which is how `Bytecode99.json` came to claim a commit
+    /// whose `BytecodeList.def` it did not actually match. `tests/upstream_pin.rs`
+    /// reads it and requires the configured checkout to be at this commit, so a
+    /// false provenance claim is now a test failure rather than a comment.
+    pub git_commit_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +111,8 @@ struct JsonFormat {
     Definitions: Vec<JsonDefinition>,
     #[serde(default)]
     AbstractDefinitions: Vec<JsonAbstractDefinition>,
+    #[serde(default)]
+    GitCommitHash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,6 +174,7 @@ impl BytecodeFormat {
             version: parsed.Version,
             definitions,
             abstract_definitions,
+            git_commit_hash: parsed.GitCommitHash,
         })
     }
 

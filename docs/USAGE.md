@@ -222,7 +222,7 @@ and tests:
 | Suite | Checks against | Env |
 |---|---|---|
 | `tests/vm_verify.rs` | a real Hermes VM: does the patched image run | `HERMES_VM_V96` / `_V98` / `_V99` |
-| `tests/upstream_pin.rs` | the Hermes sources: does our format model still match `FUNC_HEADER_FIELDS` and `BytecodeList.def` | `HERMES_SRC_V96` / `_V98` / `_V99` |
+| `tests/upstream_pin.rs` | the Hermes sources: does our format model still match `FUNC_HEADER_FIELDS` and `BytecodeList.def` | `HERMES_SRC_V96` / `_V97` / `_V98` / `_V99` |
 | `tests/corpus.rs` | a production bundle, plus `hbcdump` as a second disassembler | `HBC_CORPUS_BUNDLE`, `HBC_CORPUS_LIMIT`, `HERMES_HBCDUMP_V96` |
 | `hbc-decomp-cli/tests/stdout_contract.rs` | the process boundary: stdout, stderr, exit codes | none |
 

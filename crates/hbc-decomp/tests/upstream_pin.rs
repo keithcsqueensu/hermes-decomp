@@ -9,7 +9,9 @@
 //! nothing re-derives: `modern_layout.rs` was hand-transcribed from the header at
 //! some point, `resources/bytecode/Bytecode*.json` was generated from a different
 //! upstream commit, and the two drifted apart without a signal. `Bytecode99.json`
-//! even records the commit it came from, and nothing reads it.
+//! even recorded the commit it came from, and nothing read it — that is now
+//! `BytecodeFormat::git_commit_hash`, checked by
+//! `tables_record_the_commit_they_came_from` below.
 //!
 //! These tests parse the upstream sources directly, so they fail when a checkout
 //! disagrees with what we encode — including the case where upstream changes the
@@ -21,6 +23,7 @@
 //!
 //! ```text
 //! HERMES_SRC_V96=C:\src\hermes-v96
+//! HERMES_SRC_V97=C:\src\hermes-v97
 //! HERMES_SRC_V98=C:\src\hermes-v98
 //! HERMES_SRC_V99=C:\src\hermes-v99
 //! ```
@@ -48,7 +51,77 @@ use std::path::{Path, PathBuf};
 use hbc_decomp::modern_layout::ModernLayout;
 use hbc_decomp::BytecodeFormat;
 
-const CHECKOUT_VERSIONS: [u32; 3] = [96, 98, 99];
+const CHECKOUT_VERSIONS: [u32; 4] = [96, 97, 98, 99];
+
+/// `git rev-parse HEAD` in a checkout, if it is a git tree at all.
+///
+/// `None` covers the legitimate cases -- a source tarball, an export, no git on
+/// PATH -- which are not failures; the content assertions still run. What it must
+/// not do is quietly return the wrong commit.
+fn checkout_head(root: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", &root.to_string_lossy(), "rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let head = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (head.len() == 40).then_some(head)
+}
+
+/// The recorded provenance has to be true.
+///
+/// R19 in one sentence: two artifacts derived from *different* upstream commits,
+/// with nothing checking either claim. The content tests below compare us against
+/// whatever checkout is configured, which is the real assertion -- but on its own
+/// it cannot tell "upstream reshaped the format" from "you pointed the env var at
+/// the wrong tree", and those want opposite responses. This separates them, and it
+/// is why `GitCommitHash` is now parsed into `BytecodeFormat` instead of sitting in
+/// the JSON as a comment nothing read.
+#[test]
+fn tables_record_the_commit_they_came_from() {
+    let mut checked = 0;
+    for version in CHECKOUT_VERSIONS {
+        let format = BytecodeFormat::for_version(version)
+            .unwrap_or_else(|e| panic!("v{version} table failed to load: {e}"));
+        let recorded = format.git_commit_hash.unwrap_or_else(|| {
+            panic!(
+                "Bytecode{version}.json records no GitCommitHash. Every table must say \
+                 which upstream commit it came from, or its agreement with a checkout \
+                 proves nothing about which dialect it encodes. Regenerate it with \
+                 scripts/gen_bytecode_table.py --commit <sha>."
+            )
+        });
+        assert_eq!(
+            recorded.len(),
+            40,
+            "v{version}: GitCommitHash is not a full 40-character sha: {recorded}"
+        );
+
+        let Some(root) = checkout_for(version) else {
+            continue;
+        };
+        let Some(head) = checkout_head(&root) else {
+            println!("  [skip] HERMES_SRC_V{version} is not a git checkout; provenance unchecked");
+            continue;
+        };
+        assert_eq!(
+            head,
+            recorded,
+            "v{version}: HERMES_SRC_V{version} points at {} which is at {head}, but \
+             Bytecode{version}.json was derived from {recorded}.\n\
+             Both may legitimately declare BYTECODE_VERSION {version} and still encode \
+             different dialects -- that is exactly the v99 episode. Point the env var at \
+             {recorded}, or regenerate the table from this checkout if the move is intended.",
+            root.display()
+        );
+        checked += 1;
+    }
+    if checked == 0 {
+        println!("  [skip] no HERMES_SRC_V* checkouts configured; provenance unchecked");
+    }
+}
 
 fn checkout_for(version: u32) -> Option<PathBuf> {
     let raw = std::env::var(format!("HERMES_SRC_V{version}")).ok()?;
@@ -195,16 +268,33 @@ fn parse_func_header_fields(root: &Path) -> Vec<HeaderField> {
 /// `sizeof(SmallFuncHeader)` as upstream's own static_assert states it. Read the
 /// assertion rather than recomputing the bitfield packing: it is upstream's own
 /// claim, so it cannot drift from upstream.
-fn upstream_small_header_size(root: &Path) -> usize {
+fn upstream_small_header_size(root: &Path) -> Option<usize> {
     let src = strip_comments(&read(root, "include/hermes/BCGen/HBC/BytecodeFileFormat.h"));
     let marker = "sizeof(SmallFuncHeader) ==";
-    let at = src.find(marker).expect("SmallFuncHeader static_assert");
-    src[at + marker.len()..]
-        .trim_start()
-        .split(|c: char| !c.is_ascii_digit())
-        .next()
-        .and_then(|n| n.parse().ok())
-        .expect("SmallFuncHeader size literal")
+    // Not every vintage states the size. v96 asserts only divisibility --
+    // `32 % sizeof(SmallFuncHeader) == 0` -- which contains this marker and whose
+    // trailing literal is 0, so a naive search reads the size as zero. v97 makes no
+    // claim at all. Require the marker to start the expression, and treat its
+    // absence as "upstream does not say" rather than as a parse failure: this reads
+    // upstream's own assertion precisely so it cannot drift, and inventing a number
+    // where upstream states none would defeat that.
+    for (at, _) in src.match_indices(marker) {
+        let before = src[..at].trim_end();
+        if before.ends_with('%') {
+            continue;
+        }
+        let literal: String = src[at + marker.len()..]
+            .trim_start()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if let Ok(n) = literal.parse::<usize>() {
+            if n > 0 {
+                return Some(n);
+            }
+        }
+    }
+    None
 }
 
 /// The load-bearing test: for every configured checkout, re-derive the modern
@@ -248,11 +338,17 @@ fn modern_layout_matches_upstream_headers() {
                     has_num_cache_new_object,
                     "v{version}: NumCacheNewObject presence disagrees with upstream"
                 );
-                assert_eq!(
-                    hbc_decomp::modern_layout::MODERN_SMALL_HEADER_SIZE,
-                    upstream_small_header_size(&root),
-                    "v{version}: small header size disagrees with upstream's static_assert"
-                );
+                if let Some(upstream_small) = upstream_small_header_size(&root) {
+                    assert_eq!(
+                        hbc_decomp::modern_layout::MODERN_SMALL_HEADER_SIZE,
+                        upstream_small,
+                        "v{version}: small header size disagrees with upstream's static_assert"
+                    );
+                } else {
+                    println!(
+                        "  [note] v{version} states no sizeof(SmallFuncHeader); size unchecked"
+                    );
+                }
             }
             Err(_) => {
                 // A refused version is fine, but only if it genuinely differs from

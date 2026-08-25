@@ -21,7 +21,7 @@ Apply-Patches. None of them change bytecode semantics -- they are portability
 fixes for a toolchain upstream does not test against on Windows.
 
 .PARAMETER Version
-Bytecode version to build: 96, 98 or 99.
+Bytecode version to build: 96, 97, 98 or 99.
 
 .PARAMETER HermesRepo
 Path to an existing facebook/hermes clone with full history. Must contain the
@@ -50,7 +50,7 @@ script detects that and refuses rather than building in the clone.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet(96, 98, 99)][int]$Version,
+    [Parameter(Mandatory)][ValidateSet(96, 97, 98, 99)][int]$Version,
     [Parameter(Mandatory)][string]$HermesRepo,
     [string]$WorktreeRoot,
     [switch]$Fixtures
@@ -71,7 +71,12 @@ $ErrorActionPreference = 'Stop'
 # JSON records in `GitCommitHash` makes the pin test fail by construction.
 $Refs = @{
     96 = @{ Ref = '2afc7b09f'; Note = 'last commit before the v97 bump; RN 0.7x-era' }
-    98 = @{ Ref = 'origin/250829098.0.0-stable'; Note = 'React Native shipped v98' }
+    # v97 has no release branch: every rn/*-stable branch through 0.84 is still
+    # BYTECODE_VERSION 96, so v97 only ever existed on the Static Hermes main line,
+    # between 16b5ada82 (the bump to 97) and c00cc5759 (the bump to 98). This is the
+    # last commit that still declares 97, chosen the same way as the v96 ref.
+    97 = @{ Ref = 'e5c8ebf2f'; Note = 'last commit before the v98 bump; Static-Hermes-only' }
+    98 = @{ Ref = 'origin/250829098.0.0-stable'; Note = 'Hermes v98 release branch' }
     # The release branch, NOT static_h. Both declare BYTECODE_VERSION 99 and their
     # BytecodeFileFormat.h is byte-identical, so the header layout cannot tell them
     # apart -- but static_h carries a later `NewFastArray` that took a third operand
@@ -80,9 +85,10 @@ $Refs = @{
     #     stable   DEFINE_OPCODE_2(NewFastArray, Reg8, UInt16)        <- 4 bytes
     #     static_h DEFINE_OPCODE_3(NewFastArray, Reg8, Reg8, UInt16)  <- 5 bytes
     #
-    # React Native ships from the release branch, so the 2-operand form is what
-    # real v99 bundles contain and what Bytecode99.json therefore encodes.
-    99 = @{ Ref = 'origin/260318099.0.0-stable'; Note = 'React Native shipped v99' }
+    # The release branch is what ships, so the 2-operand form is what a real v99
+    # bundle contains and what Bytecode99.json therefore encodes. (Note that no
+    # rn/*-stable branch has moved past v96 yet -- v97+ are Static Hermes releases.)
+    99 = @{ Ref = 'origin/260318099.0.0-stable'; Note = 'Hermes v99 release branch' }
 }
 
 function Find-CMake {
