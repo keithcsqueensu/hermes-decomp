@@ -1,5 +1,31 @@
 # Contributing
 
+> ## This fork does not contribute upstream
+>
+> This repository is a personal fork of
+> [SymbioticSec/hermes-decomp](https://github.com/SymbioticSec/hermes-decomp), kept for
+> private bytecode-analysis work. **Changes made here are not sent upstream**, and that is
+> a standing decision rather than a backlog item.
+>
+> The work in this fork is heavily AI-assisted. It is tested against real bundles and a real
+> Hermes VM, but it is not reviewed to the standard a shared upstream tree should expect, and
+> submitting it would move that review burden onto maintainers who did not ask for it.
+>
+> Practically, for anyone — human or agent — working in this checkout:
+>
+> - **`origin` (`keithcsqueensu/hermes-decomp`) is the only push target.**
+> - **`upstream` is fetch-only.** Its push URL is deliberately set to a non-URL, so
+>   `git push upstream` fails rather than succeeding by accident. Do not restore it.
+> - **Never open a pull request against `SymbioticSec/hermes-decomp`** — no
+>   `gh pr create -R SymbioticSec/...`, and leave `gh repo set-default` pointing at the fork.
+> - Syncing *from* upstream is fine and expected; that is what the fetch URL is for.
+>
+> Everything below this line is upstream's own contribution guide, kept unmodified for
+> reference. It describes how to contribute to *that* project, from a checkout that is not
+> this one.
+
+---
+
 Contributions are welcome.
 
 **Please open an issue first** before submitting a pull request. That avoids
