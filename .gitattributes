@@ -1,0 +1,2 @@
+# Hermes bytecode fixtures are binary: never apply CRLF translation to them.
+*.hbc binary

@@ -147,31 +147,59 @@ one byte per character; anything with a non-ASCII character uses UTF-16. If the
 value already exists, a note is emitted to stderr but the string is still appended
 (no silent dedup).
 
-#### Why modern output cannot be verified inside the Rust tool
+#### Verifying patched output on a real Hermes VM
 
-The correctness of a patched `.hbc` is checked by running it on a real Hermes VM.
-For HBC 96 and below a standalone `hermes` binary exists in the facebook/hermes
-releases. For HBC 97 and above there is no prebuilt host VM binary, and no way to
-run one from Rust. Hermes is a C++ engine. Its `hermesvm` shared library exports
-only C++ symbols (name mangled, using `std::shared_ptr` and JSI) with no C ABI,
-and there is no Rust binding to its VM. A real modern VM can therefore only be
-driven from C++.
+A patched `.hbc` that reparses is not the same as one that runs. Every defect
+found in the write path's modern branch produced an image that reparsed perfectly
+and was mis-executed or rejected by the real engine, so reparsing is the weaker
+check by a wide margin. Verify by running the output.
 
-The Rust crate stays fully Rust, with no C++, no FFI, and no C++ in `build.rs`.
-The modern verifier is a separate helper that runs only on macOS. It is a small
-C++ program that links the `hermesvm` framework from the
-`com.facebook.hermes:hermes-ios` Maven artifact and runs a `.hbc`. Build it on
-macOS with:
+`hvm` is a standalone command-line Hermes VM driver: give it a `.hbc` path and it
+executes it, printing the program's output and exiting non-zero on an uncaught
+error. It is an ordinary subprocess, so the crate stays fully Rust with no C++,
+no FFI and no C++ in `build.rs` — nothing needs to link `hermesvm`.
 
-```bash
-bash scripts/build/build_hermes_v98_toolchain.sh
-# writes examples/react-native/.toolchains/hermes-v98/ with hermesc, framework, hermes-run
+> An earlier version of this section claimed modern output could only be verified
+> from C++, on macOS, via a helper script. That was wrong on all three counts, and
+> the script it named never existed in this repo. The reasoning ("`hermesvm`
+> exports only mangled C++/JSI symbols with no C ABI") is correct but irrelevant:
+> you do not need to *link* the VM, only to run it.
+
+**One binary per bytecode version.** An `hvm` refuses anything but its own version:
+
+```
+$ hvm file-v96.hbc
+Wrong bytecode version. Expected 99 but got 96
 ```
 
-The `hermes-ios` artifact ships Apple frameworks, so this verifier runs only on
-macOS. On Linux and Windows there is no prebuilt modern host VM. Build Hermes from
-source, or run the `.hbc` on an Android device whose app embeds a matching
-`libhermes.so`.
+so there is no single VM that covers everything. Build the ones you need:
+
+```powershell
+# Builds hvm + hermesc for that version into a git worktree beside your clone,
+# applies the MSVC/CMake portability patches, and smoke-tests the result.
+./scripts/build_hermes_vm.ps1 -Version 96 -HermesRepo C:\src\hermes -Fixtures
+```
+
+Supported versions are 96 (the layout the Equinox bundles use), 98 and 99. The
+script prints the environment variable to set when it finishes.
+
+**Running the checks:**
+
+```powershell
+$env:HERMES_VM_V96 = 'C:\src\hermes-v96\build\bin\Release\hvm.exe'
+$env:HERMES_VM_V99 = 'C:\src\hermes\build\bin\Release\hvm.exe'
+cargo test --test vm_verify
+```
+
+`crates/hbc-decomp/tests/vm_verify.rs` runs each write op against committed
+fixtures and asserts on the VM's stdout and exit code. With no `HERMES_VM_V*` set
+the tests still run and still assert everything that does not need a VM; only the
+"and it runs" step is skipped, with a printed note. CI without a Hermes build
+therefore degrades to reparse-only coverage rather than failing.
+
+Two other binaries from the same build are useful as read-side oracles:
+`hbcdump -mode=objdump` (reference disassembly plus a string table with kinds,
+byte ranges and identifier hashes) and `hermesc` (minting known-good fixtures).
 
 ### Self-update
 

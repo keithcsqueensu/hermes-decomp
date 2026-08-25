@@ -22,13 +22,18 @@ fn warn_modern_write(file: &hbc_decomp::BytecodeFile) {
         hbc_decomp::FunctionHeaderLayout::Modern12
     );
     if modern {
+        let note = [
+            "String patches, function body resize and stub injection are all supported,",
+            "and `create` builds a modern file from scratch: legacy layout for v96 and",
+            "lower, modern layout for v97 and newer. The out of line function header",
+            "changed size between v98 and v99, so only those two modern layouts are known",
+            "here; any other v97+ version is refused rather than guessed at. To run the",
+            "output on a real engine, build a matching VM with",
+            "scripts/build_hermes_vm.ps1 and see crates/hbc-decomp/tests/vm_verify.rs.",
+        ]
+        .join("\n  ");
         eprintln!(
-            "note: modern HBC v{} (version 97 or newer, 12 byte headers). String patches,\n  \
-             function body resize and stub injection are all supported and verified on a real\n  \
-             engine, including length changes, identifiers and UTF-16. `create` builds a modern\n  \
-             file from scratch too: legacy layout for v96 and lower, modern layout for v97 and\n  \
-             newer. To run modern output yourself, build the external verifier with\n  \
-             scripts/build/build_hermes_v98_toolchain.sh on macOS.",
+            "note: modern HBC v{} (version 97 or newer, 12 byte headers).\n  {note}",
             file.header.version
         );
     }
