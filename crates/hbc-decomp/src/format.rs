@@ -1,22 +1,38 @@
 // Function-header flag bits (the `flags: u8` field of both Legacy and Modern
-// function headers). These mirror the `FunctionHeaderFlag` enum in Hermes'
-// `BytecodeFileFormat.h`.
+// function headers). These mirror `FunctionHeaderFlag` in Hermes'
+// `BytecodeFileFormat.h`, whose bit layout is **identical from v96 through v99**
+// (v99 only appends `Kind` in the top two bits):
 //
-// Bit layout (within the flags byte):
-//   bit 0 (0x01): strict mode
-//   bit 3 (0x08): hasExceptionHandler, info section carries an exception table
-//   bit 4 (0x10): prohibitInvoke == ProhibitConstruct (cannot be used with `new`)
-//   bit 5 (0x20): overflowed, the header is a "large"/overflowed header stored
-//                 out-of-line; the inline fields encode the offset to it.
+//   bits 0-1 (0x03): prohibitInvoke, an enum -- NOT a pair of independent flags
+//   bit  2   (0x04): strictMode
+//   bit  3   (0x08): hasExceptionHandler, the info section carries a handler table
+//   bit  4   (0x10): hasDebugInfo, the info section carries debug offsets
+//   bit  5   (0x20): overflowed, the real header is stored out-of-line
+//   bits 6-7 (0xC0): kind (Normal / Generator / Async), v99+
+//
+// Verified against hermesc-built fixtures on both a v96 and a v99 engine: a
+// strict, constructible function with debug info is `0x16`.
 
-// Strict-mode flag (bit 0).
-pub const FLAG_STRICT: u8 = 0x01;
+// prohibitInvoke occupies bits 0-1 and holds one of PROHIBIT_* below. It is an
+// enum, so it must be masked and compared, never tested bitwise -- ProhibitCall
+// is zero, so `flags & X != 0` can never detect it.
+pub const MASK_PROHIBIT_INVOKE: u8 = 0x03;
+// Plain calls prohibited (a class constructor: must be invoked with `new`).
+pub const PROHIBIT_CALL: u8 = 0;
+// Construction prohibited (an arrow function, method, or similar).
+pub const PROHIBIT_CONSTRUCT: u8 = 1;
+// Nothing prohibited: an ordinary function. Note this is 2, not 0, so a
+// zero-filled or misaligned flags byte reads as "calls prohibited" and fails
+// closed rather than silently permitting.
+pub const PROHIBIT_NONE: u8 = 2;
+
+// Strict-mode flag (bit 2).
+pub const FLAG_STRICT: u8 = 0x04;
 // hasExceptionHandler flag (bit 3): the function's info section has an
 // exception handler table.
 pub const FLAG_HAS_EXCEPTION_HANDLER: u8 = 0x08;
-// prohibitConstruct flag (bit 4): function cannot be used as a constructor
-// (strong indicator of an arrow function).
-pub const FLAG_PROHIBIT_CONSTRUCT: u8 = 0x10;
+// hasDebugInfo flag (bit 4): the function's info section has debug offsets.
+pub const FLAG_HAS_DEBUG_INFO: u8 = 0x10;
 // Overflowed flag (bit 5): the function header is a large/overflowed header
 // stored out-of-line.
 pub const FLAG_OVERFLOWED: u8 = 0x20;
@@ -164,10 +180,35 @@ impl FunctionHeader {
         self.flags() & FLAG_OVERFLOWED != 0
     }
 
+    // Which kinds of invocation the function prohibits: one of PROHIBIT_CALL /
+    // PROHIBIT_CONSTRUCT / PROHIBIT_NONE.
+    pub fn prohibit_invoke(&self) -> u8 {
+        self.flags() & MASK_PROHIBIT_INVOKE
+    }
+
     // Check if the function prohibits construction (cannot be used with `new`).
     // This is a strong indicator of arrow functions.
     pub fn prohibit_construct(&self) -> bool {
-        self.flags() & FLAG_PROHIBIT_CONSTRUCT != 0
+        self.prohibit_invoke() == PROHIBIT_CONSTRUCT
+    }
+
+    // Check if the function prohibits plain calls (must be invoked with `new`),
+    // i.e. a class constructor.
+    pub fn prohibit_call(&self) -> bool {
+        self.prohibit_invoke() == PROHIBIT_CALL
+    }
+
+    // Check if the function's info section carries debug offsets. Together with
+    // has_exception_handler this is what forces a modern function to be emitted
+    // overflowed, regardless of whether its fields would fit inline.
+    pub fn has_debug_info(&self) -> bool {
+        self.flags() & FLAG_HAS_DEBUG_INFO != 0
+    }
+
+    // Check if the function declares an exception-handler table. On modern
+    // layouts this must come from the large header (see modern_layout.rs).
+    pub fn has_exception_handler(&self) -> bool {
+        self.flags() & FLAG_HAS_EXCEPTION_HANDLER != 0
     }
 
     // Check if the function is in strict mode.
