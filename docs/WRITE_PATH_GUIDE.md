@@ -372,31 +372,64 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   upstream's own `static_assert` rather than recomputing bitfield packing. Given that **v97 never
   shipped** (every `rn/*-stable` branch through 0.84 is still v96; v97 existed only on the Static
   Hermes main line between `16b5ada82` and `c00cc5759`), the refusal is the right call and this
-  table is here so the next person does not re-derive it.
+  table is here so the next person does not re-derive it. It holds across all 518 of those
+  commits: `BytecodeFileFormat.h` does not change once inside v97.
 
-### The v97 opcode drift — found by opening v97 up
+### v97 is two opcode tables — the pin has to pick one
 
-Adding a v97 checkout to `upstream_pin` immediately found a second live instance of the same
-defect, in a table nobody had ever checked. `Bytecode97.json` was missing `TypedLoadParent` and
-`TypedStoreParent` (opcodes 149 and 150), so **every opcode from 149 onward was numbered two too
-low** — the whole jump family included:
+Adding a v97 checkout to `upstream_pin` immediately failed, in a table nobody had ever checked.
+Against `e5c8ebf2f`, `Bytecode97.json` was missing `TypedLoadParent` and `TypedStoreParent`
+(opcodes 149 and 150), so **every opcode from 149 onward was numbered two too low** — the whole
+jump family included:
 
 ```
-upstream v97          our table said
+e5c8ebf2f v97         our table said
   149 TypedLoadParent   149 Jmp
   150 TypedStoreParent  150 JmpLong
   151 Jmp               151 JmpTrue
   153 JmpFalse          153 JmpUndefined
 ```
 
-Same shape as the v99 drift, same consequence: no error, just wrong output, with every
-conditional jump misidentified and two opcodes unknown entirely. The cause is also the same —
-the table came from a v97 commit *earlier* than `e5c8ebf2f` ("Add Typed load/store parent to
-HBC"), and the version integer did not change when upstream added the two opcodes.
+Read as a v99-style drift, and first fixed that way — regenerated from `e5c8ebf2f`, the last
+commit that still declares 97. Checking the *other* end of the version's life showed that
+reading was wrong, and the real finding is worse than a stale table.
 
-Regenerated from `e5c8ebf2f`, the last commit that still declares 97, chosen by the same rule as
-the v96 ref. Since v97 never shipped there is no real artifact to be right about; what matters
-is that the table now records which commit it means and the pin enforces it.
+v97 exists only on `static_h`, from `16b5ada82` (2024-05-24, the bump to 97) to `c00cc5759`
+(2024-08-30, the bump to 98) — 518 commits. Of the three files the pin reads, only
+`BytecodeList.def` moves across that span, and only at `e5c8ebf2f`:
+
+| | `16b5ada82` — first commit declaring 97 | `e5c8ebf2f` — last commit declaring 97 |
+|---|---|---|
+| opcodes | 197 | 199 (`TypedLoadParent`/`TypedStoreParent`) |
+| commits carrying that table | **517** | **1** |
+| how long it existed | 3 months | **3 h 19 min** |
+| `BytecodeFileFormat.h`, `BytecodeVersion.h` | byte-identical | byte-identical |
+
+So **the version integer 97 names two different opcode tables**, and one `Bytecode97.json` can
+only encode one of them. This is not a table that drifted away from its version; it is a version
+that never had one table. The header shape is not involved: run the pin against an early tree and
+`modern_layout_matches_upstream_headers` passes — only `opcode_tables_match_upstream` fails, by
+exactly those two opcodes. Everything the refusal above rests on holds at both ends.
+
+The pre-fix table was not from "some earlier commit" either: it is *exactly* the `16b5ada82`
+table, names and operand types — v97-at-birth, correct for 517 of the 518 commits that ever
+declared 97, and simply undeclared.
+
+**Pinned at `16b5ada82`.** Two reasons. The rule it was supposed to follow — "the same rule as
+the v96 ref" — actually picks this commit: `2afc7b09f` is `main`'s 95→96 bump, the *first*
+commit declaring 96, not the last. And it is the arm 99.8% of v97's life carries, so if a v97
+artifact ever did surface it is overwhelmingly the one that decodes it.
+
+That rule is vacuous for v96, which is why the ambiguity went unnoticed: `main` has never left 96
+(still 96 at HEAD, 1177 commits and three years later), and its `BytecodeList.def` and
+`BytecodeFileFormat.h` are byte-identical from `2afc7b09f` to that HEAD — every commit in v96's
+life gives the same tables. For v97 the choice is real, and a single table necessarily picks
+which arm to be silently wrong about. Since v97 never shipped, no artifact is at stake either
+way; what matters is that the arm is *declared* and the pin enforces it.
+
+⚠ `main` and `static_h` are separate lines — they forked in 2022-08 and bumped the version
+independently — so `2afc7b09f` is **not** an ancestor of the v97 bump, and "the last v96 commit
+before v97" is not a thing that exists across the two.
 
 ---
 
@@ -667,7 +700,8 @@ Tracked as **R19, now fixed** — `tests/upstream_pin.rs` checks the descriptor 
 `Bytecode*.json` against one checkout, so they cannot silently come from different commits, and
 `tables_record_the_commit_they_came_from` additionally requires that checkout to be the commit
 each table records. The episode did recur, twice, and both times the check caught it: v99
-(`NewFastArray`) and v97 (`TypedLoadParent`/`TypedStoreParent`).
+(`NewFastArray`) and v97 (`TypedLoadParent`/`TypedStoreParent` — where the disagreement turned
+out to be v97 naming two tables; see v97 is two opcode tables).
 
 ---
 
@@ -809,7 +843,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R16 | `create` writes a zero `source_hash` | create | L×L | 🟩 | fine for minimal images | **Decision:** compute the real `source_hash` vs keep zero and document created files as "unsigned at source". Minor; only once `create` backs a real emitter. |
 | R17 | No CLI / integration coverage | all | M×M | 🟧 | `hbc-decomp-cli/tests/stdout_contract.rs` covers the stdout/stderr contract and the exit-code path across six commands, and needed the debug-stack fix (F9) to be possible at all | Extend beyond the stdout contract to argument resolution: `--at` vs `--function`+`--insn-offset` precedence, `--string` vs `--string-id`, `--from`/`--to` value→id lookup. Those are still untested. |
 | R18 | stderr has no formal log levels — ad-hoc `warning:`/`note:`/plain prefixes | cli | L×M | 🟩 | two-channel split is honored (data→stdout, diagnostics→stderr); ERROR is the `Result`/exit path; implicit severity via wording | Formalize the INFO/WARN prefixes (a tiny `eprintln`-wrapping helper, no external crate — keeps the pure-Rust ethos); keep ERROR on the `Result`/exit path, not a stderr line. **Decision:** local 2-line helper vs a `log`/`tracing` dep — recommend the local helper. See Stdout/stderr discipline. |
-| R19 | Bundled `Bytecode*.json` and the header-struct code are pinned to **different** Hermes commits, and neither pin is checked | all | M×H | ⬜ **fixed** | Three layers now. (1) `tests/upstream_pin.rs` re-derives both from a checkout and fails when either disagrees — it found the v99 drift, then the v97 one. (2) `GitCommitHash` is parsed into `BytecodeFormat` and `tables_record_the_commit_they_came_from` requires the configured checkout to *be* that commit, so “wrong checkout” and “upstream moved” are now different failures with different messages. (3) `scripts/gen_bytecode_table.py` re-derives a table from a checkout | The presence and shape of `GitCommitHash` is asserted with **no env var set**, so an unconfigured run is no longer entirely silent. The content comparison is still gated on a checkout — that residue is R21, not R19. |
+| R19 | Bundled `Bytecode*.json` and the header-struct code are pinned to **different** Hermes commits, and neither pin is checked | all | M×H | ⬜ **fixed** | Three layers now. (1) `tests/upstream_pin.rs` re-derives both from a checkout and fails when either disagrees — it found the v99 drift, then v97's two tables. (2) `GitCommitHash` is parsed into `BytecodeFormat` and `tables_record_the_commit_they_came_from` requires the configured checkout to *be* that commit, so “wrong checkout” and “upstream moved” are now different failures with different messages. (3) `scripts/gen_bytecode_table.py` re-derives a table from a checkout | The presence and shape of `GitCommitHash` is asserted with **no env var set**, so an unconfigured run is no longer entirely silent. The content comparison is still gated on a checkout — that residue is R21, not R19. |
 | R20 | CLI points users at a verifier script that does not exist | cli | H×L | ⬜ | `warn_modern_write` now points at `scripts/build_hermes_vm.ps1` and `tests/vm_verify.rs`, both of which exist; docs/USAGE.md's "cannot be verified" section is rewritten around `hvm` | — (fixed). Note nothing *tests* stderr text, so this class can rot again; see R17/R18. |
 | R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` (v96/v98/v99) and asserts stdout + exit code; `tests/corpus.rs` sweeps a production bundle; `tests/upstream_pin.rs` re-derives the format from upstream. Verified to fail on every defect they were written for | Residual stays 🟧 for one reason: **every one of these is gated on an env var, so a runner with none set is green while asserting nothing.** Either provision the Hermes builds and the corpus on the runner, or add a job that fails when they are absent. A silently-skipping suite is the same failure shape as a suite that asserts the wrong thing. |
 | R22 | An unoptimized build of the CLI overflows its stack | cli | H×M | ⬜ **fixed** | `run` is one large match over every subcommand and a debug build gives each arm's locals their own slot in one frame, exceeding Windows' 1 MiB main-thread stack. Work now runs on a 64 MiB-stack thread (F9) | — (fixed). The underlying shape is unchanged: the match still holds every arm's locals at once, so splitting arms into functions is the real fix if the frame grows again. Note the release build was always fine, which is why this survived — *test what CI builds*. |
@@ -1615,7 +1649,9 @@ modern versions are a hard error, as decided.
 | supported here? | **no — hard error** | yes | yes |
 
 Reference refs: `origin/250829098.0.0-stable` (v98), `origin/260318099.0.0-stable` (v99),
-`16b5ada82` (the v97 bump, for the shape that is refused).
+`16b5ada82` (the v97 bump — also what `Bytecode97.json` is pinned to — for the shape that is
+refused; `BytecodeFileFormat.h` is identical across the whole of v97, so either end measures the
+same shape).
 
 **Why v97 is refused rather than approximated.** It is not merely a different large-header
 size: the *small* header's bit widths differ (paramCount 7, size 15, functionName 17) and the

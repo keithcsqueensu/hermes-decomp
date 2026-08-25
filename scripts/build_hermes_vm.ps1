@@ -70,12 +70,26 @@ $ErrorActionPreference = 'Stop'
 # resources/bytecode/Bytecode<N>.json, so a ref here that is not the commit that
 # JSON records in `GitCommitHash` makes the pin test fail by construction.
 $Refs = @{
-    96 = @{ Ref = '2afc7b09f'; Note = 'last commit before the v97 bump; RN 0.7x-era' }
+    # The 95 -> 96 bump on `main`, which is the line React Native ships from. `main`
+    # has never left 96 (still 96 at HEAD, 1177 commits later), and its
+    # BytecodeList.def and BytecodeFileFormat.h are byte-identical from this commit
+    # to that HEAD -- so for v96 every commit in the version's life gives the same
+    # tables and the choice of ref within it does not matter. Note this is NOT an
+    # ancestor of the v97 bump: `main` and `static_h` forked in 2022-08 and bumped
+    # the version independently.
+    96 = @{ Ref = '2afc7b09f'; Note = 'the 95 -> 96 bump on main; RN 0.7x-era' }
     # v97 has no release branch: every rn/*-stable branch through 0.84 is still
     # BYTECODE_VERSION 96, so v97 only ever existed on the Static Hermes main line,
-    # between 16b5ada82 (the bump to 97) and c00cc5759 (the bump to 98). This is the
-    # last commit that still declares 97, chosen the same way as the v96 ref.
-    97 = @{ Ref = 'e5c8ebf2f'; Note = 'last commit before the v98 bump; Static-Hermes-only' }
+    # between 16b5ada82 (the bump to 97) and c00cc5759 (the bump to 98).
+    #
+    # Unlike v96, the choice within that span is NOT free: e5c8ebf2f added
+    # TypedLoadParent/TypedStoreParent without bumping the version, so 97 names two
+    # different opcode tables and one Bytecode97.json can only encode one of them.
+    # This is the first commit that declares 97 -- the same rule as the v96 ref, and
+    # the arm that covers 517 of the 518 commits that ever declared it (the other
+    # table existed for one commit and 3h19m). The header shape is identical at both
+    # ends, so only the opcode table turns on this.
+    97 = @{ Ref = '16b5ada82'; Note = 'the 96 -> 97 bump; Static-Hermes-only' }
     98 = @{ Ref = 'origin/250829098.0.0-stable'; Note = 'Hermes v98 release branch' }
     # The release branch, NOT static_h. Both declare BYTECODE_VERSION 99 and their
     # BytecodeFileFormat.h is byte-identical, so the header layout cannot tell them

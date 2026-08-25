@@ -218,7 +218,7 @@ on. Decide P2 on the re-measured number, and treat P3 as unlikely to be worth it
 
 Do **not** ship any of it without P0. A string packer that is 99.9% correct produces a bundle
 that loads, runs, and shows one wrong word somewhere — the worst failure mode in this codebase's
-catalogue, and the exact shape of the v99 and v97 opcode drifts.
+catalogue, and the exact shape of the v99 opcode drift and the v97 table ambiguity.
 
 ## Non-goals
 
