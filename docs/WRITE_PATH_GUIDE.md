@@ -141,6 +141,10 @@ holds one row, **R21**, and it is about the harness gate rather than about the w
   gated on reproducing all four committed tables byte for byte.
 - **Exception-handler relocation** (the one large planned feature) → Pending impl plans (Q3),
   in two phases. Unblocked: the table can now be located correctly on every supported layout.
+- **Debug info: a guard, then a reader, then relocation** → R24 and
+  `DEBUG_INFO_AND_REGEXP_PLAN.md`. P0 (the guard) is a day's work and closes a live hole; the
+  formats are already derived there, including the three incompatible location-stream
+  encodings at v96 / v97 / v98+.
 - **Encoding an overflow string entry** → R2. Detection is verified against 1,449 real entries;
   *writing* one is still unimplemented, and `create` refuses it.
 - **CLI argument-resolution coverage** → R17. The stdout/stderr contract is now asserted; `--at`
@@ -287,8 +291,15 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   files are larger than hermesc output (CLAUDE.md; `strings.rs` rebuild never re-packs).
   This is the mechanism that makes same-length-overlap patches safe (an overlapping entry
   gets its own storage on rebuild).
-- **Debug info & RegExp are opaque `u8` buffers.** Not parsed into typed structs; resize
-  ops shift `debug_info_offset` but never rewrite debug-info *internals*.
+- **Debug info & RegExp are opaque `u8` buffers.** Half true, and the other half is R24.
+  Debug info *is* partly parsed — header, scope descriptors, textified callees, debug string
+  table — but the source-location streams and the per-function `DebugOffsets` that index them
+  are not, so `DebugInfo::source_locations` is permanently empty and debug-driven variable
+  naming has never produced a name. RegExp really is raw bytes, which is harmless: its offsets
+  are storage-relative, so shifting the section cannot invalidate them. Resize ops shift
+  `debug_info_offset` but never rewrite debug-info *internals*, which is R24 — and the reader
+  itself is pinned to the v96 header shape while upstream shrank it twice, which is R25.
+  → **`DEBUG_INFO_AND_REGEXP_PLAN.md`** for the derived formats and a phased plan.
 - **No JS recompilation.** The write path assembles HASM (our disasm dialect) and patches
   bytes; it does not recompile decompiled JavaScript (CONTRIBUTING.md scope note).
 - **`apply_reloc` on structured headers is intentionally unimplemented** — it errors and
@@ -792,6 +803,8 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` (v96/v98/v99) and asserts stdout + exit code; `tests/corpus.rs` sweeps a production bundle; `tests/upstream_pin.rs` re-derives the format from upstream. Verified to fail on every defect they were written for | Residual stays 🟧 for one reason: **every one of these is gated on an env var, so a runner with none set is green while asserting nothing.** Either provision the Hermes builds and the corpus on the runner, or add a job that fails when they are absent. A silently-skipping suite is the same failure shape as a suite that asserts the wrong thing. |
 | R22 | An unoptimized build of the CLI overflows its stack | cli | H×M | ⬜ **fixed** | `run` is one large match over every subcommand and a debug build gives each arm's locals their own slot in one frame, exceeding Windows' 1 MiB main-thread stack. Work now runs on a 64 MiB-stack thread (F9) | — (fixed). The underlying shape is unchanged: the match still holds every arm's locals at once, so splitting arms into functions is the real fix if the frame grows again. Note the release build was always fine, which is why this survived — *test what CI builds*. |
 | R23 | An op's output is only ever checked against our own model | all | M×H | 🟩 | Three independent oracles now exist: a real VM (does it run), upstream headers and `BytecodeList.def` (does our format model match theirs), and `hbcdump` (does a second implementation read the same instructions) | Keep reaching for an external oracle when adding a check. The three findings this pass — stale model, opcode drift, debug stack overflow — were each invisible to a test written against our own assumptions, and each fell out immediately once something else was asked. |
+| R24 | A size-changing edit silently invalidates a function's debug info | fn/inject | M×M | 🟥 | Nothing. Location streams store bytecode addresses *within* a function as SLEB128 deltas; a resize shifts `debug_info_offset` (the section) and rewrites nothing inside it, so every location past the edit point maps to the wrong instruction. No error, no warning | Exactly R9's defect, minus the guard: `functions.rs:35` refuses to resize a function declaring an exception handler, and **nothing in `write/` so much as references `has_debug_info`**. Fix is P0 in `DEBUG_INFO_AND_REGEXP_PLAN.md` — mirror the handler guard, with an explicit opt-out — then P2 relocates and the guard comes off |
+| R25 | The debug-info reader is hardcoded to the v96 header shape | all | M×M | 🟥 | Nothing. `DebugInfo::parse` takes no version (`debug.rs:88`) and `parse_header` reads seven `u32`s unconditionally (`debug.rs:148`), but `DebugInfoHeader` is **28 B at v96, 20 B at v97, 16 B at v98/v99** — upstream deleted the scope-descriptor, textified-callee and string-table offsets. On a modern file it reads 12 bytes too many and computes `data_start` from the wrong base | Degrades to a silent `Ok(DebugInfo::default())` via the bounds checks, so it reads as "no debug info" rather than failing. Never exercised either: **every committed fixture is built without debug info**. R8's pattern, in a second structure. Fix is P1 step 0 in `DEBUG_INFO_AND_REGEXP_PLAN.md`; pin the three sizes in `upstream_pin.rs` alongside the opcode tables |
 
 Grid (residual likelihood × impact; resolved items listed below it for the downgrade earned):
 
