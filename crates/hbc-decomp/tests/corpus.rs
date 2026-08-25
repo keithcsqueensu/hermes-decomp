@@ -26,18 +26,23 @@
 //!
 //! The bundle is a third-party artifact and is deliberately not committed, so
 //! everything here skips cleanly when `HBC_CORPUS_BUNDLE` is unset.
+//! `HBC_REQUIRE_ORACLES=corpus,hbcdump` makes those skips failures where the
+//! artifacts are expected to be present. See `common`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::Command;
 
+mod common;
+use common::Oracle;
+
 use hbc_decomp::write::patch::PatchOptions;
 use hbc_decomp::{add_string, encode_function_body, retarget_string, BytecodeFile, BytecodeFormat};
 
 fn corpus() -> Option<(Vec<u8>, PathBuf)> {
-    let raw = std::env::var("HBC_CORPUS_BUNDLE").ok()?;
-    let path = PathBuf::from(raw);
-    let bytes = std::fs::read(&path).ok()?;
+    let path = common::oracle_path(Oracle::Corpus, None, |p| p.is_file(), "an existing file")?;
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("HBC_CORPUS_BUNDLE={}: {e}", path.display()));
     Some((bytes, path))
 }
 
@@ -56,7 +61,7 @@ macro_rules! corpus_or_skip {
         match corpus() {
             Some(v) => v,
             None => {
-                println!("  [skip] HBC_CORPUS_BUNDLE not set");
+                common::skip_or_fail(Oracle::Corpus, None, "HBC_CORPUS_BUNDLE not set");
                 return;
             }
         }
@@ -525,15 +530,19 @@ fn disassembly_matches_hbcdump() {
     let file = BytecodeFile::parse_auto(&bytes).expect("corpus parses");
     let version = file.header.version;
 
-    let Ok(dump) = std::env::var(format!("HERMES_HBCDUMP_V{version}")) else {
-        println!("  [skip] no HERMES_HBCDUMP_V{version}");
+    let Some(dump) = common::oracle_path(
+        Oracle::HbcDump,
+        Some(version),
+        |p| p.is_file(),
+        "an existing file",
+    ) else {
+        common::skip_or_fail(
+            Oracle::HbcDump,
+            Some(version),
+            &format!("no HERMES_HBCDUMP_V{version}"),
+        );
         return;
     };
-    let dump = PathBuf::from(dump);
-    if !dump.is_file() {
-        println!("  [skip] HERMES_HBCDUMP_V{version} does not point at a file");
-        return;
-    }
 
     // hbcdump is an interactive REPL; feed it one command on stdin.
     let mut child = Command::new(&dump)

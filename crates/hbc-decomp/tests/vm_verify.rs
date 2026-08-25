@@ -29,9 +29,15 @@
 //! handler guard firing correctly, ops succeeding, output reparsing). Only the
 //! "and it runs" assertion is skipped, with a printed note. This is deliberate:
 //! CI without a Hermes build degrades to today's coverage rather than failing.
+//!
+//! Where a VM *is* expected, say so: `HBC_REQUIRE_ORACLES=vm` turns every one of
+//! those skips into a failure naming the variable to set. See `common`.
 
 use std::path::PathBuf;
 use std::process::Command;
+
+mod common;
+use common::Oracle;
 
 use hbc_decomp::write::patch::PatchOptions;
 use hbc_decomp::{
@@ -64,12 +70,12 @@ fn format_for(file: &BytecodeFile) -> BytecodeFormat {
         .expect("bundled opcode table for fixture version")
 }
 
-/// Path to an `hvm` for `version`, or `None` if the env var is unset or does not
-/// point at a file that exists.
+/// Path to an `hvm` for `version`, or `None` if the env var is unset.
+///
+/// Set but not a file is a failure, not a skip: that is a stale path, and skipping
+/// it silently is how a configured run turns back into an unconfigured one.
 fn vm_for(version: u32) -> Option<PathBuf> {
-    let raw = std::env::var(format!("HERMES_VM_V{version}")).ok()?;
-    let path = PathBuf::from(raw);
-    path.is_file().then_some(path)
+    common::oracle_path(Oracle::Vm, Some(version), |p| p.is_file(), "an existing file")
 }
 
 struct VmRun {
@@ -105,7 +111,11 @@ fn run_on_vm(vm: &PathBuf, image: &[u8], label: &str) -> VmRun {
 /// version, so callers can report the skip.
 fn assert_runs(version: u32, image: &[u8], expected: &str, label: &str) -> bool {
     let Some(vm) = vm_for(version) else {
-        println!("  [skip] no HERMES_VM_V{version}; not running {label}");
+        common::skip_or_fail(
+            Oracle::Vm,
+            Some(version),
+            &format!("no HERMES_VM_V{version}; not running {label}"),
+        );
         return false;
     };
     let run = run_on_vm(&vm, image, label);

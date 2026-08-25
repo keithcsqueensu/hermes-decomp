@@ -76,7 +76,9 @@ wrong against a real engine).
 
 The **VM** column is what a real `hvm` says about that command's output. It is no longer a
 manual result: `tests/vm_verify.rs` asserts these, on v96/v98/v99 fixtures, whenever
-`HERMES_VM_V<N>` is set (R21). `n/a` means the command produces no `.hbc` to run.
+`HERMES_VM_V<N>` is set — or unconditionally, with `HBC_REQUIRE_ORACLES=vm`, which turns a
+missing VM into a failure rather than a skip (R21). `n/a` means the command produces no
+`.hbc` to run.
 
 ### Commands (all shipped)
 
@@ -129,12 +131,15 @@ numbered list — it lives as attributes on durable risk rows (see below).
 Where the not-yet-done work is tracked — pointers only, so nothing is duplicated into a second
 list that can drift. Hardening priority is *derived, not maintained*: sort the **risk register**
 (High-risk areas → Risk register) by `Residual` — 🟥 first, then 🟧. As of this pass the 🟥 column
-holds one row, **R21**, and it is about the harness gate rather than about the write path.
+holds two rows, **R24** and **R25**, and both are about debug info rather than about the
+harness gate.
 
-- **Provision the external oracles where CI runs, or fail when they are missing** → R21. Every
-  harness that found a defect this pass is env-gated, so an unconfigured run is green while
-  asserting almost nothing. This is the single highest-value remaining item and it is
-  infrastructure, not code.
+- **Provision the remaining oracles where CI runs** → R21, **half done**. `HBC_REQUIRE_ORACLES`
+  now turns an absent oracle into a failure instead of a printed skip, and
+  `.github/workflows/test.yml` runs the suite (CI previously only built binaries) with the four
+  upstream checkouts provisioned by `scripts/fetch_pinned_hermes.py` and the pin strict. What is
+  left is the two oracles a public runner cannot cheaply have: a per-version Hermes build
+  (`vm_verify`) and the production bundle (`corpus`). Both are infrastructure, not code.
 - **A way to *fix* a drifted opcode table** → R19, done. `tests/upstream_pin.rs` detects drift
   and names it precisely; `scripts/gen_bytecode_table.py` applies the fix, preserving each
   file's existing shape rather than imposing one (which is what sank the earlier attempt) and
@@ -539,8 +544,11 @@ Two design notes worth keeping:
   printed its function name *and* corrupted the handler table in the same edit. Assert program
   behaviour, not that the injected code executed.
 
-Still **R21**, at 🟧: the harness exists and works, but it is opt-in, so a CI runner with no
-VM configured is green while asserting nothing.
+Still **R21**, at 🟧, but narrower than it was. `HBC_REQUIRE_ORACLES` names the oracles a run
+requires, and an absent one then fails with the variable to set instead of printing `[skip]`;
+CI provisions the four source checkouts and runs `upstream_pin` under it. The VM half is still
+opt-in — a runner with no `hvm` is green on `vm_verify` unless `HBC_REQUIRE_ORACLES=vm` says it
+should not be.
 
 ---
 
@@ -845,7 +853,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R18 | stderr has no formal log levels — ad-hoc `warning:`/`note:`/plain prefixes | cli | L×M | 🟩 | two-channel split is honored (data→stdout, diagnostics→stderr); ERROR is the `Result`/exit path; implicit severity via wording | Formalize the INFO/WARN prefixes (a tiny `eprintln`-wrapping helper, no external crate — keeps the pure-Rust ethos); keep ERROR on the `Result`/exit path, not a stderr line. **Decision:** local 2-line helper vs a `log`/`tracing` dep — recommend the local helper. See Stdout/stderr discipline. |
 | R19 | Bundled `Bytecode*.json` and the header-struct code are pinned to **different** Hermes commits, and neither pin is checked | all | M×H | ⬜ **fixed** | Three layers now. (1) `tests/upstream_pin.rs` re-derives both from a checkout and fails when either disagrees — it found the v99 drift, then v97's two tables. (2) `GitCommitHash` is parsed into `BytecodeFormat` and `tables_record_the_commit_they_came_from` requires the configured checkout to *be* that commit, so “wrong checkout” and “upstream moved” are now different failures with different messages. (3) `scripts/gen_bytecode_table.py` re-derives a table from a checkout | The presence and shape of `GitCommitHash` is asserted with **no env var set**, so an unconfigured run is no longer entirely silent. The content comparison is still gated on a checkout — that residue is R21, not R19. |
 | R20 | CLI points users at a verifier script that does not exist | cli | H×L | ⬜ | `warn_modern_write` now points at `scripts/build_hermes_vm.ps1` and `tests/vm_verify.rs`, both of which exist; docs/USAGE.md's "cannot be verified" section is rewritten around `hvm` | — (fixed). Note nothing *tests* stderr text, so this class can rot again; see R17/R18. |
-| R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` (v96/v98/v99) and asserts stdout + exit code; `tests/corpus.rs` sweeps a production bundle; `tests/upstream_pin.rs` re-derives the format from upstream. Verified to fail on every defect they were written for | Residual stays 🟧 for one reason: **every one of these is gated on an env var, so a runner with none set is green while asserting nothing.** Either provision the Hermes builds and the corpus on the runner, or add a job that fails when they are absent. A silently-skipping suite is the same failure shape as a suite that asserts the wrong thing. |
+| R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` (v96/v98/v99) and asserts stdout + exit code; `tests/corpus.rs` sweeps a production bundle; `tests/upstream_pin.rs` re-derives the format from upstream. Verified to fail on every defect they were written for. **The gate is now closeable, and partly closed**: `HBC_REQUIRE_ORACLES` (`tests/common/mod.rs`) promotes any absent oracle from a printed `[skip]` to a failure naming the variable to set, and a set-but-wrong path is an error in every mode; `.github/workflows/test.yml` runs the suite at all (CI previously only built binaries) and re-runs `upstream_pin` with all four checkouts provisioned by `scripts/fetch_pinned_hermes.py` under `HBC_REQUIRE_ORACLES=src` | Residual 🟧 for what is still opt-in — `vm_verify` and `corpus`. Their oracles are a per-version Hermes build and a third-party bundle, so neither fits cheaply on a public runner, and a green CI run still does not mean "the output executed on a real engine". The standing work is a runner that has the builds — self-hosted, or a cached per-version build job — setting `HBC_REQUIRE_ORACLES=vm`. Note what the CI job does *not* buy: the pins are fixed commits, so it catches our encoded format drifting from the commit it claims, not upstream moving. |
 | R22 | An unoptimized build of the CLI overflows its stack | cli | H×M | ⬜ **fixed** | `run` is one large match over every subcommand and a debug build gives each arm's locals their own slot in one frame, exceeding Windows' 1 MiB main-thread stack. Work now runs on a 64 MiB-stack thread (F9) | — (fixed). The underlying shape is unchanged: the match still holds every arm's locals at once, so splitting arms into functions is the real fix if the frame grows again. Note the release build was always fine, which is why this survived — *test what CI builds*. |
 | R23 | An op's output is only ever checked against our own model | all | M×H | 🟩 | Three independent oracles now exist: a real VM (does it run), upstream headers and `BytecodeList.def` (does our format model match theirs), and `hbcdump` (does a second implementation read the same instructions) | Keep reaching for an external oracle when adding a check. The three findings this pass — stale model, opcode drift, debug stack overflow — were each invisible to a test written against our own assumptions, and each fell out immediately once something else was asked. |
 | R24 | A size-changing edit silently invalidates a function's debug info | fn/inject | M×M | 🟥 | Nothing. Location streams store bytecode addresses *within* a function as SLEB128 deltas; a resize shifts `debug_info_offset` (the section) and rewrites nothing inside it, so every location past the edit point maps to the wrong instruction. No error, no warning | Exactly R9's defect, minus the guard: `functions.rs:35` refuses to resize a function declaring an exception handler, and **nothing in `write/` so much as references `has_debug_info`**. Fix is P0 in `DEBUG_INFO_AND_REGEXP_PLAN.md` — mirror the handler guard, with an explicit opt-out — then P2 relocates and the guard comes off |
@@ -856,9 +864,9 @@ Grid (residual likelihood × impact; resolved items listed below it for the down
 ```
                        IMPACT  →
              Low             Medium            High
-  High        ·               ·                R21
+  High        ·               ·                ·
 L
-I Med         ·               R17              R14  R19
+I Med         ·               R17  R24  R25    R14  R19  R21
 K
 E Low       R13 R16           R6 R18           R3 R10 R12
 L
@@ -867,11 +875,12 @@ L
   Resolved earlier or downgraded by evidence: R4 🟩 · R7 ⬜ · R2 🟩 · R23 🟩
 ```
 
-Reading it: **R21 is now the lone high/high**, and it is a peculiar one — the harnesses it
-asks for all exist and are all proven to catch what they were written for, but every one is
-gated on an env var, so a CI runner without a Hermes build and the corpus passes while
-asserting almost nothing. That is the same shape as the problem this whole document has been
-about: a suite that looks green because it is checking the wrong thing, or nothing.
+Reading it: **nothing sits at high/high any more.** R21 came down when the gate became
+closeable — CI runs the suite and enforces the format pins, and any oracle can be declared
+mandatory — but it stays 🟧 at medium/high for the half a public runner cannot have: no VM runs
+in CI, so a green run still does not mean "the output executed". **R24 and R25 are the 🟥s**, and they are a
+different kind of thing: not ungated harnesses but unmitigated defects, both in debug info —
+a structure no committed fixture exercises at all.
 
 **R19** is the standing tripwire for the next upstream reshape; detection, provenance and
 regeneration are all built now. **R2** dropped to 🟩 on evidence rather than on work — 1,449 real overflowed
@@ -1124,13 +1133,23 @@ $env:HERMES_SRC_V97   = 'C:\src\hermes-v97'   # source only; v97 never shipped, 
 $env:HERMES_HBCDUMP_V96 = 'C:\src\hermes-v96\build\bin\Release\hbcdump.exe'
 $env:HBC_CORPUS_BUNDLE = 'C:\apks\...\index.android.bundle.backup'
 $env:HBC_CORPUS_LIMIT = '0'      # sweep all 62,909 functions (~9s); default 2000
+$env:HBC_REQUIRE_ORACLES = 'all' # absent oracle => failure, not [skip]; all|src|vm|hbcdump|corpus
 cargo test
 ```
 
-⚠️ **"Gated? skips" is the live weakness (R21).** With no env vars set, those three suites
-pass while asserting nothing at all. That is deliberate — a checkout without a Hermes build
-must still be testable — but it means a green CI run does not currently imply much. Provision
-the binaries where CI runs, or add a job that fails when they are missing.
+⚠️ **"Gated? skips" was the live weakness (R21), and is now declarable.** With no env vars
+set, those three suites still pass while asserting almost nothing — deliberate, because a
+checkout without a Hermes build has to stay testable. What changed is that a run can now say
+which oracles it refuses to do without: `HBC_REQUIRE_ORACLES=src,vm,hbcdump,corpus` (or `all`)
+makes each absent one a failure naming the variable to set, and a variable that is *set* but
+does not point at what it claims is an error in every mode. An unknown token in that list is
+itself a failure — a typo that quietly enforced nothing would be this same defect again, in
+the one place nobody would look.
+
+CI (`.github/workflows/test.yml`) runs the suite unconfigured, then provisions the four
+upstream checkouts with `scripts/fetch_pinned_hermes.py` — ~4 MB and a few seconds, because it
+is a blobless sparse fetch by the sha each table records — and re-runs `upstream_pin` under
+`HBC_REQUIRE_ORACLES=src`. `vm_verify` and `corpus` stay opt-in there.
 
 ### What each is good at, and what it cannot see
 
@@ -1184,8 +1203,8 @@ several formerly-missing cases are now **covered** and marked so below.
 >
 > Read the per-command gaps below as **second-order**. The first-order question is no
 > longer "which case is missing" but "which oracle is missing" — and the remaining
-> answer there is R21: every external oracle is opt-in, so an unconfigured run asserts
-> almost nothing.
+> answer there is R21: the external oracles are opt-in, so an unconfigured run asserts almost
+> nothing — `HBC_REQUIRE_ORACLES` is how a run declares which ones it refuses to do without.
 >
 > A second, subtler lesson from R9: `size_change_on_function_with_handlers_is_rejected` passes,
 > and the behaviour it names is broken on v99, because the test **sets the handler flag
@@ -1329,7 +1348,8 @@ its 🟢s suggested. Expect the same split next time upstream reshapes something
   real — `hvm` is a subprocess. `tests/vm_verify.rs` now runs every write op on **v96, v98 and
   v99** engines, so the legacy paths that matter for Equinox are verified by machine rather
   than by a one-time manual check. What remains: the tests are gated on `HERMES_VM_V<N>`, so a
-  runner without those binaries passes without asserting anything. See Reference VMs, R21.
+  runner without those binaries passes without asserting anything, unless it sets
+  `HBC_REQUIRE_ORACLES=vm`. See Reference VMs, R21.
 - **Handlers on modern.** The Q3/Q4 guard correctly keys on `FLAG_HAS_EXCEPTION_HANDLER` rather
   than `info_offset != 0` (which would reject every overflowed modern function and break the
   documented modern `inject-stub` path). That choice was always right; what was wrong was

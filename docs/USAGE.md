@@ -217,7 +217,7 @@ therefore degrades to reparse-only coverage rather than failing.
 
 Three further suites work the same way, each checking against a different external
 source of truth. All are opt-in, so a checkout without these artifacts still builds
-and tests:
+and tests — see **Requiring the oracles** below for how to make a run refuse to skip:
 
 | Suite | Checks against | Env |
 |---|---|---|
@@ -238,6 +238,40 @@ cargo test
 modern header layout and the whole opcode table from a checkout and fails if either
 disagrees with what this crate ships. Upstream has changed both **without bumping
 the bytecode version**, so the version number alone is not a safe signal.
+
+It needs source only, no build, so there is a cheaper way to get its four checkouts
+than building VMs — one that also guarantees they are the exact commits the tables
+record:
+
+```powershell
+python scripts/fetch_pinned_hermes.py C:\src\pins
+# v96: 2afc7b09f -> C:\src\pins\hermes-v96 (fetched)   ... and 97, 98, 99
+```
+
+Each is a blobless, sparse checkout at that version's `GitCommitHash` — about 4 MB
+and a few seconds for all four, against ~1.5 GB for a full clone.
+
+**Requiring the oracles.** An unset variable means "I do not have this oracle" and
+the suite skips with a printed note. That is what keeps an unconfigured checkout
+testable, but it also means a run can be green while asserting almost nothing.
+`HBC_REQUIRE_ORACLES` names the oracles a run refuses to do without:
+
+```powershell
+$env:HBC_REQUIRE_ORACLES = 'src'          # every HERMES_SRC_V<N>
+$env:HBC_REQUIRE_ORACLES = 'src,vm'       # ...and an hvm per fixture version
+$env:HBC_REQUIRE_ORACLES = 'all'          # src, vm, hbcdump, corpus
+```
+
+An absent oracle then fails with the variable to set rather than skipping. Two
+things are errors regardless of this setting: a variable that is *set* but does not
+point at what it claims (a stale path silently degrading to a no-op is the failure
+this exists to remove), and an unknown token in the list itself.
+
+CI runs `cargo test --workspace` unconfigured, then fetches the four pinned
+checkouts and re-runs `upstream_pin` under `HBC_REQUIRE_ORACLES=src`, so the
+bundled format tables cannot drift from the upstream commits they record without
+the build going red. `vm_verify` and `corpus` need a Hermes build and a third-party
+bundle respectively, so they stay opt-in on a public runner.
 
 `corpus` is the one worth running before trusting a change against a real bundle: it
 sweeps every function for encode/decode symmetry and diffs the disassembly against

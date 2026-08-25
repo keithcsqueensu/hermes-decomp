@@ -28,8 +28,11 @@
 //! HERMES_SRC_V99=C:\src\hermes-v99
 //! ```
 //!
-//! `scripts/build_hermes_vm.ps1` creates these worktrees. With none set the tests
-//! pass while asserting nothing and print a skip note — same trade as `vm_verify`.
+//! `scripts/fetch_pinned_hermes.py` creates them from the commits the tables record
+//! (source only, no build); `scripts/build_hermes_vm.ps1` creates them as worktrees
+//! of an existing clone, with a VM built beside them. With none set the tests pass
+//! while asserting nothing and print a skip note — same trade as `vm_verify`, and
+//! `HBC_REQUIRE_ORACLES=src` turns that skip into a failure (see `common`).
 //!
 //! ⚠️ `HERMES_SRC_V99` must be the React Native release branch,
 //! `origin/260318099.0.0-stable`, and *not* `static_h`. Both declare
@@ -50,6 +53,9 @@ use std::path::{Path, PathBuf};
 
 use hbc_decomp::modern_layout::ModernLayout;
 use hbc_decomp::BytecodeFormat;
+
+mod common;
+use common::Oracle;
 
 const CHECKOUT_VERSIONS: [u32; 4] = [96, 97, 98, 99];
 
@@ -103,7 +109,11 @@ fn tables_record_the_commit_they_came_from() {
             continue;
         };
         let Some(head) = checkout_head(&root) else {
-            println!("  [skip] HERMES_SRC_V{version} is not a git checkout; provenance unchecked");
+            common::skip_or_fail(
+                Oracle::Src,
+                Some(version),
+                &format!("HERMES_SRC_V{version} is not a git checkout; provenance unchecked"),
+            );
             continue;
         };
         assert_eq!(
@@ -119,16 +129,21 @@ fn tables_record_the_commit_they_came_from() {
         checked += 1;
     }
     if checked == 0 {
-        println!("  [skip] no HERMES_SRC_V* checkouts configured; provenance unchecked");
+        common::skip_or_fail(
+            Oracle::Src,
+            None,
+            "no HERMES_SRC_V* checkouts configured; provenance unchecked",
+        );
     }
 }
 
 fn checkout_for(version: u32) -> Option<PathBuf> {
-    let raw = std::env::var(format!("HERMES_SRC_V{version}")).ok()?;
-    let path = PathBuf::from(raw);
-    path.join("include/hermes/BCGen/HBC/BytecodeFileFormat.h")
-        .is_file()
-        .then_some(path)
+    common::oracle_path(
+        Oracle::Src,
+        Some(version),
+        |p| p.join("include/hermes/BCGen/HBC/BytecodeFileFormat.h").is_file(),
+        "a Hermes source tree (no include/hermes/BCGen/HBC/BytecodeFileFormat.h under it)",
+    )
 }
 
 fn read(root: &Path, rel: &str) -> String {
@@ -306,7 +321,7 @@ fn modern_layout_matches_upstream_headers() {
     let mut checked = 0;
     for version in CHECKOUT_VERSIONS {
         let Some(root) = checkout_for(version) else {
-            println!("  [skip] no HERMES_SRC_V{version}");
+            common::skip_or_fail(Oracle::Src, Some(version), &format!("no HERMES_SRC_V{version}"));
             continue;
         };
         let declared = upstream_version(&root);
@@ -370,7 +385,11 @@ fn modern_layout_matches_upstream_headers() {
         checked += 1;
     }
     if checked == 0 {
-        println!("  [skip] no HERMES_SRC_V* checkouts configured; asserted nothing");
+        common::skip_or_fail(
+            Oracle::Src,
+            None,
+            "no HERMES_SRC_V* checkouts configured; asserted nothing",
+        );
     }
 }
 
@@ -458,7 +477,7 @@ fn opcode_tables_match_upstream() {
     let mut checked = 0;
     for version in CHECKOUT_VERSIONS {
         let Some(root) = checkout_for(version) else {
-            println!("  [skip] no HERMES_SRC_V{version}");
+            common::skip_or_fail(Oracle::Src, Some(version), &format!("no HERMES_SRC_V{version}"));
             continue;
         };
         let upstream = parse_bytecode_list(&root);
@@ -518,6 +537,10 @@ fn opcode_tables_match_upstream() {
         checked += 1;
     }
     if checked == 0 {
-        println!("  [skip] no HERMES_SRC_V* checkouts configured; asserted nothing");
+        common::skip_or_fail(
+            Oracle::Src,
+            None,
+            "no HERMES_SRC_V* checkouts configured; asserted nothing",
+        );
     }
 }
