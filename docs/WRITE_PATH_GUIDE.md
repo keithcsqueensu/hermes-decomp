@@ -39,6 +39,22 @@ Scope: the read/decompile path is out of scope except where a write op depends o
 > the Equinox bundles need). The historical narrative below is kept as written — the
 > descriptions of *how* these failed are the durable part — with fixed items marked ⬜ in the
 > register.
+>
+> **Harness pass — four more harnesses, and each of the first two found a bug.** The theme
+> of this doc has been that the suite asserted the wrong thing; this pass attacks that
+> directly. See Test harnesses for what exists and how to run it.
+>
+> | Harness | Found |
+> |---|---|
+> | `commit_image` I1 check (`serialize.rs`) | **Every write op had a partly-stale model.** Fixed structurally by re-deriving instead of hand-syncing, which also retired **R1**, the top risk. |
+> | `tests/upstream_pin.rs` | **`===` and `==` decoded as numeric comparisons on v99.** Eight phantom opcodes shifted twelve later ones. See The v99 opcode drift. |
+> | `tests/corpus.rs` + hbcdump differential | Nothing wrong: 62,909/62,909 bodies re-encode byte-identically, 62,637 match hbcdump. First coverage of the **1,449 overflowed string entries** no fixture can produce. |
+> | `hbc-decomp-cli/tests/stdout_contract.rs` | **The debug CLI binary had always overflowed its stack**, which is very likely why R17 was never closed. |
+>
+> The pattern worth carrying: *three of the four found something, and none of the three was
+> reachable by the kind of test that already existed.* Each new harness asserts against an
+> independent source of truth — the engine, the upstream headers, a second disassembler, the
+> process boundary — rather than against our own model.
 
 ---
 
@@ -76,6 +92,12 @@ The two rows that were 🔴 were **one defect**, not two: the modern large heade
 in our code and 36 in v99. Both are fixed by the same descriptor, and both now have a test
 that fails if it regresses.
 
+Note what this table still does not show. Every "CI test" here is against a three-function
+fixture. The inputs that actually break things — overflowed string entries, UTF-16 storage,
+real exception tables, the long tail of opcodes — appear only in production bundles and are
+covered separately by `tests/corpus.rs`. A ✅ here means "the op works on a small image", not
+"the op works".
+
 ### Open questions / decisions
 
 | # | Topic | Status | Where |
@@ -98,29 +120,26 @@ numbered list — it lives as attributes on durable risk rows (see below).
 
 Where the not-yet-done work is tracked — pointers only, so nothing is duplicated into a second
 list that can drift. Hardening priority is *derived, not maintained*: sort the **risk register**
-(High-risk areas → Risk register) by `Residual` — 🟥 first (today: **R1**), then the 🟧
-cluster (**R21**, **R19**, R2, R14, R5, R17).  The modern-layout cluster that topped this
-list — R8/R9/R11/R15/R20 — is now ⬜. The register's `Hardening` column is the single home for each risk's mitigation task
-**and** its open decision.
+(High-risk areas → Risk register) by `Residual` — 🟥 first, then 🟧. As of this pass the 🟥 column
+holds one row, **R21**, and it is about the harness gate rather than about the write path.
 
-- ~~**Version-keyed modern large-header descriptor**~~ — **DONE**, `modern_layout.rs`. The
-  standing obligation it leaves behind: when a new modern version appears, add its row to
-  `ModernLayout::for_version` (everything else already routes through it) — until then that
-  version is refused, by design.
+- **Provision the external oracles where CI runs, or fail when they are missing** → R21. Every
+  harness that found a defect this pass is env-gated, so an unconfigured run is green while
+  asserting almost nothing. This is the single highest-value remaining item and it is
+  infrastructure, not code.
+- **A way to *fix* a drifted opcode table** → R19. `tests/upstream_pin.rs` detects drift and
+  names it precisely; regeneration is still manual, because the three `Bytecode*.json` files
+  are heterogeneous artifacts and a one-size regenerator destroys real data (tried, reverted).
+  Normalising the three files is the prerequisite.
 - **Exception-handler relocation** (the one large planned feature) → Pending impl plans (Q3),
-  in two phases. **No longer blocked**: the table can now be located correctly on every
-  supported layout, which was the prerequisite.
-- **VM checks exist but are opt-in** → R21. `tests/vm_verify.rs` + `scripts/build_hermes_vm.ps1`.
-  The remaining work is provisioning the VMs where CI runs (or failing when none is found),
-  and widening the fixture set beyond two programs.
-- **Pin the layout descriptor and the opcode table to one upstream commit** → R19. The only
-  tripwire for the *next* silent upstream reshape.
+  in two phases. Unblocked: the table can now be located correctly on every supported layout.
+- **Encoding an overflow string entry** → R2. Detection is verified against 1,449 real entries;
+  *writing* one is still unimplemented, and `create` refuses it.
+- **CLI argument-resolution coverage** → R17. The stdout/stderr contract is now asserted; `--at`
+  vs `--function`+`--insn-offset` precedence and the value→id lookups are not.
 - **Remaining unit-test gaps** (identifier-resize hash refresh, HASM error paths + handler
-  round-trip, CLI argument resolution) → Test matrix gaps. The former gaps `patch-string`
-  shrink, modern patch/resize and ASCII→UTF-16 on modern are now **covered by
-  `string_write_ops_preserve_program_behaviour`, VM-asserted on all three versions**.
-- **Hardening actions** (each lowers one risk's residual) → the risk register's `Hardening`
-  column; work the highest-`Residual` rows first.
+  round-trip) → Test matrix gaps.
+- **Hardening actions** (each lowers one risk's residual) → the register's `Hardening` column.
 
 ---
 
@@ -128,28 +147,45 @@ list — R8/R9/R11/R15/R20 — is now ⬜. The register's `Hardening` column is 
 
 Contracts every mutation must satisfy. Numbered so future work can cite them.
 
-**I1 — `raw_bytes` is the source of truth; the structured model is a hand-maintained
-shadow.** Every patch op clones `file.raw_bytes`, edits bytes, finalizes, then reassigns
-`file.raw_bytes = Some(out)`. `serialize_file` (`serialize.rs:28`) *errors* if `raw_bytes`
-is `None`. The structured fields (`file.strings`, `file.header.*`, `file.function_headers`,
-`file.string_kinds`, `file.identifier_hashes`) are updated **manually and partially** after
-each edit. A new op that mutates bytes but forgets to sync the model — or updates the model
-but not the bytes — leaves the two out of sync for the rest of the session.
+**I1 — `raw_bytes` is the source of truth; the structured model is *derived* from it.**
+Every patch op clones `file.raw_bytes`, edits bytes, and finishes by calling `commit_image`
+(`serialize.rs`), which finalizes and then **re-parses the result to rebuild the whole
+model**. `serialize_file` *errors* if `raw_bytes` is `None`.
 
-**I2 — `file.sections` is NOT refreshed by resize ops. Re-parse before chaining.** The
-resize/append paths (`add_string`, `patch_string_resize`, `patch_function_bytes`) move
-section boundaries but never rewrite `file.sections`. Since `section_offset()`
-(`serialize.rs:361`) reads `file.sections`, a *second* op on the same in-memory `file`
-after a resize will compute offsets against the **old** layout and corrupt the image. The
-tests work around this by re-parsing ("Re-parse so sections are fresh").
-**Contract: after any size-changing op, `BytecodeFile::parse_auto` the returned bytes
-before running another op.** `patch_function_bytes` even admits its instruction cache is
-"roughly" updated (`functions.rs:238`).
+> **This used to say "hand-maintained shadow", and that was the problem.** Each op updated
+> some subset of `file.strings` / `file.header.*` / `file.function_headers` by hand, and a
+> debug assertion added at the commit point found *every* op getting that subset wrong on its
+> first run (F8). Deriving the model removes the class rather than the instances: an op added
+> later inherits correctness instead of having to remember it.
+
+For a new op the practical rule is simply **end with `commit_image(file, buf)`**. Do not
+assign `file.raw_bytes` directly, and do not bother hand-updating model fields — anything you
+write there is overwritten by the re-parse. (The hand-sync code still present inside some ops
+is now redundant rather than load-bearing; leave it, but do not add more.)
+
+**I2 — after a size-changing op the model, including `file.sections`, is already fresh.**
+The resize/append paths (`add_string`, `patch_string_resize`, `patch_function_bytes`) move
+section boundaries, and `section_offset()` reads `file.sections`. Historically those were not
+rewritten, so a *second* op on the same in-memory `file` computed offsets against the **old**
+layout and silently corrupted the image — the highest-residual risk in the register (R1),
+held back only by a written contract and by tests that dutifully re-parsed.
+
+`commit_image`'s re-parse refreshes `sections` along with everything else, so **chaining ops
+on one `BytecodeFile` is now safe and needs no explicit re-parse.** The old contract
+("`parse_auto` the returned bytes before running another op") is satisfied by construction.
+Pinned by `chained_size_changing_ops_need_no_reparse`, which runs three chained size-changing
+ops with no re-parse and requires the output to execute on a real VM; it fails if the refresh
+is removed.
+
+The cost is one parse per write op — ~40ms on the 5MB Equinox bundle, unmeasurable on
+fixtures. That is the price the old contract already asked callers to pay, now paid in one
+place instead of at every call site.
 
 **I3 — The footer is always the last 20 bytes = `sha1(image[:-20])`.** Enforced by
-`footer.rs`. Every write path must end by routing through `finalize_raw_image`
-(`serialize.rs:66`) or `serialize_file`/`append_footer`. A raw byte edit that skips
-finalization ships a file that fails `verify_footer` and is rejected by the loader.
+`footer.rs`. Every write path must end by routing through `commit_image`, which calls
+`finalize_raw_image` (`serialize.rs`) for you — or, outside the patch ops, through
+`serialize_file`/`append_footer`. A raw byte edit that skips finalization ships a file that
+fails `verify_footer` and is rejected by the loader.
 
 **I4 — `file_length` at bytes `[32..36]` counts the footer, and is inside the hashed
 region.** This is why `finalize_raw_image` and `serialize_file` hash **twice**: rehash,
@@ -276,6 +312,12 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   `0x12`, frame 2, param 1 — `serialize.rs:179`; modern: `ProhibitNone` overflowed global
   — `serialize.rs:313`). It is a smoke-test artifact, not a general emitter. **At v99 it is
   also not executable** — see The v99 delta.
+- **Opcode tables are regenerated by hand.** `tests/upstream_pin.rs` detects drift against a
+  checkout and says exactly what differs, but there is no tool that applies the fix. A general
+  regenerator was written and abandoned: the three `Bytecode*.json` files are artifacts from
+  different eras with different indentation and different per-entry fields, and one that
+  imposes a single shape silently destroys real data (v96's populated `AbstractDefinitions`).
+  Normalise the three files before trying again. See R19 and The v99 opcode drift.
 - **Only two modern layouts are known: v98 and v99.** This *is* a real limitation, but now a
   declared one. `ModernLayout::for_version` is an allow-list; v97 (a genuinely different
   20-byte-large-header vintage with a 16-bit packed pointer and different small-header bit
@@ -527,6 +569,83 @@ That check is the only thing standing between this project and a rerun of the wh
 
 ---
 
+## The v99 opcode drift — `===` read as `>=`
+
+A second, independent drift from the same root cause as R8: something derived from upstream
+was hand-carried instead, and nothing re-derived it. Found by `tests/upstream_pin.rs` on its
+first run.
+
+### What was wrong
+
+`resources/bytecode/Bytecode99.json` contained four numeric-jump pairs — `JGreaterN`,
+`JGreaterEqualN`, `JNotGreaterN`, `JNotGreaterEqualN` — that upstream had deleted in
+`d2cd42a34` "Delete unnecessary numeric jumps". They were already gone at `913d31acd`, the
+commit the file's own `GitCommitHash` names, so the table was never generated from the commit
+it claims.
+
+**Opcode number is position in `BytecodeList.def`.** Eight phantom entries therefore pushed
+every later opcode eight positions up:
+
+| Opcode | Upstream v99 | Our table said |
+|---|---|---|
+| 208–209 | `JEqual` / `JEqualLong` | 216–217 |
+| 210–211 | `JNotEqual` / `…Long` | 218–219 |
+| 212–213 | `JStrictEqual` / `…Long` | 220–221 |
+| 214–215 | `JStrictNotEqual` / `…Long` | 222–223 |
+| 216–219 | `JmpBuiltinIs(-Not)` / `…Long` | 224–227 |
+
+So on v99, **every `===` and `==` in a conditional decoded as a numeric comparison**. This
+source:
+
+```js
+function pick(a, b) {
+  if (a === b) { return "same"; }
+  if (a == 1)  { return "one"; }
+  return "other";
+}
+```
+
+disassembled as `JGreaterEqualN` and `JGreaterN` — i.e. it read as `a >= b` and `a > 1`.
+
+### Why nothing caught it
+
+The substituted opcodes have **identical operand shapes** (`Addr8, Reg8, Reg8`), so nothing
+desynchronised, nothing errored, and every downstream consumer saw a well-formed instruction
+stream. A decompiler would confidently emit `if (a >= b)`. This is the worst failure mode
+available to a disassembler: not a crash, not garbage, but a fluent lie.
+
+It also explains why fixtures could not find it. The earlier v99 work disassembled `risky`
+and `plain` and matched `hbcdump` exactly — because neither used `===`. Opcode-numbering
+errors are invisible until you execute the specific opcode that moved.
+
+`NewFastArray` had drifted the same way (`d4f5193f0` gave it a third operand), and *that* one
+would have desynchronised decoding for the rest of any body containing it. It is
+Static-Hermes-only, so no `hermesc` output reaches it — a latent version of the same bug.
+
+### What fixed it, and what did not
+
+`Bytecode99.json` was regenerated from `BytecodeList.def` at the current upstream commit,
+preserving the two things that are ours rather than upstream's:
+
+- the trailing `S` on string-id operands (`UInt16S`), which is the same width as the unmarked
+  type and marks which operand holds a string-table id — `patch-operand` uses it;
+- `IsJump`, which is **not** derivable: v96's `SwitchImm` has an `Addr32` operand and is
+  deliberately not flagged as a jump, so "has an Addr operand" is wrong as a rule even though
+  it happens to hold for every entry of the v99 table.
+
+The emitter was required to reproduce the untouched file byte for byte before being trusted
+with modified data. That check is worth keeping as a habit: a generator that has never been
+shown to reproduce its input is not a generator, it is a reformatter.
+
+**A general regenerator was attempted and abandoned**, after it destroyed `Bytecode96.json`
+twice. The three tables are heterogeneous artifacts from different eras — v96 is tab-indented
+and carries a populated `AbstractDefinitions` plus a per-entry `AbstractDefinition` field, v98
+has no `GitCommitHash` at all, v99 has an empty `AbstractDefinitions` — and a regenerator that
+imposes one shape silently drops real data. Only v99 was wrong; v96 and v98 pass the pin check
+unchanged. Regenerating a drifted table is therefore still manual (R19).
+
+---
+
 ## High-risk areas by category
 
 **What the git history confirms empirically (see Git history findings).** There are now **two**
@@ -568,11 +687,11 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 
 | R# | Hazard | § | Inherent | Residual | Mitigation (in tree) | Hardening (todo + open decision) |
 |---|---|---|---|---|---|---|
-| R1 | Chaining a 2nd op on stale `file.sections` (I2) | string/fn | M×H | 🟥 | written contract only; tests re-parse | Refresh or dirty-guard `sections` after every size-changing op. **Decision:** (a) auto-refresh from the returned bytes vs (b) mark dirty + error until re-parsed — recommend (b) first (removes the footgun immediately). |
-| R2 | Overflow entry encode/decode (I8) | string | M×H | 🟧 | create/retarget refuse overflow; dead `0x800000` still in tree | One `is_overflow_entry`/`encode_overflow_entry` keyed on `len==0xff`, used by every string path; delete the dead `off==0x800000` branches (`strings.rs:44`, `:124`). |
+| R1 | Chaining a 2nd op on stale `file.sections` (I2) | string/fn | M×H | ⬜ **fixed** | `commit_image` re-derives the whole model (including `sections`) from the finalized bytes, so a second op cannot see a stale layout. Pinned by `chained_size_changing_ops_need_no_reparse`, which runs three chained size-changing ops with no re-parse and requires the output to execute on a real VM | — (fixed). **Decision taken** (was: refresh vs dirty-guard): refresh. The guard would have removed the footgun; the refresh removes the *class*, and costs one parse per op (~40ms on a 5MB bundle) that I2 already told callers to pay. |
+| R2 | Overflow entry encode/decode (I8) | string | M×H | 🟩 | create/retarget refuse overflow; **now exercised against 1,449 real overflowed entries** by `tests/corpus.rs`, which re-implements the `len == 0xff` sentinel independently and requires it to agree with the header count | One `is_overflow_entry`/`encode_overflow_entry` keyed on `len == 0xff`, used by every string path; delete the dead `off == 0x800000` branches (`strings.rs:44`, `:124`). Downgraded from 🟧 because the *detection* rule is now verified against production data; **encoding** an overflow entry is still unbuilt and untested (`create` refuses it). |
 | R3 | Legacy `debug_info_offset` position mis-gated | string/create | L×H | 🟧 | `legacy_debug_info_offset_pos` centralizes it | Round-trip assert after create/resize: reparse and check `debug_info_offset` + gated section sizes match intent (shared with R14). |
-| R4 | `string_kinds` / id-hash desync (I9/I12) | string | L×H | 🟩 | append-only path handled; Q7 | Debug-assert model↔bytes consistency after each op (shared with R5). |
-| R5 | Structured model ↔ bytes drift (I1) | all | M×M | 🟧 | manual, partial sync per op | `#[cfg(debug_assertions)]` check: reparse `out` and assert `strings`/`header.*`/`function_headers` match the bytes. |
+| R4 | `string_kinds` / id-hash desync (I9/I12) | string | L×H | 🟩 | append-only path handled; Q7; model can no longer drift from the bytes (R5) | Assert identifier hashes against `hbcdump`'s printed values (`i3[…] #CE5FC8AC: risky`) rather than against our own Jenkins implementation — the corpus harness has the plumbing for it. |
+| R5 | Structured model ↔ bytes drift (I1) | all | M×M | ⬜ **fixed** | `commit_image` re-derives the model by reparsing, so the two cannot disagree. The debug assertion that preceded it found *every* op partly stale on its first run — see Git history findings F8 | — (fixed). The remaining hand-sync code inside the ops is now redundant rather than load-bearing; harmless, but do not add more. |
 | R6 | UTF-16-by-content / %4 padding (I7/I5) | string | L×M | 🟩 | content-driven + tested | — |
 | R7 | Non-%4 body delta misaligns FunctionInfo (I5) | fn/inject | L×H | ⬜ | Q8 hard-error | — (retired) |
 | R8 | Modern large-header magic offsets (v99+) | fn | L×H | ⬜ **fixed** | `ModernLayout` (`modern_layout.rs`) is a version-keyed descriptor; `parse_large_header_modern`, `resize_overflowed_function`, `reserve_modern_log_regs` and `build_minimal_modern` all index through it. Unknown modern versions hard-error instead of extrapolating. Both arms (v98=37B, v99=36B) VM-verified | — (fixed; the standing task is to add a new version's row to `ModernLayout::for_version` when one appears, which R19 makes checkable) |
@@ -584,41 +703,42 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R14 | `create` section-order / header field gating | create | M×H | 🟧 | version-gated writer, no round-trip assert | Round-trip header assert (shared with R3) + CLI/integration harness (shared with R17) + a VM run (R21). |
 | R15 | Modern large-header field order in `create` | create | L×H | ⬜ **fixed** | `build_minimal_modern` writes fields at `ModernLayout` offsets and sets `PROHIBIT_NONE` at `large_flags_pos()`. `create_minimal_runs_on_vm` asserts the output **executes** on the matching engine for every fixture version | — (fixed with R8) |
 | R16 | `create` writes a zero `source_hash` | create | L×L | 🟩 | fine for minimal images | **Decision:** compute the real `source_hash` vs keep zero and document created files as "unsigned at source". Minor; only once `create` backs a real emitter. |
-| R17 | No CLI / integration coverage | all | M×M | 🟧 | unit-only | CLI/integration harness: run each command on a `create_minimal` fixture; assert stdout/stderr + reparse. |
+| R17 | No CLI / integration coverage | all | M×M | 🟧 | `hbc-decomp-cli/tests/stdout_contract.rs` covers the stdout/stderr contract and the exit-code path across six commands, and needed the debug-stack fix (F9) to be possible at all | Extend beyond the stdout contract to argument resolution: `--at` vs `--function`+`--insn-offset` precedence, `--string` vs `--string-id`, `--from`/`--to` value→id lookup. Those are still untested. |
 | R18 | stderr has no formal log levels — ad-hoc `warning:`/`note:`/plain prefixes | cli | L×M | 🟩 | two-channel split is honored (data→stdout, diagnostics→stderr); ERROR is the `Result`/exit path; implicit severity via wording | Formalize the INFO/WARN prefixes (a tiny `eprintln`-wrapping helper, no external crate — keeps the pure-Rust ethos); keep ERROR on the `Result`/exit path, not a stderr line. **Decision:** local 2-line helper vs a `log`/`tracing` dep — recommend the local helper. See Stdout/stderr discipline. |
-| R19 | Bundled `Bytecode*.json` and the header-struct code are pinned to **different** Hermes commits, and neither pin is checked | all | M×H | 🟧 | `Bytecode99.json` records `GitCommitHash`; nothing reads it | Record the Hermes commit each layout descriptor was derived from, next to the opcode table's existing `GitCommitHash`, and assert they agree. Re-pull both from one commit when bumping. Live example: `NewFastArray` gained an operand after the current pin (see The v99 delta). |
+| R19 | Bundled `Bytecode*.json` and the header-struct code are pinned to **different** Hermes commits, and neither pin is checked | all | M×H | 🟧 | `tests/upstream_pin.rs` re-derives both from a checkout and fails when either disagrees. It found the v99 opcode drift immediately | **Detection is done; regeneration is not.** Fixing a drifted table is still manual JSON surgery, because the three tables are heterogeneous artifacts (v96 is tab-indented with a populated `AbstractDefinitions`; v98 has no `GitCommitHash`) and a one-size regenerator destroys real data — verified the hard way. Either normalise the three files first, or write a regenerator that edits `Definitions` in place. |
 | R20 | CLI points users at a verifier script that does not exist | cli | H×L | ⬜ | `warn_modern_write` now points at `scripts/build_hermes_vm.ps1` and `tests/vm_verify.rs`, both of which exist; docs/USAGE.md's "cannot be verified" section is rewritten around `hvm` | — (fixed). Note nothing *tests* stderr text, so this class can rot again; see R17/R18. |
-| R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` and asserts stdout + exit code, across v96/v98/v99 fixtures. Verified to fail on all three original defects when they are reintroduced. **Decision taken:** gated on `HERMES_VM_V<N>`, so a VM-less checkout degrades to reparse-only rather than failing | Residual is 🟧, not ⬜, for one honest reason: **the gate means a CI runner with no VM configured is green while asserting nothing.** Either provision the VMs on the runner or add a job that fails if none is found. Also extend the fixture set beyond two programs. |
+| R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` (v96/v98/v99) and asserts stdout + exit code; `tests/corpus.rs` sweeps a production bundle; `tests/upstream_pin.rs` re-derives the format from upstream. Verified to fail on every defect they were written for | Residual stays 🟧 for one reason: **every one of these is gated on an env var, so a runner with none set is green while asserting nothing.** Either provision the Hermes builds and the corpus on the runner, or add a job that fails when they are absent. A silently-skipping suite is the same failure shape as a suite that asserts the wrong thing. |
+| R22 | An unoptimized build of the CLI overflows its stack | cli | H×M | ⬜ **fixed** | `run` is one large match over every subcommand and a debug build gives each arm's locals their own slot in one frame, exceeding Windows' 1 MiB main-thread stack. Work now runs on a 64 MiB-stack thread (F9) | — (fixed). The underlying shape is unchanged: the match still holds every arm's locals at once, so splitting arms into functions is the real fix if the frame grows again. Note the release build was always fine, which is why this survived — *test what CI builds*. |
+| R23 | An op's output is only ever checked against our own model | all | M×H | 🟩 | Three independent oracles now exist: a real VM (does it run), upstream headers and `BytecodeList.def` (does our format model match theirs), and `hbcdump` (does a second implementation read the same instructions) | Keep reaching for an external oracle when adding a check. The three findings this pass — stale model, opcode drift, debug stack overflow — were each invisible to a test written against our own assumptions, and each fell out immediately once something else was asked. |
 
 Grid (residual likelihood × impact; resolved items listed below it for the downgrade earned):
 
 ```
                        IMPACT  →
              Low             Medium            High
-  High        ·               ·                R1
+  High        ·               ·                R21
 L
-I Med         ·               R5  R17  R21     R2  R14  R19
+I Med         ·               R17              R14  R19
 K
 E Low       R13 R16           R6 R18           R3 R10 R12
 L
-  Fixed this pass (were 🟥 realized; descriptor + VM tests retired them):
-      R8 ⬜ · R9 ⬜ · R11 ⬜ · R15 ⬜ · R20 ⬜
-  Resolved earlier (inherent High impact, guard/fix caps residual): R4 🟩 · R7 ⬜
+  Fixed (each was a live defect, not a hypothetical):
+      R1 ⬜ · R5 ⬜ · R8 ⬜ · R9 ⬜ · R11 ⬜ · R15 ⬜ · R20 ⬜ · R22 ⬜
+  Resolved earlier or downgraded by evidence: R4 🟩 · R7 ⬜ · R2 🟩 · R23 🟩
 ```
 
-Reading it: with the modern-layout cluster fixed, **R1 is once again the lone
-standout** — medium-likelihood, high-impact, held only by a written contract.
-**R21** sits at medium/high and is the one to be honest about: a VM harness now
-exists and is proven to catch the defects it was written for, but it is opt-in via
-`HERMES_VM_V<N>`, so a runner without those binaries is green while asserting
-nothing. That is a deliberate trade (a VM-less checkout still builds and tests)
-and it is also exactly the shape of gap that let this class of bug live. **R19**
-is the standing tripwire for the next occurrence: the layout descriptor and the
-opcode table must be pinned to the same upstream commit, and nothing checks that
-yet. The remaining low-likelihood / high-impact cluster is the offset-arithmetic
-hazards that fire rarely but corrupt *silently*, so the hardening payoff there is
-**loud failure** (asserts, version guards, round-trip checks) over silent
-mis-encode.
+Reading it: **R21 is now the lone high/high**, and it is a peculiar one — the harnesses it
+asks for all exist and are all proven to catch what they were written for, but every one is
+gated on an env var, so a CI runner without a Hermes build and the corpus passes while
+asserting almost nothing. That is the same shape as the problem this whole document has been
+about: a suite that looks green because it is checking the wrong thing, or nothing.
+
+**R19** is the standing tripwire for the next upstream reshape; detection is built, the fix
+path is not. **R2** dropped to 🟩 on evidence rather than on work — 1,449 real overflowed
+entries now exercise the detection rule — but note the asymmetry: *reading* an overflow entry
+is verified, *writing* one is still unimplemented. The remaining low-likelihood / high-impact
+cluster (R3, R10, R12) is the offset-arithmetic and hardcoded-shape hazards that fire rarely
+and corrupt silently, so the payoff there is still **loud failure** over silent mis-encode.
 
 **R9 is the cautionary tale worth keeping, even now that it is fixed.** A guard was written,
 tested, and reasoned about carefully — the Q4 note even explains, correctly, why
@@ -633,11 +753,15 @@ up-front assertion is the load-bearing line; without it the test would still pas
 testing nothing.
 
 ### New string ops
-- **R1 · Chaining without re-parse (I2).** The single most likely corruption: running a second
-  string op against a `file` whose `sections` are stale after the first resize.
+- ~~**R1 · Chaining without re-parse (I2)**~~ — **retired.** This was the single most
+  likely corruption: a second string op against a `file` whose `sections` were stale
+  after the first resize. `commit_image` re-derives the model, `sections` included, so
+  chaining is safe. Nothing to remember beyond ending the op with `commit_image`.
 - **R2 · Overflow handling (I8).** Copying the dead `offset == 0x800000` check instead of
   `len == 0xff`; forgetting the 8-byte overflow-slot layout; forgetting to update
-  `overflow_string_count` at `[56..60]` and `string_storage_size` at `[60..64]`.
+  `overflow_string_count` at `[56..60]` and `string_storage_size` at `[60..64]`. The
+  *detection* rule is now checked against 1,449 real overflowed entries by
+  `tests/corpus.rs`; *encoding* one is still unimplemented.
 - **R3 · Header field positions.** String counts sit at fixed offsets `[44..64]` shared across
   layouts, but `debug_info_offset` differs: **modern fixed at byte 108**, **legacy computed
   by `legacy_debug_info_offset_pos`** (`strings.rs:294`), which itself depends on
@@ -647,8 +771,10 @@ testing nothing.
   than appending, or appending an identifier without extending the hash table + bumping
   `identifier_count`, desynchronizes the identifier hash index.
 - **R6 · UTF-16-by-content (I7)** and **`%4` storage padding (I5).**
-- **R5 · Model sync (I1).** Forgetting to push to `file.strings` / bump `file.header.*` leaves
-  later reads (and the CLI's post-op status text) lying.
+- ~~**R5 · Model sync (I1)**~~ — **retired.** Forgetting to push to `file.strings` or
+  bump `file.header.*` used to leave later reads (and the CLI's post-op status text)
+  lying, and every op was doing exactly that. The model is derived from the bytes now,
+  so there is nothing to forget.
 
 ### New function ops
 - **R7 · Alignment (I5).** Any body whose new length isn't `%4`-aligned relative to the old must
@@ -815,28 +941,109 @@ helper *does* print "Wrote … (N lines, KiB)" — but `run_emit_hasm` uses a ba
 puts *only* that value on stdout, like `add-string`; a command that only transforms a file into
 `-o` keeps stdout empty and reports on stderr.
 
+**This is now asserted, not just documented** (R17). `hbc-decomp-cli/tests/stdout_contract.rs`
+checks that `add-string` puts a bare parseable id on stdout, that file-transforming commands
+leave stdout empty, that `emit-hasm` without `-o` writes HASM to stdout, that discarding
+stderr does not change stdout, and that failures keep stdout clean. It also asserts that the
+file paths named in the modern-write note exist in the repo — a dead reference is what R20
+was. Writing it required fixing a long-standing stack overflow in unoptimized CLI builds; see
+finding F9.
+
 **Exit codes** are uniform: handlers return `Result`, errors bubble to `main` which returns
 `Box<dyn Error>` → non-zero exit with the error Debug-printed. Keep new commands on this
 path (no `process::exit`, no `unwrap`/`panic` on user input).
 
 ---
 
+## Test harnesses
+
+What exists, what each one asserts against, and how to run it. The organising idea is that
+**every harness checks against something outside this crate.** The unit suite compares our
+output to our expectations, which is exactly why it could not see any of the defects found
+this pass.
+
+| Harness | Oracle | Env | Gated? |
+|---|---|---|---|
+| unit tests (`#[cfg(test)]`) | our own expectations | — | no |
+| `tests/vm_verify.rs` | **a real Hermes VM** — does the patched image run and print the right thing | `HERMES_VM_V96` / `_V98` / `_V99` | skips |
+| `tests/upstream_pin.rs` | **the upstream headers** — `FUNC_HEADER_FIELDS` and `BytecodeList.def` | `HERMES_SRC_V96` / `_V98` / `_V99` | skips |
+| `tests/corpus.rs` | **a production bundle**, plus `hbcdump` as a second disassembler | `HBC_CORPUS_BUNDLE`, `HBC_CORPUS_LIMIT`, `HERMES_HBCDUMP_V96` | skips |
+| `hbc-decomp-cli/tests/stdout_contract.rs` | **the process boundary** — real stdout, stderr, exit codes | — | no |
+| `commit_image` (`serialize.rs`) | **the bytes themselves** — the model is re-derived from them | — | no, always on |
+
+```powershell
+# One-time: build the VMs (and the fixtures and hbcdump they need).
+96, 98, 99 | ForEach-Object {
+    ./scripts/build_hermes_vm.ps1 -Version $_ -HermesRepo C:\src\hermes -Fixtures
+}
+
+$env:HERMES_VM_V96    = 'C:\src\hermes-v96\build\bin\Release\hvm.exe'
+$env:HERMES_SRC_V96   = 'C:\src\hermes-v96'
+$env:HERMES_HBCDUMP_V96 = 'C:\src\hermes-v96\build\bin\Release\hbcdump.exe'
+$env:HBC_CORPUS_BUNDLE = 'C:\apks\...\index.android.bundle.backup'
+$env:HBC_CORPUS_LIMIT = '0'      # sweep all 62,909 functions (~9s); default 2000
+cargo test
+```
+
+⚠️ **"Gated? skips" is the live weakness (R21).** With no env vars set, those three suites
+pass while asserting nothing at all. That is deliberate — a checkout without a Hermes build
+must still be testable — but it means a green CI run does not currently imply much. Provision
+the binaries where CI runs, or add a job that fails when they are missing.
+
+### What each is good at, and what it cannot see
+
+- **`vm_verify`** is the only thing that distinguishes "reparses" from "runs". Every defect
+  in the modern branch reparsed cleanly. It cannot tell you *why* something broke, and it
+  only covers what a small fixture can express.
+- **`upstream_pin`** is the only thing that catches upstream changing the format. It cannot
+  see a bug in our own handling of a format we model correctly. Note it fails *loudly and
+  specifically* — the message names the opcode and whether the operand count changed.
+- **`corpus`** is the only thing that exercises inputs we cannot construct: 1,449 overflowed
+  string entries, 4,786 UTF-16 strings, functions with real exception tables, and every
+  opcode the compiler actually emits. The bundle is third-party and not committed, so this
+  suite is the most likely to be silently skipped.
+- **`stdout_contract`** is the only thing that observes the tool the way a script does. It is
+  also the only harness that needs no external artifact, so it is the one that will still be
+  running in five years.
+- **`commit_image`** is not a test but a structural guarantee, which is stronger: I1 cannot
+  be violated because the model is no longer independently maintained.
+
+### Two design notes that are load-bearing
+
+Both came from harnesses that would otherwise have passed while testing nothing:
+
+1. **Assert the fixture's own shape before iterating over it.**
+   `size_change_on_real_handler_table_is_refused` asserts that *some* function has an
+   exception table before looping. Without that line, a layout drift that hides every
+   handler makes the loop body run zero times and the test pass green — the exact failure it
+   exists to catch.
+2. **Align by identity, never by position.** The hbcdump differential keys on the function id
+   parsed from hbcdump's header line, because hbcdump omits the outer stubs of generator
+   functions (it jumps 1137 → 1139 → 1141). Aligned positionally, it silently compares
+   different functions from the first generator onward and reports a flood of "mismatches"
+   that are really one desync.
+
+---
+
 ## Test matrix gaps
 
 Per command, cases that are **absent** from the current tests (derived from the `#[cfg(test)]`
-modules). No CLI-level/integration test harness exists for the write path (only
-`transforms/module_hoist/tests/`), so *all* coverage below is unit-level. An earlier pass
+modules). Everything listed below is unit-level; the integration harnesses that sit
+alongside it are described under Test harnesses. An earlier pass
 added CI tests to `functions.rs` (8), `inject.rs` (5), `operands.rs` (7), `strings.rs` (25)
 that build a real image with `create_minimal` (rather than skipping on a missing fixture) —
 several formerly-missing cases are now **covered** and marked so below.
 
-> ⚠️ **The gap this list did not have a row for — now partly closed.** Every test in the
-> `#[cfg(test)]` modules asserts that output *reparses*. Not one asserts that it *runs*. All
-> three v99 defects reparsed cleanly, so the unit suite was structurally incapable of catching
-> them — including the case where `create`'s own output is rejected by the VM at entry.
-> `crates/hbc-decomp/tests/vm_verify.rs` now covers that, on v96/v98/v99, and was checked by
-> reintroducing each defect and watching it fail. It is still opt-in (R21), and the gaps below
-> remain second-order to it.
+> ⚠️ **The gap this list did not have a row for — now largely closed.** Every test in
+> the `#[cfg(test)]` modules asserts that output *reparses*. Not one asserts that it
+> *runs*, that it matches an independent implementation, or that our format model
+> matches upstream's. Four harnesses now cover those (see Test harnesses), and between
+> them they found three defects the unit suite was structurally incapable of seeing.
+>
+> Read the per-command gaps below as **second-order**. The first-order question is no
+> longer "which case is missing" but "which oracle is missing" — and the remaining
+> answer there is R21: every external oracle is opt-in, so an unconfigured run asserts
+> almost nothing.
 >
 > A second, subtler lesson from R9: `size_change_on_function_with_handlers_is_rejected` passes,
 > and the behaviour it names is broken on v99, because the test **sets the handler flag
@@ -847,6 +1054,15 @@ several formerly-missing cases are now **covered** and marked so below.
 > same-length / grow / **shrink** / **ASCII→UTF-16**, `add-string`, `retarget-string`,
 > `inject-stub` on handler-free functions, `create`, and the handler guard in both directions.
 > Several of these were listed below as gaps and are struck through accordingly.
+>
+> **Now covered by `corpus.rs`**, against a production bundle: the **overflow-entry**
+> detection rule (1,449 real entries — no fixture has one), encode/decode symmetry for
+> **62,909 of 62,909** function bodies, uniform offset relocation across all of them, and an
+> instruction-level differential against `hbcdump` for 62,637 of them. Together these close
+> the "only a dozen opcodes are ever exercised" gap that no fixture-based test could.
+>
+> **Now covered by `stdout_contract.rs`**: the stdout/stderr split and the exit-code path,
+> across six commands (R17, partly).
 
 - **`create`** (`create.rs`): has v96-parses, v98-parses. Still missing: the
   string-too-long / overflow **refusal** path. ~~a boundary v97; unsupported/low versions~~
@@ -1087,6 +1303,36 @@ external (Copilot) review.
   modern branch and its offset-shifting math are unlikely to be exceptions.
 
 ---
+
+- **F8 — the model was stale in every write op, and no test could see it.** A debug assertion
+  at the single point where an op commits its result failed immediately, on four separate
+  tests, for two distinct causes: `patch_function_bytes` rewrote every function's header
+  *bytes* and never touched `file.function_headers` at all; `patch_string_replace` on a
+  growing string shifted every function offset in the bytes and none in the model.
+  **Implies:** a hand-maintained parallel representation does not stay correct, and its
+  drift is invisible to any test that only round-trips the bytes. The fix that lasts is to
+  delete the parallel representation, not to synchronise it harder — which is why
+  `commit_image` re-derives (I1). Note the assertion was written expecting to find nothing;
+  it is worth writing checks you expect to pass.
+
+- **F9 — the debug CLI binary had always overflowed its stack, and that is probably why R17
+  stayed open.** Writing the first CLI integration test revealed that *any* invocation of an
+  unoptimized `hermes-decomp` — including `--help` — died with `thread 'main' has overflowed
+  its stack`. Verified against the branch point, so it long predates this work. `run` is one
+  large `match` over every subcommand, and an unoptimized build gives each arm's locals their
+  own slot in a single frame; the total exceeds Windows' 1 MiB main-thread stack.
+  **Implies two things.** First, *release-only correctness is a real category*: the optimized
+  build was always fine, so nothing surfaced it, while `cargo test` builds debug and so any
+  CLI harness was impossible — a missing test caused by a bug that only a test would reveal.
+  Second, when a gap in coverage persists across several passes with no clear reason, suspect
+  a mechanical blocker rather than lack of will.
+
+- **F10 — a table claiming a provenance it did not have.** `Bytecode99.json` records
+  `GitCommitHash: 913d31acd…`, and the opcodes it contains had already been deleted upstream
+  at that commit. The pin was decorative: written once, never checked, and wrong.
+  **Implies:** recorded provenance is worth nothing without something that verifies it. When
+  adding a pin, add the check in the same change, or the pin becomes a claim that ages
+  silently — see R19 and The v99 opcode drift.
 
 ## Open questions
 

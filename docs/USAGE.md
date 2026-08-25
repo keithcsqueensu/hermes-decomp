@@ -197,6 +197,35 @@ the tests still run and still assert everything that does not need a VM; only th
 "and it runs" step is skipped, with a printed note. CI without a Hermes build
 therefore degrades to reparse-only coverage rather than failing.
 
+Three further suites work the same way, each checking against a different external
+source of truth. All are opt-in, so a checkout without these artifacts still builds
+and tests:
+
+| Suite | Checks against | Env |
+|---|---|---|
+| `tests/vm_verify.rs` | a real Hermes VM: does the patched image run | `HERMES_VM_V96` / `_V98` / `_V99` |
+| `tests/upstream_pin.rs` | the Hermes sources: does our format model still match `FUNC_HEADER_FIELDS` and `BytecodeList.def` | `HERMES_SRC_V96` / `_V98` / `_V99` |
+| `tests/corpus.rs` | a production bundle, plus `hbcdump` as a second disassembler | `HBC_CORPUS_BUNDLE`, `HBC_CORPUS_LIMIT`, `HERMES_HBCDUMP_V96` |
+| `hbc-decomp-cli/tests/stdout_contract.rs` | the process boundary: stdout, stderr, exit codes | none |
+
+```powershell
+$env:HERMES_SRC_V99     = 'C:\src\hermes'
+$env:HERMES_HBCDUMP_V96 = 'C:\src\hermes-v96\build\bin\Release\hbcdump.exe'
+$env:HBC_CORPUS_BUNDLE  = 'C:\path\to\index.android.bundle'
+$env:HBC_CORPUS_LIMIT   = '0'   # sweep every function (~9s); default 2000
+cargo test
+```
+
+`upstream_pin` is the one worth running after any Hermes bump: it re-derives the
+modern header layout and the whole opcode table from a checkout and fails if either
+disagrees with what this crate ships. Upstream has changed both **without bumping
+the bytecode version**, so the version number alone is not a safe signal.
+
+`corpus` is the one worth running before trusting a change against a real bundle: it
+sweeps every function for encode/decode symmetry and diffs the disassembly against
+`hbcdump`. The fixtures contain no overflowed string entries at all; a production
+bundle has ~1,400.
+
 Two other binaries from the same build are useful as read-side oracles:
 `hbcdump -mode=objdump` (reference disassembly plus a string table with kinds,
 byte ranges and identifier hashes) and `hermesc` (minting known-good fixtures).
