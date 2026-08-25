@@ -18,7 +18,7 @@ Scope: the read/decompile path is out of scope except where a write op depends o
 
 > **Revision note — a real v99 engine is now on this machine.** A compiled
 > facebook/hermes (`static_h`, `v0.12.0-5581-ge9edc8b52`, `BYTECODE_VERSION = 99`) sits at
-> `C:\src\hermes` with binaries in `build\bin\Release`. Two things follow, and this pass
+> `C:\src\hermes-v99` with binaries in `build\bin\Release`. Two things follow, and this pass
 > rewrites the doc around them:
 > 1. **Modern output is now verifiable, on Windows, from Rust, with no FFI** — `hvm.exe`
 >    is a standalone VM driver that takes a `.hbc` path. The "modern cannot be verified"
@@ -29,7 +29,15 @@ Scope: the read/decompile path is out of scope except where a write op depends o
 >
 > Claims marked **[measured]** were reproduced against a real `hvm.exe` on `hermesc.exe`-built
 > fixtures; claims marked **[source]** are read off
-> `C:\src\hermes\include\hermes\BCGen\HBC\BytecodeFileFormat.h` at that commit.
+> `include\hermes\BCGen\HBC\BytecodeFileFormat.h` at that commit.
+>
+> ⚠️ **Superseded on the ref, not on the substance.** v99 now means the React Native
+> release branch (`origin/260318099.0.0-stable`, `b7b58dd3c`), built at
+> `C:\src\hermes-v99`; the `static_h` clone was renamed to `C:\src\hermes-src` and its
+> build removed. Every **[source]** claim below survives that move unchanged, because
+> `BytecodeFileFormat.h` is byte-identical between the two commits — which is exactly
+> why the header layout could not detect the difference and the opcode table had to.
+> See v99 means the release branch.
 >
 > **Follow-up pass — R8/R9/R11/R15/R20 are now fixed, and a VM harness exists.**
 > `crates/hbc-decomp/src/modern_layout.rs` replaces the hardcoded v98 shape with a
@@ -329,10 +337,37 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
 
 ## Reference VMs and toolchain (facebook/hermes)
 
-A compiled facebook/hermes lives at `C:\src\hermes` — branch `static_h`, describe
-`v0.12.0-5581-ge9edc8b52`, `BYTECODE_VERSION = 99`. This is the ground truth this doc is now
-checked against, and it is a *build* as well as a checkout, so both the source and the running
-engine are available.
+A facebook/hermes clone lives at `C:\src\hermes-src`, with one built `git worktree` per
+bytecode version beside it — `C:\src\hermes-v96`, `-v98`, `-v99`. These are the ground truth
+this doc is checked against, and each is a *build* as well as a checkout, so both the source
+and the running engine are available. `scripts/build_hermes_vm.ps1` produces them.
+
+### v99 means the release branch
+
+`C:\src\hermes-v99` is `origin/260318099.0.0-stable` (`b7b58dd3c`) — the branch React Native
+ships from — and **not** `static_h`, which is what the clone is on. The distinction is easy to
+miss and expensive:
+
+| | `static_h` (`e9edc8b52`) | release (`b7b58dd3c`) |
+|---|---|---|
+| `BYTECODE_VERSION` | 99 | 99 |
+| `BytecodeFileFormat.h` | \<byte-identical\> | \<byte-identical\> |
+| `NewFastArray` | `DEFINE_OPCODE_3(…, Reg8, Reg8, UInt16)` — 5 bytes | `DEFINE_OPCODE_2(…, Reg8, UInt16)` — 4 bytes |
+
+So the version integer does not identify the dialect, and neither does the header layout —
+`modern_layout_matches_upstream_headers` passes against *either* checkout. Only
+`opcode_tables_match_upstream` separates them. A real v99 bundle comes from the release
+branch, so that is what `resources/bytecode/Bytecode99.json` encodes; pointing
+`HERMES_SRC_V99` at `static_h` fails the pin with a one-opcode operand-count mismatch, and
+that failure is the tripwire doing its job.
+
+When a checkout legitimately moves, re-derive the table rather than hand-editing it:
+
+```powershell
+python scripts/gen_bytecode_table.py --version 99 --src C:/src/hermes-v99 `
+    --commit (git -C C:/src/hermes-v99 rev-parse HEAD)
+python scripts/gen_bytecode_table.py --version 99 --src C:/src/hermes-v99 --check  # verify only
+```
 
 ### What each binary is good for
 
@@ -973,8 +1008,9 @@ this pass.
 
 ```powershell
 # One-time: build the VMs (and the fixtures and hbcdump they need).
+# Each lands in its own worktree beside the clone: C:\src\hermes-v96, -v98, -v99.
 96, 98, 99 | ForEach-Object {
-    ./scripts/build_hermes_vm.ps1 -Version $_ -HermesRepo C:\src\hermes -Fixtures
+    ./scripts/build_hermes_vm.ps1 -Version $_ -HermesRepo C:\src\hermes-src -Fixtures
 }
 
 $env:HERMES_VM_V96    = 'C:\src\hermes-v96\build\bin\Release\hvm.exe'

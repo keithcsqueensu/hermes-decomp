@@ -103,7 +103,6 @@
       "Name": "NewFastArray",
       "OperandTypes": [
         "Reg8",
-        "Reg8",
         "UInt16"
       ],
       "IsJump": false
@@ -2158,5 +2157,5 @@
     }
   ],
   "AbstractDefinitions": [],
-  "GitCommitHash": "e9edc8b52832df9be82163fc17d2459aa456b0e2"
+  "GitCommitHash": "b7b58dd3cc285499364ea41a1b4fb90cdc2accf8"
 }

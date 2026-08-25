@@ -51,6 +51,7 @@ THIRD_PARTY_NOTICES.md
 # not the directory, so the negation below can take effect.
 scripts/*
 !scripts/build_hermes_vm.ps1
+!scripts/gen_bytecode_table.py
 # IDE / AI tooling
 .claude/
 .cursor/

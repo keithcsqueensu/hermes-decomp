@@ -177,17 +177,35 @@ so there is no single VM that covers everything. Build the ones you need:
 ```powershell
 # Builds hvm + hermesc for that version into a git worktree beside your clone,
 # applies the MSVC/CMake portability patches, and smoke-tests the result.
-./scripts/build_hermes_vm.ps1 -Version 96 -HermesRepo C:\src\hermes -Fixtures
+./scripts/build_hermes_vm.ps1 -Version 96 -HermesRepo C:\src\hermes-src -Fixtures
 ```
 
 Supported versions are 96 (the layout the Equinox bundles use), 98 and 99. The
 script prints the environment variable to set when it finishes.
 
+`-HermesRepo` is a plain clone with full history; each version is built in its own
+`git worktree` beside it, so the clone is never touched. Keep the clone's directory
+name *out* of the `hermes-v<N>` pattern — the script refuses to run if the worktree
+path it derives turns out to be the clone itself.
+
+```powershell
+96, 98, 99 | ForEach-Object {
+    ./scripts/build_hermes_vm.ps1 -Version $_ -HermesRepo C:\src\hermes-src -Fixtures
+}
+```
+
+⚠️ **v99 means the React Native release branch**, `origin/260318099.0.0-stable`,
+not `static_h`. Both declare `BYTECODE_VERSION = 99` and their
+`BytecodeFileFormat.h` is byte-identical, so nothing about the header layout can
+tell them apart — but `static_h` carries a later `NewFastArray` that takes a third
+operand, making the instruction 5 bytes where a shipped v99 bundle has 4. RN ships
+from the release branch, so that is the dialect this crate encodes.
+
 **Running the checks:**
 
 ```powershell
 $env:HERMES_VM_V96 = 'C:\src\hermes-v96\build\bin\Release\hvm.exe'
-$env:HERMES_VM_V99 = 'C:\src\hermes\build\bin\Release\hvm.exe'
+$env:HERMES_VM_V99 = 'C:\src\hermes-v99\build\bin\Release\hvm.exe'
 cargo test --test vm_verify
 ```
 
@@ -209,7 +227,7 @@ and tests:
 | `hbc-decomp-cli/tests/stdout_contract.rs` | the process boundary: stdout, stderr, exit codes | none |
 
 ```powershell
-$env:HERMES_SRC_V99     = 'C:\src\hermes'
+$env:HERMES_SRC_V99     = 'C:\src\hermes-v99'
 $env:HERMES_HBCDUMP_V96 = 'C:\src\hermes-v96\build\bin\Release\hbcdump.exe'
 $env:HBC_CORPUS_BUNDLE  = 'C:\path\to\index.android.bundle'
 $env:HBC_CORPUS_LIMIT   = '0'   # sweep every function (~9s); default 2000

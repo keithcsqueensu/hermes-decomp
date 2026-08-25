@@ -14,7 +14,7 @@
 //! ```text
 //! HERMES_VM_V96=C:\src\hermes-v96\build\bin\Release\hvm.exe
 //! HERMES_VM_V98=C:\src\hermes-v98\build\bin\Release\hvm.exe
-//! HERMES_VM_V99=C:\src\hermes\build\bin\Release\hvm.exe
+//! HERMES_VM_V99=C:\src\hermes-v99\build\bin\Release\hvm.exe
 //! ```
 //!
 //! `scripts/build_hermes_vm.ps1` builds these and prints the exact lines to set.

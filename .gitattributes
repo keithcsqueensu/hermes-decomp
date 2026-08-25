@@ -1,2 +1,9 @@
 # Hermes bytecode fixtures are binary: never apply CRLF translation to them.
 *.hbc binary
+
+# An HBC file records sha1(source bytes) in its header, so the fixture sources are
+# hashed into the .hbc files committed next to them. Left to autocrlf these check
+# out as CRLF on Windows and LF elsewhere, and regenerating the fixtures then
+# rewrites 20 header bytes purely because of line endings -- identical bytecode,
+# different recorded hash. Pin them.
+crates/hbc-decomp/tests/fixtures/*.js text eol=lf

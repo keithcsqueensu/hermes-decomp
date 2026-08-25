@@ -22,11 +22,25 @@
 //! ```text
 //! HERMES_SRC_V96=C:\src\hermes-v96
 //! HERMES_SRC_V98=C:\src\hermes-v98
-//! HERMES_SRC_V99=C:\src\hermes
+//! HERMES_SRC_V99=C:\src\hermes-v99
 //! ```
 //!
 //! `scripts/build_hermes_vm.ps1` creates these worktrees. With none set the tests
 //! pass while asserting nothing and print a skip note — same trade as `vm_verify`.
+//!
+//! ⚠️ `HERMES_SRC_V99` must be the React Native release branch,
+//! `origin/260318099.0.0-stable`, and *not* `static_h`. Both declare
+//! `BYTECODE_VERSION = 99` and their `BytecodeFileFormat.h` is byte-identical, so
+//! `modern_layout_matches_upstream_headers` passes against either — only
+//! `opcode_tables_match_upstream` can tell them apart, because `static_h` carries a
+//! later `NewFastArray` taking a third operand (upstream d4f5193f0). Pointing this
+//! at `static_h` therefore fails with an operand-count mismatch on exactly one
+//! opcode, which is the signal working as intended, not a misconfiguration to
+//! silence.
+//!
+//! `scripts/gen_bytecode_table.py` is the other half of this loop: when a checkout
+//! legitimately moves, it re-derives `Bytecode<N>.json` from that checkout rather
+//! than leaving 220 entries to be hand-edited.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

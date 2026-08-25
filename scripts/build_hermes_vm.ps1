@@ -35,13 +35,18 @@ After building, recompile the test fixtures in
 crates/hbc-decomp/tests/fixtures for this version.
 
 .EXAMPLE
-./scripts/build_hermes_vm.ps1 -Version 96 -HermesRepo C:\src\hermes
+./scripts/build_hermes_vm.ps1 -Version 96 -HermesRepo C:\src\hermes-src
 
 .EXAMPLE
 # Build all three, then regenerate every fixture.
 96, 98, 99 | ForEach-Object {
-    ./scripts/build_hermes_vm.ps1 -Version $_ -HermesRepo C:\src\hermes -Fixtures
+    ./scripts/build_hermes_vm.ps1 -Version $_ -HermesRepo C:\src\hermes-src -Fixtures
 }
+
+.NOTES
+Name the clone something outside the `hermes-v<N>` pattern -- the worktrees claim
+those names. A clone at C:\src\hermes-v99 collides with the worktree for v99; the
+script detects that and refuses rather than building in the clone.
 #>
 [CmdletBinding()]
 param(
@@ -59,9 +64,24 @@ $ErrorActionPreference = 'Stop'
 # upstream has changed the modern function-header shape twice without bumping the
 # version (see crates/hbc-decomp/src/modern_layout.rs). These refs are the ones
 # ModernLayout was derived from, so keep the two in step.
+#
+# The same goes for the opcode tables: `tests/upstream_pin.rs` parses
+# BytecodeList.def out of each checkout and compares it against
+# resources/bytecode/Bytecode<N>.json, so a ref here that is not the commit that
+# JSON records in `GitCommitHash` makes the pin test fail by construction.
 $Refs = @{
     96 = @{ Ref = '2afc7b09f'; Note = 'last commit before the v97 bump; RN 0.7x-era' }
     98 = @{ Ref = 'origin/250829098.0.0-stable'; Note = 'React Native shipped v98' }
+    # The release branch, NOT static_h. Both declare BYTECODE_VERSION 99 and their
+    # BytecodeFileFormat.h is byte-identical, so the header layout cannot tell them
+    # apart -- but static_h carries a later `NewFastArray` that took a third operand
+    # (upstream d4f5193f0), which this branch does not:
+    #
+    #     stable   DEFINE_OPCODE_2(NewFastArray, Reg8, UInt16)        <- 4 bytes
+    #     static_h DEFINE_OPCODE_3(NewFastArray, Reg8, Reg8, UInt16)  <- 5 bytes
+    #
+    # React Native ships from the release branch, so the 2-operand form is what
+    # real v99 bundles contain and what Bytecode99.json therefore encodes.
     99 = @{ Ref = 'origin/260318099.0.0-stable'; Note = 'React Native shipped v99' }
 }
 
@@ -149,16 +169,60 @@ if (-not $WorktreeRoot) { $WorktreeRoot = Split-Path -Parent $HermesRepo }
 $tree = Join-Path $WorktreeRoot "hermes-v$Version"
 $ref = $Refs[$Version].Ref
 
+# Normalise before comparing: $tree is built by string join and may not exist yet,
+# so Resolve-Path is not available for it.
+$norm = { param($p) [IO.Path]::GetFullPath($p).TrimEnd([IO.Path]::DirectorySeparatorChar) }
+$treeFull = & $norm $tree
+$repoFull = & $norm $HermesRepo
+
 Write-Host "Building Hermes v$Version" -ForegroundColor Green
 Write-Host "  ref       $ref  ($($Refs[$Version].Note))"
 Write-Host "  worktree  $tree"
+
+# The clone itself must never be used as the worktree. The default worktree name
+# is "hermes-v<N>", so a clone that happens to be named that -- C:\src\hermes-v99,
+# say -- collides with its own worktree path. Left unguarded that lands in the
+# "exists, reusing" branch below and silently builds whatever ref the clone is
+# checked out at, in the clone, which also breaks this script's promise to leave
+# the original checkout untouched.
+if ($treeFull -ieq $repoFull) {
+    throw @"
+Worktree path for v$Version is the clone itself: $treeFull
+
+-WorktreeRoot defaults to the clone's parent and the worktree is named
+hermes-v$Version, so a clone named hermes-v$Version collides with it. Either
+
+  * pass -WorktreeRoot <dir> to put the worktree elsewhere, or
+  * skip this build -- if the clone is already at $ref, its own
+    build\bin\Release already holds the v$Version binaries.
+
+Building in the clone is not an option: this script patches sources in the tree.
+"@
+}
 
 if (-not (Test-Path $tree)) {
     Write-Host "  creating worktree" -ForegroundColor Cyan
     git -C $HermesRepo worktree add --detach $tree $ref
     if ($LASTEXITCODE -ne 0) { throw "git worktree add failed for $ref" }
 } else {
-    Write-Host "  worktree exists, reusing" -ForegroundColor DarkGray
+    # Reuse is only safe if the tree is actually at the ref this version means.
+    # A stale worktree from an earlier $Refs entry looks identical from the
+    # outside and produces a binary for the wrong commit, which is exactly the
+    # class of drift upstream_pin exists to catch -- catch it here too, before
+    # spending several minutes building the wrong thing.
+    $want = (git -C $HermesRepo rev-parse --verify "$ref^{commit}" 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "cannot resolve $ref in ${HermesRepo}: $want" }
+    $have = (git -C $tree rev-parse --verify HEAD 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "$tree exists but is not a git worktree: $have" }
+    if ($want -ne $have) {
+        throw @"
+Worktree $tree is at $have, but v$Version means $ref ($want).
+
+Remove it (git -C $HermesRepo worktree remove --force $tree) and re-run, or pass
+-WorktreeRoot <dir> to build alongside it.
+"@
+    }
+    Write-Host "  worktree exists at $ref, reusing" -ForegroundColor DarkGray
 }
 
 Apply-Patches -Tree $tree -Version $Version
@@ -167,14 +231,34 @@ $cmake = Find-CMake
 Write-Host "  cmake     $cmake" -ForegroundColor DarkGray
 
 $build = Join-Path $tree 'build'
+
+# Keep the output instead of discarding it: on failure the compiler diagnostic is
+# the only thing that says what went wrong, and 'cmake build failed' on its own
+# sends you back to re-run the build by hand to find out.
+function Invoke-CMake {
+    param([string]$What, [string[]]$CMakeArgs)
+    $log = Join-Path $build "$What.log"
+    $out = & $cmake @CMakeArgs 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        New-Item -ItemType Directory -Force -Path $build | Out-Null
+        $out | Out-File -FilePath $log -Encoding utf8
+        $out | Select-Object -Last 40 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkRed }
+        throw "cmake $What failed (full log: $log)"
+    }
+}
+
 Write-Host "  configuring" -ForegroundColor Cyan
-& $cmake -S $tree -B $build -G 'Visual Studio 17 2022' -A x64 `
-    -DCMAKE_BUILD_TYPE=Release -DHERMES_ENABLE_DEBUGGER=OFF | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'cmake configure failed' }
+Invoke-CMake configure @(
+    '-S', $tree, '-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64',
+    '-DCMAKE_BUILD_TYPE=Release', '-DHERMES_ENABLE_DEBUGGER=OFF'
+)
 
 Write-Host "  building hvm + hermesc (several minutes)" -ForegroundColor Cyan
-& $cmake --build $build --config Release --target hvm hermesc -- -m -v:m | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'cmake build failed' }
+# '-v:m' must be quoted. Unquoted, PowerShell reads `-v:` as a parameter name with
+# `m` as its argument and passes MSBuild two tokens -- `-v:` and `m` -- which it
+# rejects with "MSB1016: Specify the verbosity level". cmake already passes /v:m
+# of its own accord, so this only ever mattered as a way to break the build.
+Invoke-CMake build @('--build', $build, '--config', 'Release', '--target', 'hvm', 'hermesc', '--', '-m', '-v:m')
 
 $hvm = Join-Path $build 'bin\Release\hvm.exe'
 $hermesc = Join-Path $build 'bin\Release\hermesc.exe'
@@ -196,14 +280,28 @@ Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 Write-Host "  smoke test passed" -ForegroundColor Green
 
 if ($Fixtures) {
-    $fixtures = Join-Path $PSScriptRoot '..\crates\hbc-decomp\tests\fixtures'
-    $fixtures = (Resolve-Path $fixtures).Path
-    Write-Host "  recompiling fixtures in $fixtures" -ForegroundColor Cyan
-    Get-ChildItem -Path $fixtures -Filter '*.js' | ForEach-Object {
-        $out = Join-Path $fixtures "$($_.BaseName).v$Version.hbc"
-        & $hermesc -emit-binary -out $out $_.FullName
-        if ($LASTEXITCODE -ne 0) { throw "hermesc failed on $($_.Name)" }
-        Write-Host "    $($_.BaseName).v$Version.hbc" -ForegroundColor DarkGray
+    # NOT $fixtures: PowerShell variable names are case-insensitive, so that is the
+    # same variable as the [switch]$Fixtures parameter, and assigning a path to it
+    # fails the parameter's type constraint ("Cannot convert ... to SwitchParameter")
+    # after the build has already succeeded.
+    $fixtureDir = Join-Path $PSScriptRoot '..\crates\hbc-decomp\tests\fixtures'
+    $fixtureDir = (Resolve-Path $fixtureDir).Path
+    Write-Host "  recompiling fixtures in $fixtureDir" -ForegroundColor Cyan
+    # Compile from inside the fixture directory, passing a bare filename. hermesc
+    # records the input path it was given verbatim in the output, so building with
+    # $_.FullName bakes the builder's absolute checkout path into a committed test
+    # fixture -- machine-specific bytes that nobody else can reproduce, and a
+    # whole-file diff whenever someone regenerates from a different directory.
+    Push-Location $fixtureDir
+    try {
+        Get-ChildItem -Path $fixtureDir -Filter '*.js' | ForEach-Object {
+            $dest = "$($_.BaseName).v$Version.hbc"
+            & $hermesc -emit-binary -out $dest $_.Name
+            if ($LASTEXITCODE -ne 0) { throw "hermesc failed on $($_.Name)" }
+            Write-Host "    $dest" -ForegroundColor DarkGray
+        }
+    } finally {
+        Pop-Location
     }
 }
 
