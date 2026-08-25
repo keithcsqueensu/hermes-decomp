@@ -10,7 +10,37 @@ mod tui;
 use cli_args::{Cli, Command};
 use helpers::{load_file, load_format, parse_globs, parse_id_ranges, write_output};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+// `run` is one large `match` over every subcommand, and a debug build gives every
+// arm's locals their own slot in a single stack frame rather than reusing them.
+// That total exceeds Windows' 1 MiB default main-thread stack, so an unoptimized
+// `hermes-decomp --help` overflowed before printing anything. Release builds were
+// fine, which is why it went unnoticed -- and why there was no CLI test harness:
+// `cargo test` builds debug, so any integration test would have hit this.
+//
+// Run the real work on a thread with a stack we control. Same remedy the library
+// already applies to the Rayon pool for deep decompilation recursion.
+const CLI_STACK_SIZE: usize = 64 * 1024 * 1024;
+
+fn main() {
+    let worker = std::thread::Builder::new()
+        .name("hermes-decomp".into())
+        .stack_size(CLI_STACK_SIZE)
+        .spawn(|| {
+            if let Err(e) = run() {
+                // Matches what `fn main() -> Result<_, _>` prints on Err, so the
+                // error text and exit code are unchanged from before.
+                eprintln!("Error: {e:?}");
+                std::process::exit(1);
+            }
+        })
+        .expect("spawning the hermes-decomp worker thread");
+    if worker.join().is_err() {
+        // A panic has already printed its own message; just carry the status out.
+        std::process::exit(101);
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     // Give Rayon workers a large stack up front: decompilation recurses deeply
     // and the default stack overflows on big bundles (e.g. `decompile
