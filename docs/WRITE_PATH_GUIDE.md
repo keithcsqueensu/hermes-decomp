@@ -145,6 +145,10 @@ holds one row, **R21**, and it is about the harness gate rather than about the w
   `DEBUG_INFO_AND_REGEXP_PLAN.md`. P0 (the guard) is a day's work and closes a live hole; the
   formats are already derived there, including the three incompatible location-stream
   encodings at v96 / v97 / v98+.
+- **String packing** → `STRING_PACKING_PLAN.md`. Not a correctness item; ~431 KB on disk and
+  ~122 KB compressed, with the case resting on offset-ceiling headroom and on output fidelity
+  rather than on the size itself. P0 (an always-on packing validator) is a prerequisite for
+  any of it and is worth having regardless.
 - **Encoding an overflow string entry** → R2. Detection is verified against 1,449 real entries;
   *writing* one is still unimplemented, and `create` refuses it.
 - **CLI argument-resolution coverage** → R17. The stdout/stderr contract is now asserted; `--at`
@@ -290,7 +294,14 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
 - **No string dedup/merge.** Rebuilt string storage is emitted *unpacked*, so patched
   files are larger than hermesc output (CLAUDE.md; `strings.rs` rebuild never re-packs).
   This is the mechanism that makes same-length-overlap patches safe (an overlapping entry
-  gets its own storage on rebuild).
+  gets its own storage on rebuild). Measured on the 11.39.0 bundle: **+431,479 B, 10.2% of
+  string storage and 2.56% of the file**; ~122 KB of that survives the APK's deflate, whose
+  32 KB window cannot see the long-range sharing `hermesc` exploits. The name is a misnomer —
+  exact dedup is worth **6 bytes**, because upstream uniques strings at the table level; the
+  entire win is substring sharing. What we emit is precisely upstream's non-optimising
+  `fastPackStrings`, so the gap is only against `-O` builds.
+  → **`STRING_PACKING_PLAN.md`** for the algorithm, the measured decomposition, and a phased
+  plan that keeps the overlap-safety property via a pin set.
 - **Debug info & RegExp are opaque `u8` buffers.** Half true, and the other half is R24.
   Debug info *is* partly parsed — header, scope descriptors, textified callees, debug string
   table — but the source-location streams and the per-function `DebugOffsets` that index them
