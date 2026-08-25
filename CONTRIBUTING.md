@@ -1,6 +1,6 @@
 # Contributing
 
-> ## This fork does not contribute upstream
+> ## 🛑 ⛔ ☠️ This fork does not contribute upstream ☠️ ⛔ 🛑
 >
 > This repository is a personal fork of
 > [SymbioticSec/hermes-decomp](https://github.com/SymbioticSec/hermes-decomp), kept for
