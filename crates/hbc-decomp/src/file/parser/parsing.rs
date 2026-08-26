@@ -1,9 +1,10 @@
-use crate::debug::try_parse_debug_info;
+use crate::debug::{try_parse_debug_info, FunctionDebugOffsets};
 use crate::error::{Error, Result};
 use crate::file::structure::{ShapeTableEntry, StringKindEntry, TableEntry};
 use crate::file::{BytecodeFile, ExceptionHandler, SectionInfo};
 use crate::format::{
-    BytecodeHeader, FunctionHeader, FunctionHeaderLayout, HeaderLayout, FLAG_HAS_EXCEPTION_HANDLER,
+    BytecodeHeader, FunctionHeader, FunctionHeaderLayout, HeaderLayout, FLAG_HAS_DEBUG_INFO,
+    FLAG_HAS_EXCEPTION_HANDLER,
 };
 use crate::io::ByteReader;
 use std::collections::BTreeMap;
@@ -313,7 +314,17 @@ fn parse_trailing_and_build(
         &tables.string_storage,
     )?;
 
-    let debug_info = try_parse_debug_info(bytes, header.debug_info_offset);
+    // The index into the location streams: one `DebugOffsets.sourceLocations` per
+    // function that has debug info. Without this the streams cannot be addressed at
+    // all, which is why `source_locations` was empty for the life of this crate.
+    let debug_offsets =
+        parse_debug_offsets(bytes, &tables.function_headers, header.version);
+    let debug_info = try_parse_debug_info(
+        bytes,
+        header.debug_info_offset,
+        header.version,
+        &debug_offsets,
+    );
     let exception_handlers = parse_exception_handlers(bytes, &tables.function_headers);
 
     Ok(BytecodeFile {
@@ -340,6 +351,81 @@ fn parse_trailing_and_build(
         sections,
         raw_bytes: Some(bytes.to_vec()),
     })
+}
+
+// Read each function's `DebugOffsets.sourceLocations` -- the offset of its location
+// stream within the debug *data* region, or absent when it has none.
+//
+// The function info area is laid out by upstream's `serializeFunctionInfo` as
+//
+//     pad(4) [ExceptionHandlerTableHeader{u32 count} + count * 12]   if hasExceptionHandler
+//     pad(4) [DebugOffsets]                                          if hasDebugInfo
+//
+// so reaching DebugOffsets means stepping over the handler table when there is one.
+// Two fields are read: `sourceLocations`, always first, and `scopeDescData`,
+// second and present only where the version has a scope table (v96). The struct's
+// *size* differs -- 12 / 8 / 4 bytes at v96 / v97 / v98+ -- but the fields we want
+// do not move, so this needs no size table.
+fn parse_debug_offsets(
+    bytes: &[u8],
+    function_headers: &[FunctionHeader],
+    version: u32,
+) -> BTreeMap<u32, FunctionDebugOffsets> {
+    let mut out = BTreeMap::new();
+    let has_scopes = crate::debug::DebugLayout::for_version(version)
+        .map(|l| l.has_lexical_regions)
+        .unwrap_or(false);
+
+    for fh in function_headers {
+        let (info_offset, flags, func_id) = match fh {
+            FunctionHeader::Legacy(h) => (h.info_offset as usize, h.flags, h.function_id),
+            FunctionHeader::Modern(h) => (h.info_offset as usize, h.flags, h.function_id),
+        };
+        if flags & FLAG_HAS_DEBUG_INFO == 0 || info_offset == 0 {
+            continue;
+        }
+
+        let mut pos = info_offset.saturating_add(3) & !3;
+        if flags & FLAG_HAS_EXCEPTION_HANDLER != 0 {
+            let Some(raw) = bytes.get(pos..pos + 4) else {
+                continue;
+            };
+            let count = u32::from_le_bytes(raw.try_into().unwrap()) as usize;
+            // Same sanity bound as the handler parser: a wild count here means the
+            // info area is not where we think, and stepping over it would land the
+            // DebugOffsets read somewhere arbitrary.
+            if count > 1000 {
+                continue;
+            }
+            pos = pos.saturating_add(4).saturating_add(count.saturating_mul(12));
+            pos = pos.saturating_add(3) & !3;
+        }
+
+        let Some(raw) = bytes.get(pos..pos + 4) else {
+            continue;
+        };
+        let source_locations = u32::from_le_bytes(raw.try_into().unwrap());
+        let scope_desc_data = if has_scopes {
+            bytes
+                .get(pos + 4..pos + 8)
+                .map(|r| u32::from_le_bytes(r.try_into().unwrap()))
+        } else {
+            None
+        };
+        // A function flagged with debug info but holding NO_OFFSET for both is
+        // possible; keep the entry only when at least one field says something.
+        if source_locations != u32::MAX || scope_desc_data.is_some_and(|s| s != u32::MAX) {
+            out.insert(
+                func_id,
+                FunctionDebugOffsets {
+                    source_locations,
+                    scope_desc_data,
+                },
+            );
+        }
+    }
+
+    out
 }
 
 // Parse exception handler tables for all functions from the raw bytecode bytes.

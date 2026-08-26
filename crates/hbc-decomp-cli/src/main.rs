@@ -339,8 +339,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             callees,
             vars,
         } => {
-            let (file, bytes) = helpers::load_file_with_bytes(&input, layout, function_layout)?;
-            commands::debug_cmd::print_debug_info(&file, &bytes, scopes, callees, vars)?;
+            let (file, _bytes) = helpers::load_file_with_bytes(&input, layout, function_layout)?;
+            commands::debug_cmd::print_debug_info(&file, scopes, callees, vars)?;
         }
         Command::Extract {
             input,

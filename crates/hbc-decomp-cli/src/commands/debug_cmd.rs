@@ -1,4 +1,4 @@
-use hbc_decomp::{BytecodeFile, DebugInfo};
+use hbc_decomp::BytecodeFile;
 use std::error::Error;
 
 pub fn print_info(file: &BytecodeFile) {
@@ -25,7 +25,6 @@ pub fn print_info(file: &BytecodeFile) {
 
 pub fn print_debug_info(
     file: &BytecodeFile,
-    bytes: &[u8],
     scopes: bool,
     callees: bool,
     vars: bool,
@@ -41,12 +40,13 @@ pub fn print_debug_info(
         return Ok(());
     }
 
-    let debug_info = match DebugInfo::parse(bytes, debug_offset) {
-        Ok(info) => info,
-        Err(e) => {
-            println!("Failed to parse debug info: {e}");
-            return Ok(());
-        }
+    // Use the parse the file already did: it carries the per-function
+    // `DebugOffsets` index, without which the location streams cannot be found at
+    // all. Re-parsing here from raw bytes would drop that and report a file with
+    // debug info as having none.
+    let Some(debug_info) = file.debug_info.clone() else {
+        println!("Failed to parse debug info for this file.");
+        return Ok(());
     };
 
     let show_all = !scopes && !callees && !vars;

@@ -6,7 +6,7 @@ use rmcp::{tool, tool_router, ErrorData as McpError};
 
 use hbc_decomp::opcode::BytecodeFormat;
 use hbc_decomp::{
-    BytecodeFile, ClosureInfo, DecompileOptionsV2, DebugInfo, IRBuilder, IRBuilderOptions,
+    BytecodeFile, ClosureInfo, DecompileOptionsV2, IRBuilder, IRBuilderOptions,
 };
 
 use super::params::*;
@@ -459,8 +459,11 @@ impl HermesService {
                 )]));
             }
 
-            let debug = DebugInfo::parse(&loaded.bytes, offset)
-                .map_err(|e| McpError::internal_error(format!("Debug parse error: {e}"), None))?;
+            // The file's own parse, which carries the per-function DebugOffsets
+            // index the location streams are addressed through.
+            let debug = loaded.file.debug_info.clone().ok_or_else(|| {
+                McpError::internal_error("Debug parse error: no debug info", None)
+            })?;
 
             let mut output = String::new();
 

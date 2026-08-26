@@ -2,6 +2,20 @@
 // - Source locations (line/column mappings)
 // - Scope descriptors (variable names and scope chain)
 // - Textified callees (function call target names)
+//
+// **Everything here is version-keyed**, because upstream reshaped this section
+// twice inside the range we support and bumped `BYTECODE_VERSION` for neither of
+// the reshapes in a way a reader could detect. `DebugInfoHeader` is 28 bytes at
+// v96, 20 at v97 and 16 at v98+; the location-stream encoding is different at v96
+// and v98+; and the whole scope-descriptor / textified-callee / debug-string-table
+// apparatus is a v96-era feature upstream deleted. Reading a v98 file with the v96
+// shapes does not fail — it silently yields nothing, which is what it did here
+// until this was keyed (R25). `tests/upstream_pin.rs` pins both sizes and the
+// stream's bit layout against the checkouts so the next reshape is a test failure.
+//
+// Derived from upstream's own serializer and deserializer, not from a spec:
+// `lib/BCGen/HBC/DebugInfo.cpp` (`DebugInfoGenerator::appendSourceLocations`) and
+// `FunctionDebugInfoDeserializer`. See `docs/UNMODELED_REGIONS_PLAN.md`.
 
 use crate::error::Result;
 use crate::io::ByteReader;
@@ -27,6 +41,19 @@ fn slice_range(data: &[u8], start: u32, end: u32) -> Option<&[u8]> {
 #[derive(Debug, Clone, Default)]
 pub struct DebugInfo {
     pub source_locations: BTreeMap<u32, Vec<SourceLocation>>,
+    /// function id → the offset of its scope descriptor, from
+    /// `DebugOffsets.scopeDescData`.
+    ///
+    /// **This is the function → scope link; the location stream's `scopeAddress` is
+    /// a different thing that resembles it.** That field is the innermost scope
+    /// live at one instruction, and upstream defaults it to the shared empty
+    /// descriptor at offset 0 (`kMostCommonEntryOffset`) — measured on a fixture
+    /// with a closure, four of five functions report 0 there while their real
+    /// scopes are at 3, 6, 9 and 13. So a variable map built by scanning a stream
+    /// is empty for most functions and right for the occasional one, which is the
+    /// worst way to be wrong. v96 only: v97 moved the link to `lexicalData` and v98
+    /// removed the scope table altogether.
+    pub function_scopes: BTreeMap<u32, u32>,
     pub scope_descriptors: Vec<ScopeDescriptor>,
     pub textified_callees: BTreeMap<u32, String>,
     pub string_table: Vec<String>,
@@ -58,7 +85,83 @@ impl ScopeDescriptor {
     }
 }
 
-// Parsed Hermes `DebugInfoHeader` (7 little-endian u32 fields).
+/// How a version lays out the debug section, or `None` for a version this crate
+/// does not model.
+///
+/// An allow-list rather than a best guess, the same habit as
+/// `ModernLayout::for_version`: a version whose shapes have not been derived from a
+/// checkout yields no debug info rather than debug info decoded with the wrong
+/// ruler. v97 is deliberately absent — it never shipped (see the guide's
+/// modern-layout note), and its stream encoding is documented in the plan only so
+/// the *shape of the drift* is on record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DebugLayout {
+    /// `sizeof(DebugInfoHeader)` — the number of `u32` fields, times four.
+    pub header_size: u32,
+    /// Whether the header delimits the v96-era sub-regions (scope descriptors,
+    /// textified callees, debug string table). False from v97 on: upstream removed
+    /// them, so the debug data is source-location streams and nothing else.
+    pub has_lexical_regions: bool,
+    /// Which location-stream encoding the version uses.
+    pub stream: StreamEncoding,
+}
+
+/// The two location-stream encodings this crate decodes.
+///
+/// Both are "SLEB128 deltas until an address delta of -1", and they agree on
+/// nothing else: the prologue length, the meaning of the low bits of the line
+/// delta, and which fields are always present all differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEncoding {
+    /// v96 and earlier. Prologue is `functionIndex, line, column`. Each entry is
+    /// `adelta, ldelta, cdelta, scopeAddress, envReg, [sdelta]`, with bit 0 of
+    /// `ldelta` marking the statement delta and the line delta in bits 1..
+    Legacy,
+    /// v98 and v99. Prologue is `functionIndex, line, column, envIdx`. Each entry
+    /// is `adelta` — always applied — then `ldelta`, whose bit 0 says whether a
+    /// location follows at all; bits 1 and 2 mark the statement and envIdx deltas,
+    /// and the line delta is in bits 3..
+    Modern,
+}
+
+impl DebugLayout {
+    pub fn for_version(version: u32) -> Option<Self> {
+        match version {
+            // 7 u32 fields: the three counts plus three sub-region offsets plus the
+            // data size.
+            v if v <= 96 => Some(Self {
+                header_size: 28,
+                has_lexical_regions: true,
+                stream: StreamEncoding::Legacy,
+            }),
+            // 4 u32 fields: the three counts plus the data size. v97's 5-field,
+            // 20-byte header is real but unmodelled on purpose.
+            98 | 99 => Some(Self {
+                header_size: 16,
+                has_lexical_regions: false,
+                stream: StreamEncoding::Modern,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// One function's `DebugOffsets`, as far as this crate reads it.
+///
+/// Upstream's struct is 12 / 8 / 4 bytes at v96 / v97 / v98+, but the fields we
+/// want do not move: `sourceLocations` is always first, and `scopeDescData` is
+/// second where it exists at all.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FunctionDebugOffsets {
+    /// Offset of this function's location stream in the debug data region, or
+    /// `u32::MAX` (`NO_OFFSET`) when it has none.
+    pub source_locations: u32,
+    /// Offset of this function's scope descriptor, v96 only.
+    pub scope_desc_data: Option<u32>,
+}
+
+// Parsed Hermes `DebugInfoHeader` (up to 7 little-endian u32 fields; how many is
+// version-keyed — see `DebugLayout`).
 //
 // The section layout is:
 //   [DebugInfoHeader (28 bytes)]
@@ -85,7 +188,18 @@ struct DebugInfoHeader {
 }
 
 impl DebugInfo {
-    pub fn parse(bytes: &[u8], debug_info_offset: u32) -> Result<Self> {
+    /// Parse the debug section.
+    ///
+    /// `offsets` maps a function id to its parsed `DebugOffsets` — the only index
+    /// into the location streams and the scope table. Without it the streams are
+    /// unaddressable, which is why `source_locations` was permanently empty before
+    /// P1 (DI1). Functions with no debug info are simply absent from the map.
+    pub fn parse(
+        bytes: &[u8],
+        debug_info_offset: u32,
+        version: u32,
+        offsets: &BTreeMap<u32, FunctionDebugOffsets>,
+    ) -> Result<Self> {
         if debug_info_offset == 0 || debug_info_offset == u32::MAX {
             return Ok(Self::default());
         }
@@ -95,13 +209,20 @@ impl DebugInfo {
             return Ok(Self::default());
         }
 
+        // An unmodelled version yields nothing rather than nonsense: reading a v98
+        // section with v96's 28-byte header is exactly R25, and it produced an
+        // empty result that looked like "this file has no debug info".
+        let Some(layout) = DebugLayout::for_version(version) else {
+            return Ok(Self::default());
+        };
+
         let mut reader = ByteReader::new(&bytes[offset..]);
-        let header = Self::parse_header(&mut reader)?;
+        let header = Self::parse_header(&mut reader, layout)?;
 
         // Where the debug-data blob begins, relative to the section start.
         // Every term is bounded by header values; use u64 + saturating math so
         // a corrupt header can never overflow or index out of range.
-        let data_start = 28u64
+        let data_start = layout.header_size as u64
             + (header.filename_count as u64).saturating_mul(8)
             + header.filename_storage_size as u64
             + (header.file_region_count as u64).saturating_mul(12);
@@ -114,23 +235,53 @@ impl DebugInfo {
 
         let mut debug_info = DebugInfo::default();
 
+        // The location streams, one per function that has one. This is the half
+        // that was missing: the streams were always there, and nothing knew where
+        // any of them started.
+        for (&function_id, entry) in offsets {
+            if entry.source_locations == u32::MAX {
+                continue;
+            }
+            if let Some(locs) =
+                Self::parse_location_stream(data, entry.source_locations, layout.stream)
+            {
+                if !locs.is_empty() {
+                    debug_info.source_locations.insert(function_id, locs);
+                }
+            }
+        }
+
+        // The scope link, where the version has one.
+        for (&function_id, entry) in offsets {
+            if let Some(scope) = entry.scope_desc_data {
+                if scope != u32::MAX {
+                    debug_info.function_scopes.insert(function_id, scope);
+                }
+            }
+        }
+
+        // Everything below this point is v96-era and was removed upstream by v97,
+        // so the header does not delimit it and the offsets to read it do not
+        // exist. Reading it anyway is how the old parser produced garbage regions
+        // on a modern file.
+        if !layout.has_lexical_regions {
+            return Ok(debug_info);
+        }
+
         // Parse the string table first: scope descriptors and callees refer to
         // their names by index into it.
-        if let Some(table) = slice_range(
-            data,
-            header.string_table_offset,
-            header.debug_data_size,
-        ) {
-            debug_info.string_table = Self::parse_string_table(table);
-        }
+        // Two views of the same region: the decoded list (for display) and the raw
+        // bytes, which is what name references actually address.
+        let string_data = slice_range(data, header.string_table_offset, header.debug_data_size)
+            .unwrap_or(&[]);
+        debug_info.string_table = Self::parse_string_table(string_data);
 
         if let Some(scope_data) = slice_range(
             data,
             header.scope_desc_offset,
             header.textified_callee_offset,
         ) {
-            debug_info.scope_descriptors =
-                Self::parse_scope_descriptors(scope_data, &debug_info.string_table);
+            debug_info.scope_descriptors = Self::parse_scope_descriptors(scope_data, string_data);
         }
 
         if let Some(callee_data) = slice_range(
@@ -138,34 +289,182 @@ impl DebugInfo {
             header.textified_callee_offset,
             header.string_table_offset,
         ) {
-            debug_info.textified_callees =
-                Self::parse_textified_callees(callee_data, &debug_info.string_table);
+            debug_info.textified_callees = Self::parse_textified_callees(callee_data, string_data);
         }
 
         Ok(debug_info)
     }
 
-    fn parse_header(reader: &mut ByteReader<'_>) -> Result<DebugInfoHeader> {
+    fn parse_header(reader: &mut ByteReader<'_>, layout: DebugLayout) -> Result<DebugInfoHeader> {
+        // The three counts lead at every version; what follows them is what changed.
+        let filename_count = reader.read_u32()?;
+        let filename_storage_size = reader.read_u32()?;
+        let file_region_count = reader.read_u32()?;
+        let (scope_desc_offset, textified_callee_offset, string_table_offset) =
+            if layout.has_lexical_regions {
+                (reader.read_u32()?, reader.read_u32()?, reader.read_u32()?)
+            } else {
+                (0, 0, 0)
+            };
         Ok(DebugInfoHeader {
-            filename_count: reader.read_u32()?,
-            filename_storage_size: reader.read_u32()?,
-            file_region_count: reader.read_u32()?,
-            scope_desc_offset: reader.read_u32()?,
-            textified_callee_offset: reader.read_u32()?,
-            string_table_offset: reader.read_u32()?,
+            filename_count,
+            filename_storage_size,
+            file_region_count,
+            scope_desc_offset,
+            textified_callee_offset,
+            string_table_offset,
             debug_data_size: reader.read_u32()?,
         })
     }
 
-    // Resolve a debug-string-table index to its name, if in range.
-    fn name_at(table: &[String], index: i64) -> Option<String> {
-        usize::try_from(index)
-            .ok()
-            .and_then(|i| table.get(i))
-            .cloned()
+    /// Decode one function's location stream, starting at `offset` into the debug
+    /// **data** region (not the section).
+    ///
+    /// Returns `None` only when the offset is out of range. A stream that decodes
+    /// to no entries returns an empty vector — that is a real state, not a failure:
+    /// the prologue alone describes the function's opening line.
+    fn parse_location_stream(
+        data: &[u8],
+        offset: u32,
+        encoding: StreamEncoding,
+    ) -> Option<Vec<SourceLocation>> {
+        let mut reader = ByteReader::new(data.get(offset as usize..)?);
+
+        // Prologue. The function index is read and dropped: the caller already
+        // knows which function this stream belongs to, having followed that
+        // function's DebugOffsets to get here. Upstream cross-checks the two; a
+        // mismatch would mean the DebugOffsets are wrong, which is worth surfacing
+        // one day but is not this function's business.
+        let _function_index = reader.read_sleb128().ok()?;
+        let mut line = reader.read_sleb128().ok()?;
+        let mut column = reader.read_sleb128().ok()?;
+        if encoding == StreamEncoding::Modern {
+            // envIdx — present in the prologue from v98 on, and easy to miss:
+            // skipping it shifts every subsequent read by one SLEB128 and decodes
+            // the whole stream into plausible nonsense.
+            let _env_idx = reader.read_sleb128().ok()?;
+        }
+
+        let mut address: i64 = 0;
+        // The prologue itself is a location: upstream seeds its iteration with it
+        // (`lastLocation = fdid.getCurrent()`), so the function's opening line is
+        // reachable at address 0.
+        let mut out = vec![SourceLocation {
+            bytecode_offset: 0,
+            line: line.max(0) as u32,
+            column: column.max(0) as u32,
+            scope_offset: None,
+        }];
+
+        // A malformed stream must not spin: every iteration consumes at least one
+        // byte, and the reader runs out, but bound it anyway.
+        let mut guard = 0u32;
+        loop {
+            guard += 1;
+            if guard > 100_000 {
+                break;
+            }
+            let Ok(address_delta) = reader.read_sleb128() else {
+                break;
+            };
+            if address_delta == -1 {
+                break;
+            }
+            match encoding {
+                StreamEncoding::Legacy => {
+                    let (Ok(mut line_delta), Ok(column_delta), Ok(scope_address), Ok(_env_reg)) = (
+                        reader.read_sleb128(),
+                        reader.read_sleb128(),
+                        reader.read_sleb128(),
+                        reader.read_sleb128(),
+                    ) else {
+                        break;
+                    };
+                    // Read the conditional statement delta *before* shifting: bit 0
+                    // is the marker and the writer emits the delta last.
+                    if line_delta & 1 != 0 && reader.read_sleb128().is_err() {
+                        break;
+                    }
+                    line_delta >>= 1;
+
+                    address += address_delta;
+                    line += line_delta;
+                    column += column_delta;
+                    out.push(SourceLocation {
+                        bytecode_offset: address.max(0) as u32,
+                        line: line.max(0) as u32,
+                        column: column.max(0) as u32,
+                        // Absolute, not a delta, and only at v96: this is the link
+                        // into the scope-descriptor table that makes variable names
+                        // reachable (DI1).
+                        scope_offset: u32::try_from(scope_address).ok(),
+                    });
+                }
+                StreamEncoding::Modern => {
+                    // The address advances on *every* entry, including one that
+                    // carries no location. Two cursors, not one: `address` moves
+                    // here, while line/column only move inside the branch below.
+                    // Collapsing them silently corrupts every line from the first
+                    // location-less entry onward.
+                    address += address_delta;
+
+                    let Ok(mut line_delta) = reader.read_sleb128() else {
+                        break;
+                    };
+                    if line_delta & 1 == 0 {
+                        continue;
+                    }
+                    let Ok(column_delta) = reader.read_sleb128() else {
+                        break;
+                    };
+                    if line_delta & 2 != 0 && reader.read_sleb128().is_err() {
+                        break;
+                    }
+                    if line_delta & 4 != 0 && reader.read_sleb128().is_err() {
+                        break;
+                    }
+                    line_delta >>= 3;
+
+                    line += line_delta;
+                    column += column_delta;
+                    out.push(SourceLocation {
+                        bytecode_offset: address.max(0) as u32,
+                        line: line.max(0) as u32,
+                        column: column.max(0) as u32,
+                        // v97 moved the per-location scope link to `lexicalData`
+                        // and v98 dropped it entirely, so there is nothing to fill
+                        // this with. Do not invent one.
+                        scope_offset: None,
+                    });
+                }
+            }
+        }
+
+        Some(out)
     }
 
-    fn parse_scope_descriptors(data: &[u8], strings: &[String]) -> Vec<ScopeDescriptor> {
+    /// Resolve a name reference inside a scope descriptor or callee table.
+    ///
+    /// The value is a **byte offset into the debug string table region**, not an
+    /// index into a list of strings: upstream's `appendString` writes
+    /// `stringTable_.size()` at the moment the string was first appended, and
+    /// `decodeString` seeks there and reads a LEB128 length followed by the bytes.
+    ///
+    /// Treating it as an index — which this did until P1 — resolves the *first*
+    /// string correctly, because offset 0 and index 0 coincide, and yields nothing
+    /// for every other one. On a scope with three captured variables that produced
+    /// `["alpha", "", ""]`, which reads as "Hermes only named one of them" rather
+    /// than as a decode bug.
+    fn name_at_offset(table_data: &[u8], offset: i64) -> Option<String> {
+        let at = usize::try_from(offset).ok()?;
+        let mut reader = ByteReader::new(table_data.get(at..)?);
+        let len = reader.read_sleb128().ok()?;
+        let len = usize::try_from(len).ok()?;
+        let bytes = reader.read_bytes(len).ok()?;
+        String::from_utf8(bytes.to_vec()).ok()
+    }
+
+    fn parse_scope_descriptors(data: &[u8], string_data: &[u8]) -> Vec<ScopeDescriptor> {
         let mut descriptors = Vec::new();
         let mut reader = ByteReader::new(data);
         let mut current_offset = 0u32;
@@ -193,8 +492,9 @@ impl DebugInfo {
                 let Ok(name_idx) = reader.read_sleb128() else {
                     break;
                 };
-                // Out-of-range index => unknown name (empty) rather than wrong.
-                names.push(Self::name_at(strings, name_idx).unwrap_or_default());
+                // An unresolvable offset yields an empty name rather than a wrong
+                // one; it means the region or the descriptor is malformed.
+                names.push(Self::name_at_offset(string_data, name_idx).unwrap_or_default());
             }
 
             // Hermes encodes "no parent" as the u32 sentinel (all ones).
@@ -217,7 +517,7 @@ impl DebugInfo {
         descriptors
     }
 
-    fn parse_textified_callees(data: &[u8], strings: &[String]) -> BTreeMap<u32, String> {
+    fn parse_textified_callees(data: &[u8], string_data: &[u8]) -> BTreeMap<u32, String> {
         let mut callees = BTreeMap::new();
         let mut reader = ByteReader::new(data);
 
@@ -232,7 +532,7 @@ impl DebugInfo {
             let (Ok(address), Ok(name_idx)) = (reader.read_sleb128(), reader.read_sleb128()) else {
                 break;
             };
-            if let Some(name) = Self::name_at(strings, name_idx) {
+            if let Some(name) = Self::name_at_offset(string_data, name_idx) {
                 callees.insert(address as u32, name);
             }
         }
@@ -274,6 +574,19 @@ impl DebugInfo {
         var_map
     }
 
+    /// The variable names in scope for `function_id`, keyed by register index.
+    ///
+    /// This is what DI1's consumers want, and the reason it is a method rather than
+    /// something they assemble: getting from a function to its scope is one lookup
+    /// they were doing wrong, via the location stream, for as long as the feature
+    /// existed. Empty when the version has no scope table, when the function has no
+    /// entry, or when the scope genuinely names nothing — which is the common case,
+    /// because Hermes only records a name for a *captured* variable. Plain locals
+    /// live in registers and never appear here at any optimization level.
+    pub fn variable_map_for_function(&self, function_id: u32) -> BTreeMap<u32, String> {
+        self.build_variable_map(self.function_scopes.get(&function_id).copied())
+    }
+
     pub fn all_variable_names(&self) -> Vec<&str> {
         self.scope_descriptors
             .iter()
@@ -283,8 +596,13 @@ impl DebugInfo {
     }
 }
 
-pub fn try_parse_debug_info(bytes: &[u8], debug_info_offset: u32) -> Option<DebugInfo> {
-    DebugInfo::parse(bytes, debug_info_offset).ok()
+pub fn try_parse_debug_info(
+    bytes: &[u8],
+    debug_info_offset: u32,
+    version: u32,
+    offsets: &BTreeMap<u32, FunctionDebugOffsets>,
+) -> Option<DebugInfo> {
+    DebugInfo::parse(bytes, debug_info_offset, version, offsets).ok()
 }
 
 #[cfg(test)]
@@ -293,14 +611,14 @@ mod tests {
 
     #[test]
     fn test_empty_debug_info() {
-        let info = DebugInfo::parse(&[], 0).unwrap();
+        let info = DebugInfo::parse(&[], 0, 96, &BTreeMap::new()).unwrap();
         assert!(info.scope_descriptors.is_empty());
         assert!(info.textified_callees.is_empty());
     }
 
     #[test]
     fn test_invalid_offset() {
-        let info = DebugInfo::parse(&[0u8; 100], u32::MAX).unwrap();
+        let info = DebugInfo::parse(&[0u8; 100], u32::MAX, 96, &BTreeMap::new()).unwrap();
         assert!(info.scope_descriptors.is_empty());
     }
 
@@ -367,7 +685,7 @@ mod tests {
         // Two filenames + one file region so data_start =
         // 28 + 8*2 + len("app.js"=6)+len("b.js"=4) + 12*1 = 28+16+10+12 = 66.
         let (bytes, off) = build_debug_section(&["app.js", "b.js"], 1, &scope, &[], &strings);
-        let info = DebugInfo::parse(&bytes, off).unwrap();
+        let info = DebugInfo::parse(&bytes, off, 96, &BTreeMap::new()).unwrap();
         assert_eq!(info.string_table, vec!["hi".to_string()]);
         assert_eq!(info.scope_descriptors.len(), 1);
         assert_eq!(info.scope_descriptors[0].names, vec!["hi".to_string()]);
@@ -383,14 +701,14 @@ mod tests {
         // Poison name_count (-1) in the scope region of an otherwise valid section.
         let scope = [0x7f, 0x00, 0x7f]; // parent=-1, flags=0, name_count=-1
         let (bytes, off) = build_debug_section(&["a.js"], 1, &scope, &[], &[]);
-        let info = DebugInfo::parse(&bytes, off).expect("must not panic");
+        let info = DebugInfo::parse(&bytes, off, 96, &BTreeMap::new()).expect("must not panic");
         assert!(info.scope_descriptors.is_empty());
 
         // Arbitrary garbage offsets / truncated buffers must not panic either.
         for len in [0usize, 1, 8, 28, 40] {
             let junk = vec![0xffu8; len];
-            let _ = DebugInfo::parse(&junk, 1);
-            let _ = DebugInfo::parse(&junk, len as u32);
+            let _ = DebugInfo::parse(&junk, 1, 96, &BTreeMap::new());
+            let _ = DebugInfo::parse(&junk, len as u32, 96, &BTreeMap::new());
         }
     }
 }

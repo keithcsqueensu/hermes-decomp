@@ -125,11 +125,8 @@ pub(crate) fn apply_register_naming(
     let reg_info = analyze_registers(&statements);
 
     let debug_names: BTreeMap<u32, String> = if let Some(debug_info) = &file.debug_info {
-        let scope_offset = debug_info
-            .source_locations
-            .get(&function_id)
-            .and_then(|locs| locs.iter().find_map(|l| l.scope_offset));
-        debug_info.build_variable_map(scope_offset)
+        // See ir_gen: the link is `function_scopes`, not the stream's scopeAddress.
+        debug_info.variable_map_for_function(function_id)
     } else {
         BTreeMap::new()
     };

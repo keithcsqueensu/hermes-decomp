@@ -51,6 +51,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use hbc_decomp::debug::{DebugLayout, StreamEncoding};
 use hbc_decomp::modern_layout::ModernLayout;
 use hbc_decomp::BytecodeFormat;
 
@@ -541,6 +542,158 @@ fn opcode_tables_match_upstream() {
             Oracle::Src,
             None,
             "no HERMES_SRC_V* checkouts configured; asserted nothing",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Debug info (what `debug.rs` decodes)
+// ---------------------------------------------------------------------------
+
+/// Count the plain `uint32_t` members of `struct <name>` in `src`.
+///
+/// Deliberately ignores `static constexpr uint32_t ...` — `DebugOffsets` declares
+/// `NO_OFFSET` that way, and counting it would report every version as one field
+/// wider than it is.
+fn count_u32_members(src: &str, struct_name: &str) -> Option<usize> {
+    let at = src.find(&format!("struct {struct_name} {{"))?;
+    let body = &src[at..];
+    let end = body.find("\n};")?;
+    Some(
+        body[..end]
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("uint32_t "))
+            .count(),
+    )
+}
+
+/// The source of `FunctionDebugInfoDeserializer`, which moved between files:
+/// `DebugInfo.cpp` at v96, `DebugInfo.h` from v98.
+fn deserializer_source(root: &Path) -> Option<String> {
+    for rel in [
+        "include/hermes/BCGen/HBC/DebugInfo.h",
+        "lib/BCGen/HBC/DebugInfo.cpp",
+    ] {
+        let path = root.join(rel);
+        if let Ok(src) = std::fs::read_to_string(&path) {
+            if src.contains("struct FunctionDebugInfoDeserializer") {
+                return Some(strip_comments(&src));
+            }
+        }
+    }
+    None
+}
+
+/// How many SLEB128s the stream prologue holds, and how far the line delta is
+/// shifted — the two numbers that decide whether a stream decodes or produces
+/// plausible nonsense.
+fn stream_shape(root: &Path) -> Option<(usize, u32)> {
+    let src = deserializer_source(root)?;
+    let at = src.find("struct FunctionDebugInfoDeserializer")?;
+    let body = &src[at..];
+
+    // The constructor's decode1Int() calls, i.e. everything before `next()`.
+    let ctor_end = body.find("next()")?;
+    let prologue = body[..ctor_end].matches("decode1Int()").count();
+
+    let shift_at = body.find("lineDelta >>=")?;
+    let shift: u32 = body[shift_at + "lineDelta >>=".len()..]
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()?;
+
+    Some((prologue, shift))
+}
+
+/// The debug reader is version-keyed, and this is what keys it.
+///
+/// R25 was this crate reading every version's debug section with v96's 28-byte
+/// header: it did not fail, it returned an empty `DebugInfo`, so a modern file
+/// looked like a file without debug info. The sizes and the stream encoding are
+/// now derived per version in `debug.rs`; here they are checked against the
+/// checkouts, because upstream shrank this header twice inside the range we
+/// support and will do it again.
+#[test]
+fn debug_info_shapes_match_upstream() {
+    let mut checked = 0;
+    for version in CHECKOUT_VERSIONS {
+        let Some(root) = checkout_for(version) else {
+            common::skip_or_fail(Oracle::Src, Some(version), &format!("no HERMES_SRC_V{version}"));
+            continue;
+        };
+        let format_h = strip_comments(&read(&root, "include/hermes/BCGen/HBC/BytecodeFileFormat.h"));
+        let debug_h = strip_comments(&read(&root, "include/hermes/BCGen/HBC/DebugInfo.h"));
+
+        let header_fields = count_u32_members(&format_h, "DebugInfoHeader")
+            .unwrap_or_else(|| panic!("v{version}: cannot find struct DebugInfoHeader"));
+        let offsets_fields = count_u32_members(&debug_h, "DebugOffsets")
+            .unwrap_or_else(|| panic!("v{version}: cannot find struct DebugOffsets"));
+        let (prologue, shift) = stream_shape(&root)
+            .unwrap_or_else(|| panic!("v{version}: cannot read FunctionDebugInfoDeserializer"));
+
+        match DebugLayout::for_version(version) {
+            Some(layout) => {
+                assert_eq!(
+                    layout.header_size as usize,
+                    header_fields * 4,
+                    "v{version}: DebugInfoHeader is {} u32 fields ({} bytes) upstream, but \
+                     DebugLayout says {}. Reading it at the wrong size silently yields an \
+                     empty DebugInfo -- that is R25.",
+                    header_fields,
+                    header_fields * 4,
+                    layout.header_size
+                );
+                // The scope link is the second field of DebugOffsets, so "has a
+                // scope table" and "DebugOffsets has more than one field" have to
+                // agree, or `parse_debug_offsets` reads a field that is not there.
+                assert_eq!(
+                    layout.has_lexical_regions,
+                    offsets_fields > 1,
+                    "v{version}: DebugOffsets has {offsets_fields} u32 field(s) upstream, but \
+                     DebugLayout::has_lexical_regions is {}. debug.rs reads scopeDescData as \
+                     the second field only when that flag is set.",
+                    layout.has_lexical_regions
+                );
+                let (want_prologue, want_shift) = match layout.stream {
+                    StreamEncoding::Legacy => (3, 1),
+                    StreamEncoding::Modern => (4, 3),
+                };
+                assert_eq!(
+                    prologue, want_prologue,
+                    "v{version}: the stream prologue reads {prologue} SLEB128s upstream, \
+                     decoder expects {want_prologue}. One extra or missing field shifts every \
+                     later read and decodes the whole stream into plausible nonsense."
+                );
+                assert_eq!(
+                    shift, want_shift,
+                    "v{version}: upstream shifts the line delta by {shift}, decoder by \
+                     {want_shift}"
+                );
+                checked += 1;
+            }
+            None => {
+                // v97 is unmodelled on purpose. Pin that it is *different*, so the
+                // refusal stays a decision rather than an oversight: if a future
+                // version's shapes match one we already handle, it should be added
+                // to the allow-list instead of being silently skipped.
+                assert!(
+                    header_fields * 4 != 28 || offsets_fields != 3,
+                    "v{version} is not in DebugLayout's allow-list, yet its debug shapes are \
+                     identical to v96's. Either add it or explain why not."
+                );
+                checked += 1;
+            }
+        }
+    }
+    if checked == 0 {
+        common::skip_or_fail(
+            Oracle::Src,
+            None,
+            "no HERMES_SRC_V* checkouts configured; debug shapes unchecked",
         );
     }
 }

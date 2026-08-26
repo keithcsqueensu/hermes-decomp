@@ -287,11 +287,10 @@ pub fn build_closure_context_from_file(
             let statements = analysis.root.to_statements(&cfg);
 
             let debug_names = if let Some(debug_info) = &file.debug_info {
-                let scope_offset = debug_info
-                    .source_locations
-                    .get(&function_id)
-                    .and_then(|locs| locs.iter().find_map(|l| l.scope_offset));
-                debug_info.build_variable_map(scope_offset)
+                // Via `function_scopes`, not via the location stream's
+                // `scopeAddress`: that field is 0 on real output, so this used to
+                // resolve to the empty scope even once the streams were readable.
+                debug_info.variable_map_for_function(function_id)
             } else {
                 BTreeMap::new()
             };

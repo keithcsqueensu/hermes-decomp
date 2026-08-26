@@ -55,7 +55,7 @@ something with meaning attached, not merely into a `Vec`. "Emit" means `create` 
 | **CJS module table** | ✅ pairs | ⚠️ **one of two meanings, and we cannot tell which** | ❌ empty only | OB2 |
 | **`options` byte** | ✅ as a `u8` | ❌ **never decoded, anywhere** | carried | OB1 |
 | **RegExp table + storage** | table ✅, storage ❌ raw | ❌ | ❌ empty only | P3 |
-| **debug info** | partly, at one version | partly | ❌ empty only | DI1 / DI2 / DI3 |
+| **debug info** | ✅ version-keyed (96/98/99) | ✅ locations + scopes; **not** the lexical/envIdx data | ❌ empty only | DI2 guarded (P0), DI1 read (P1), decompiler wiring is P1b |
 
 The four bolded rows are the read-side gaps; everything else on the list is a write-side gap
 only, and none of them can be *emitted* today. `create` writes a zero count for every one
@@ -478,9 +478,59 @@ unaffected; and a file with no debug section is unaffected. All five run at v96,
 
 **What P0 does not do.** It refuses; it does not relocate. P2 is still the fix.
 
-### P1 — Read the location streams (fixes DI1)
+### P1 — Read the location streams (fixes DI1) — ✅ **shipped**
 
 **Goal.** Populate `DebugInfo::source_locations`, so the two existing consumers start working.
+
+**Shipped as** `DebugLayout::for_version` + `StreamEncoding` in `debug.rs` (an allow-list of
+96 / 98 / 99, refusing the rest the way `ModernLayout` does), `parse_debug_offsets` in the
+parser, and `DebugInfo::variable_map_for_function`. Pinned by
+`debug_info_shapes_match_upstream` in `tests/upstream_pin.rs`, which derives the header size,
+the `DebugOffsets` field count, the stream prologue length and the line-delta shift from each
+checkout — and was checked by breaking each of them and watching it fail. Asserted by
+`tests/debug_locations.rs` (8 cases), whose ground truth is the fixture's own line numbers.
+
+**Three things this phase got wrong on paper, and the measurements that corrected them:**
+
+1. *"`scope_offset` filled from `scopeAddress` at v96"* would have produced a working reader
+   that still recovered no names. The stream's `scopeAddress` is the innermost scope live at
+   one instruction, and upstream defaults it to the shared empty descriptor at offset 0 — on a
+   five-function fixture, four report 0 while their real scopes sit at 3, 6, 9 and 13. **The
+   function → scope link is `DebugOffsets.scopeDescData`**, the second field, now read as
+   `DebugInfo::function_scopes`. Pinned by `the_scope_link_does_not_come_from_the_stream`.
+2. **A name inside a scope descriptor is a byte offset into the debug string table, not an
+   index** — upstream's `appendString` writes `stringTable_.size()` and `decodeString` seeks
+   there for a LEB128 length. This crate read it as an index, which resolves the one string at
+   offset 0 and yields empty for every other. On three captured variables that printed
+   `["alpha", "", ""]`, which reads as *Hermes named one of them* rather than as a decode bug.
+   Fixed; pinned by `every_captured_name_resolves_not_just_the_first`, which needs three names
+   because a test with one would have passed throughout. This was a pre-existing defect, not a
+   P1 regression — registered as R28.
+3. *"`decompile` emits real local-variable names"* as the acceptance signal was written before
+   anyone knew **Hermes only names captured variables**. A `Variable` exists for a captured
+   binding; a plain local lives in a register and is never named at any optimization level. So
+   the recovered names key on **environment slots**, which the decompiler renders as
+   `closure_N`, while the renamer that consumes `debug_names` is register-indexed. See P1b.
+
+**What works end to end now:** `hermes-decomp debug <file> --vars` prints the recovered names,
+and `variable_map_for_function` returns them keyed by slot. Both consumers (`ir_gen`,
+`pipeline`) were switched off the stream-scanning lookup, so they resolve the right scope.
+
+### P1b — Put the recovered names in the decompiler *(the rest of P1's acceptance)*
+
+**Goal.** `closure_0` → `count` in decompiled output.
+
+**Why it is separate.** The names are slot-indexed and the rename path is register-indexed, so
+this is not a wiring change but a naming-source change in
+`analysis/closure/info/naming.rs`, where `format!("closure_{raw_slot}")` is chosen. That code
+has no access to the debug info or to the function's scope, and threading it there touches the
+closure-context analysis, whose output every decompiler test compares against.
+
+**The premise is measured, so whoever does it does not have to guess**: slot index and scope
+name index correspond, verified on two fixtures — one capture (`count` ↔ `closure_0`) and
+three (`first`/`second`/`third` ↔ `closure_0..2`), with the names in declaration order. The
+scope to read is the *parent* of the function's own scope: `bump`'s scope is 13, whose parent
+9 holds `count`.
 
 **Do.**
 0. Fix DI3 first: thread the bytecode version into `DebugInfo::parse` and key the header shape
@@ -494,9 +544,13 @@ unaffected; and a file with no debug section is unaffected. All five run at v96,
 3. Populate `source_locations` keyed by `function_id`, with `scope_offset` filled from
    `scopeAddress` at v96 and left `None` at v97+.
 
-**Acceptance.** On a v96 debug fixture, `decompile` emits real local-variable names from the
-debug scope chain where today it emits synthesised ones. That is the observable end-to-end
-signal, and it is currently unreachable, so it doubles as proof P1 landed.
+**Acceptance, as it turned out.** The end-to-end signal was specified as `decompile` emitting
+real names; that is P1b, for the reason above. What P1 itself delivers, and what the tests
+assert: streams decode at v96/v98/v99; the decoded lines *are* the fixture's lines (8, 10, 12,
+15 for `classify`; 18–21 for `total`); the two encodings agree about the same program, which is
+the check that catches a missed prologue field or a collapsed address cursor; and
+`debug --vars` prints four captured variable names that no version of this crate had ever
+recovered.
 
 **Pin it.** Add both version-keyed quantities to `tests/upstream_pin.rs` the way opcodes and
 function-header fields already are: derive `sizeof(DebugInfoHeader)` and `sizeof(DebugOffsets)`
