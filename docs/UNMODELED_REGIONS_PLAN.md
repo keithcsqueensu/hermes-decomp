@@ -27,10 +27,10 @@ this is a plan about *emitting* these regions, and the writer states things no r
 is where the ordering invariants, the padding rule, and the two corrections below came from.
 Where a claim is tagged both ways, reader and writer agree.
 
-Everything in this document is static analysis of the checkouts. Nothing here has yet been
-confirmed by compiling a bundle that actually contains one of these regions and parsing it back
-— `hermesc` is available for v96/v98/v99 in those same worktrees, and doing that is the
-cheapest possible check on the whole document. It has not been done.
+**[measured]** marks a claim confirmed by compiling a bundle that actually contains the region
+and parsing it back with this crate — see What compiling actually showed. Static analysis got
+the formats right; compiling corrected two claims that reading could not have, and one region
+could not be produced at all.
 
 Companion to `WRITE_PATH_GUIDE.md` § Pending impl plans, and to `RELOCATION_PLAN.md` (which
 owns *moving* these regions) and `STRING_PACKING_PLAN.md` (which owns rebuilding one of them).
@@ -61,6 +61,67 @@ The four bolded rows are the read-side gaps; everything else on the list is a wr
 only, and none of them can be *emitted* today. `create` writes a zero count for every one
 (`serialize.rs:246-254`), which is honest for a minimal image and is exactly why `create` is a
 smoke-test emitter rather than a serializer.
+
+---
+
+## What compiling actually showed **[measured]**
+
+`hermesc` is built for v96/v98/v99 beside each source worktree (v97 is source-only, as ever), so
+every claim below is a bundle that was compiled, then parsed by `BytecodeFile::parse_auto`. Four
+inputs, compiled with and without `-g3`: an object/regex/arith file, a `'show source'` +
+`'hide source'` file, an `async function` file, and a two-module CommonJS directory. This is the
+first time this crate has been pointed at a file where these regions are non-empty.
+
+**Confirmations.**
+
+| Claim | Evidence |
+|---|---|
+| DI1 — `source_locations` is always empty | Every file, every version, including `-g3` v96 builds whose `debug_info_offset` is non-zero and *all* of whose functions carry `FLAG_HAS_DEBUG_INFO`: `source_locations` has **0** entries. The feature is unreachable in practice, not just on paper |
+| CJS unresolved pair = (filename string id, function id) | `cjs1.v96`: `(3, 1)` where string 3 is `"helper.js"`. `cjsdir.v96`: `[(5,1) → "index.js", (2,2) → "helper.js"]` |
+| `hasAsync` exists at v96 and is gone by v98 | The *same* async source: `options = 0b00000100` at v96 (bit 2 set), `0b00000000` at v98 **and** v99. R27's drift, observed rather than inferred |
+| Object shape table is v98+ only | `shapes=0` at v96, `shapes=1` at v98/v99 for the same input |
+| Shapes are deduped | `plain.js` has two distinct object literals with the same key set; the v98/v99 table holds **one** entry, `(keyBufferOffset 0, numProps 3)` — the `LiteralBufferBuilder` dedup, measured |
+| RegExp table is populated per literal | Two regex literals → `regexp=2`, every version |
+
+**Correction 1 — the function source table is not only about source-visibility directives.**
+Upstream's comment says these entries exist "only ... when functions are declared with source
+visibility directives", and the directives do behave as documented: `'show source'` yields an
+entry pointing at a string holding the function's *actual text*
+(`(1, 1, "function visible(a) {\n  'show source';\n  return a * 2;\n}")`), and `'hide source'`
+yields an entry pointing at **string id 0, the empty string** — a tombstone rather than an
+omission. But `asyncy.js`, which contains one `async function` and no directive at all, also
+produces an entry — `(3, 0, "")`, on the inner function the async lowering generates — at every
+version. So "has a source-visibility directive" is sufficient, not necessary, and an emitter
+cannot derive this table from directives alone.
+
+**Correction 2 — DI3's degradation is real, and now visible.** With `-g3`, the same source
+parses to genuinely different debug info depending on version:
+
+| | v96 | v98 / v99 |
+|---|---|---|
+| `scope_descriptors` | **5** | 0 |
+| debug `string_table` | **8** | 0 |
+
+At v98/v99 the reader consumes a 28-byte header where the header is 16, and every interior
+offset it then computes is wrong — so it returns an empty `DebugInfo` on a file that demonstrably
+has debug info. Silent, exactly as predicted. (A v96 file built *without* `-g3` shows
+`scope_descriptors=1`: the one always-present empty entry `DebugInfoGenerator`'s constructor
+writes. A useful sanity check that the v96 path is really reading the structure and not
+inventing it.)
+
+**What could not be produced.** No `cjsModuleTableStatic` bundle. `-commonjs -fstatic-require`
+over a directory, with `moduleIDs` supplied in `metadata.json` and `-Wunresolved-static-require`
+silent, still emitted the **unresolved** table: `options` bit 1 clear, pairs resolving to
+filenames. So the statically-resolved half of OB2 remains static-analysis-only, and P5's
+acceptance test cannot currently be written against a real artifact — it will have to assert the
+decoder on a synthesised byte pattern until someone finds the invocation that produces one.
+Separately, `hermesc` at **v98 and v99 crashes** on `-commonjs` with a single-file input where
+v96 succeeds, so the CJS path is only exercisable at v96 on these builds.
+
+**Fixture recipe, now verified.** P0's missing debug-info fixture is
+`hermesc -emit-binary -g3 -out <out>.hbc <in>.js`, and `-g3` does populate the section at all
+three versions (`debug_info_offset` non-zero, every function flagged). That is the flag P0 asks
+someone to confirm; it is confirmed.
 
 ---
 
@@ -182,6 +243,10 @@ The bounds checks (`slice_in_bounds`, `slice_range`) then usually make this degr
 `Ok(DebugInfo::default())` — silently "no debug info" — rather than crash, which is why it has
 never been noticed. It has also never been exercised: **every committed fixture is built
 without debug info**, so no test reaches this path at any version.
+
+Confirmed on real bundles **[measured]**: one source compiled `-g3` at three versions parses to
+5 scope descriptors and an 8-entry debug string table at v96, and to **zeros** at v98 and v99.
+See What compiling actually showed.
 
 This is the R8 pattern exactly — a structure hand-transcribed from one upstream vintage, used
 for all of them, with nothing re-deriving it. It should get a register row of its own (R25),
@@ -329,6 +394,11 @@ So: function ID → string ID, and normally empty. Parsed and resolved already (
 invalidate it is inserting or removing a function — a `RELOCATION_PLAN.md` P3 concern, not a
 size-delta one, because it stores **indices, not offsets**.
 
+⚠️ That upstream comment is not the whole rule **[measured]**: an `async function` with no
+directive at all also gets an entry, pointing at the empty string. `'hide source'` gets one too,
+also pointing at string 0. See What compiling actually showed — an emitter cannot reconstruct
+this table from directives.
+
 ### Object shape table **[source]**
 
 `ShapeTableEntry { uint32_t keyBufferOffset; uint32_t numProps; }`
@@ -462,9 +532,13 @@ phase: parse the bitfield members out of `BytecodeFileFormat.h` in each checkout
 bit order and the *set* of bits match. The v96 → v98 loss of `hasAsync` is precisely the drift
 that pin exists to catch, and it already happened once unnoticed.
 
-**Acceptance.** A statically-resolved bundle dumps as module IDs and an unresolved one as
-filename string IDs, each labelled; `upstream_pin` fails if a checkout adds, removes or
-reorders a bit.
+**Acceptance.** An unresolved bundle dumps as filename string IDs, labelled as such —
+`cjsdir.v96` is a real artifact for this, and its first fields resolve to `index.js` and
+`helper.js` **[measured]**. `upstream_pin` fails if a checkout adds, removes or reorders a bit;
+the `hasAsync`-at-v96-only case is a real bundle too. The statically-resolved arm has **no
+artifact**: it could not be produced with these compilers (see What compiling actually showed),
+so assert that decoder against a synthesised byte pattern and say so in the test name rather
+than pretending a fixture exists.
 
 **Cost.** Hours, not days. It is the cheapest item in this document and the only one that fixes
 a wrong output rather than a missing one.
