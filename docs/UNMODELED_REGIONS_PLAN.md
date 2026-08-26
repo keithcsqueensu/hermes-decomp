@@ -19,6 +19,19 @@ Written so an impl agent can execute without re-deriving the formats. Everything
 tree at the time of writing — re-check both, and prefer re-deriving to trusting the tables
 below, which is the whole lesson of R8/R19.
 
+**[compiler]** marks a claim checked against the *serializer and generator* —
+`lib/BCGen/HBC/BytecodeStream.cpp`, `BytecodeGenerator.cpp`, `DebugInfo.cpp`,
+`lib/BCGen/LiteralBufferBuilder.cpp` — and not merely against `BytecodeFileFormat.h` and the
+reader in `BytecodeDataProvider.cpp`. That distinction earned its own tag on the second pass:
+this is a plan about *emitting* these regions, and the writer states things no reader can. It
+is where the ordering invariants, the padding rule, and the two corrections below came from.
+Where a claim is tagged both ways, reader and writer agree.
+
+Everything in this document is static analysis of the checkouts. Nothing here has yet been
+confirmed by compiling a bundle that actually contains one of these regions and parsing it back
+— `hermesc` is available for v96/v98/v99 in those same worktrees, and doing that is the
+cheapest possible check on the whole document. It has not been done.
+
 Companion to `WRITE_PATH_GUIDE.md` § Pending impl plans, and to `RELOCATION_PLAN.md` (which
 owns *moving* these regions) and `STRING_PACKING_PLAN.md` (which owns rebuilding one of them).
 Same conventions: derive from upstream, pin what you derive, refuse rather than approximate.
@@ -219,6 +232,16 @@ Three details that will bite anyone who skims this:
    the whole rest of the stream.
 3. **`-1` terminates, and `-1` is a legal SLEB128 value, not a sentinel byte.** Decode, then
    compare; do not scan for `0x7f`.
+4. **At v97+ there are *two* "previous" cursors, not one** **[compiler]**. The writer advances
+   `previousAddress` on every entry, but advances `previous` — the base for the line, column,
+   statement and envIdx deltas — **only on entries that carry a location**
+   (`DebugInfo.cpp:246-280` at v99: `previousAddress = next.address;` sits before the branch,
+   `previous = &next;` sits inside it). A decoder that keeps a single cursor and updates it on
+   a no-location entry produces line numbers that are silently wrong from the first such entry
+   onward, and no length check catches it because the stream still terminates correctly. The
+   no-location entry itself is a literal `0` ldelta — bit 0 clear — written after the address
+   delta. At v96 the question does not arise: there is no no-location form, and `previous`
+   advances every time.
 
 Since `readSignedLEB128` is signed LEB128 and deltas are genuinely negative in real streams,
 an unsigned reader will appear to work on small files and corrupt large ones.
@@ -253,23 +276,44 @@ only for as long as nothing reads it, because bit 2 means `hasAsync` on one supp
 and nothing on another. And something *should* read it today — bit 1 decides what the next
 table means.
 
-### OB2 — the CJS module table has two meanings **[source]**
+### OB2 — the CJS module table has two meanings **[source]** **[compiler]**
 
 `Array<std::pair<uint32_t, uint32_t>>`, `cjsModuleCount` entries, 4-aligned like every section.
-Upstream chooses between two tables on `options.cjsModulesStaticallyResolved`
-(`BytecodeDataProvider.cpp:300`):
+The reader chooses between two tables on `options.cjsModulesStaticallyResolved`
+(`BytecodeDataProvider.cpp:300`), and the generator confirms what each pair holds — note that
+the *argument* order of `addCJSModule` is the reverse of the *stored* order, which is exactly
+the kind of thing reading only the reader would miss (`BytecodeGenerator.cpp:354-368`):
 
-| bit | table | pair means |
-|---|---|---|
-| clear | `cjsModuleTable` | **filename string ID → function ID** ("modules are not resolved, use the filename → function ID mapping") |
-| set | `cjsModuleTableStatic` | **module ID → function ID** |
+| bit | table | stored pair | built by |
+|---|---|---|---|
+| clear | `cjsModuleTable` | `{nameID, functionID}` — **filename string ID → function ID** | `addCJSModule(functionID, nameID)` |
+| set | `cjsModuleTableStatic` | `{moduleID, functionID}` — **module index → function ID** | `addCJSModuleStatic(moduleID, functionID)` |
 
-Both are pair arrays sized by the same header count at v96 **[source]**, so `parse_pair_table`
-consumes exactly the right bytes either way — this is **not** a parse bug and nothing
-downstream desynchronises. The gap is interpretation: `inspect.rs:89` labels the first element
-`symbol_id` unconditionally, so `dump --kind cjs` is wrong about half the possible bundles, and
-the crate *cannot* be right about it because the deciding bit lives in the byte OB1 never
-decodes. Fixing OB1 fixes this; there is no separate format work.
+So `.second` is the function ID in **both** forms. That narrows the defect considerably from
+where the first pass left it: `inspect.rs:89` labels the pair `(symbol_id, function_id)`, and
+the second half is right either way. What is wrong is the first half on a statically-resolved
+bundle, where the value is a module index and the label invites resolving it as a string id —
+which would print an unrelated string, not an obvious error. The crate cannot currently tell
+the two apart, because the deciding bit lives in the byte OB1 never decodes. Fixing OB1 fixes
+this; there is no separate format work.
+
+**The invariant an emitter must uphold** **[compiler]**. The serializer writes *both* arrays,
+back to back, into the one section (`BytecodeStream.cpp:129-138`):
+
+```cpp
+for (const auto &it : BM.getCJSModuleTable()) { writeBinary(it.first); writeBinary(it.second); }
+writeBinaryArray(BM.getCJSModuleTableStatic());
+```
+
+while the header counts only one of them — `cjsModulesStaticallyResolved ? static.size() :
+table.size()` (`BytecodeStream.cpp:16-20`). The format is therefore only well-formed because
+**exactly one of the two is ever non-empty**, which the generator asserts on both entry points
+(`assert(cjsModulesStatic_.empty())` in `addCJSModule`, and the converse in
+`addCJSModuleStatic`). Nothing in the *file* records which one you are looking at except the
+options bit, and nothing in the file would reveal a violation: both tables non-empty would
+produce a section longer than its count, and every later section would still parse, having
+started at the wrong offset. P6's emitter has to preserve this; a reader could cheaply
+sanity-check it once OB1 lands.
 
 ### Function source table **[source]**
 
@@ -298,6 +342,16 @@ one reason: **it is the region that makes "just copy the buffers through" stop w
 `keyBufferOffset` is an offset into the object key buffer, so any future op that rewrites or
 repacks that buffer must rewrite the shape table with it — the same coupling the string table
 has with its storage, and the reason a serializer cannot treat the two as independent blobs.
+
+Upstream does exactly that rewrite, which is the confirmation rather than an analogy
+**[compiler]**: merging a module rebases every entry with
+`entry.keyBufferOffset += objKeyBufferOffset;` and `entry.shapeTableIdx += objShapeTableOffset;`
+(`BytecodeGenerator.cpp:257-269`). The builder also dedupes shapes on
+`<keyBufferOffset, numProps, allocKind>` (`LiteralBufferBuilder.cpp:205`) — note `allocKind` is
+a *builder-side* discriminator with no on-disk field, so two shapes that differ only in it
+collapse to one entry when written. An emitter that re-derives the table from decoded literals
+must reproduce that dedup or it will emit more entries than upstream would, changing every
+downstream shape id.
 
 ---
 
@@ -422,6 +476,19 @@ blocked on. Not a phase to start speculatively — it exists so that when an op 
 rebuild, the per-region contract is already written down.
 
 Per region, what "emit" actually means:
+
+Two facts the writer supplies that the format headers do not, both load-bearing for an
+emitter **[compiler]**:
+
+- **Every section is padded to `BYTECODE_ALIGNMENT` before it is written**, by the serializer
+  itself (`pad(BYTECODE_ALIGNMENT)` opens each `visit*`, `BytecodeStream.cpp:255-341`). Our
+  parser's align-*after* in `track_section` (`parsing.rs:51`) is the same rule seen from the
+  other side, which is why section walking has never desynchronised. Function info uses a
+  different constant, `INFO_ALIGNMENT`.
+- **`DebugOffsets` is written iff the function's `hasDebugInfo` flag is set**, and stripping
+  debug info *clears the flag* rather than leaving it set with an empty region
+  (`BytecodeStream.cpp:171-177`, and `:83`). So the flag is authoritative on the write side
+  too, not merely a hint the reader may check.
 
 | Region | To emit it you must | Coupled to |
 |---|---|---|
