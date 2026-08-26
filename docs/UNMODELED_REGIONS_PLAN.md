@@ -1,21 +1,60 @@
-# Impl plan — debug info and RegExp
+# Impl plan — the regions we carry but do not model
 
-Scoped plan for the last two sections the write path treats as opaque bytes. Written so an
-impl agent can execute without re-deriving the formats. Everything marked **[source]** was
-read out of the Hermes checkouts wired up for `tests/upstream_pin.rs`
+Every part of an `.hbc` file this crate reproduces **only by copying it through**, and what it
+would take to model each one. Formerly `DEBUG_INFO_AND_REGEXP_PLAN.md`; renamed because those
+two were never the whole list, and the rest of the list is what blocks a total serializer.
+
+The gap has two independent halves, and conflating them is why the old title undersold it:
+
+- **Read.** A region we parse but do not *interpret* is a feature we cannot offer (real
+  local-variable names, regex sources, which of two meanings a table has) and a drift we cannot
+  detect. Most sections are past this line already; four are not.
+- **Write.** A region we cannot *emit* is a region that survives only because the raw image is
+  spliced rather than rebuilt. That is the whole of `RELOCATION_PLAN.md` P3's blocker, and it
+  is true of every section listed below including the ones we read perfectly well.
+
+Written so an impl agent can execute without re-deriving the formats. Everything marked
+**[source]** was read out of the Hermes checkouts wired up for `tests/upstream_pin.rs`
 (`HERMES_SRC_V96`/`_V97`/`_V98`/`_V99`); everything marked **[code]** is a file:line in this
 tree at the time of writing — re-check both, and prefer re-deriving to trusting the tables
 below, which is the whole lesson of R8/R19.
 
-Companion to `WRITE_PATH_GUIDE.md` § Pending impl plans. Same conventions: derive from
-upstream, pin what you derive, refuse rather than approximate.
+Companion to `WRITE_PATH_GUIDE.md` § Pending impl plans, and to `RELOCATION_PLAN.md` (which
+owns *moving* these regions) and `STRING_PACKING_PLAN.md` (which owns rebuilding one of them).
+Same conventions: derive from upstream, pin what you derive, refuse rather than approximate.
 
 ---
 
-## What is actually true today
+## The inventory
+
+Two axes, because they fail differently. "Interpreted" means the bytes are turned into
+something with meaning attached, not merely into a `Vec`. "Emit" means `create` /
+`serialize_file` can produce the region from the model rather than copying it.
+
+| Section | Parsed | Interpreted | Emit | Gap |
+|---|---|---|---|---|
+| function headers, exception handlers | ✅ | ✅ | ✅ | resize of a handler-bearing function is refused (Q3/Q4) |
+| string table, storage, kinds, identifier hashes | ✅ | ✅ | ✅ | packing — `STRING_PACKING_PLAN.md` |
+| array / literal-value / object key + value buffers | ✅ | ✅ decoded to `LiteralValue` (`parser/buffer.rs`) | ❌ empty only | write side only |
+| bigint table + storage | ✅ | ✅ resolved by id (`parser/helpers.rs:8`) | ❌ empty only | write side only |
+| object shape table | ✅ `ShapeTableEntry` | ✅ shape lookup (`parser/mod.rs:40`) | ❌ empty only | write side only; **v98+ only** |
+| function source table | ✅ pairs | ✅ dumped and resolved (`inspect.rs:248`) | ❌ empty only | write side only |
+| **CJS module table** | ✅ pairs | ⚠️ **one of two meanings, and we cannot tell which** | ❌ empty only | OB2 |
+| **`options` byte** | ✅ as a `u8` | ❌ **never decoded, anywhere** | carried | OB1 |
+| **RegExp table + storage** | table ✅, storage ❌ raw | ❌ | ❌ empty only | P3 |
+| **debug info** | partly, at one version | partly | ❌ empty only | DI1 / DI2 / DI3 |
+
+The four bolded rows are the read-side gaps; everything else on the list is a write-side gap
+only, and none of them can be *emitted* today. `create` writes a zero count for every one
+(`serialize.rs:246-254`), which is honest for a minimal image and is exactly why `create` is a
+smoke-test emitter rather than a serializer.
+
+---
+
+## Debug info, precisely
 
 The one-line limitation in the guide — *"Debug info & RegExp are opaque `u8` buffers, not
-parsed into typed structs"* — is half stale and half understated. Precisely:
+parsed into typed structs"* — is half stale and half understated:
 
 | | today | file |
 |---|---|---|
@@ -198,6 +237,68 @@ Simpler in every way, and notably **not** version-keyed:
   **byte-identical v96 → v99** (verified by `diff`), so one decoder covers every supported
   version and no `ModernLayout`-style keying is needed.
 
+### OB1 — the `options` byte is never decoded **[source]**
+
+`BytecodeHeader::options` is a bare `u8` (`format.rs:80`) and **nothing in the crate reads it** —
+grep `header.options` and every hit is some unrelated `Options` struct. Upstream it is a
+bitfield, and it lost a bit inside the range we support:
+
+| version | bits |
+|---|---|
+| v96 | `staticBuiltins`, `cjsModulesStaticallyResolved`, `hasAsync` |
+| v98, v99 | `StaticBuiltins`, `CjsModulesStaticallyResolved` — `hasAsync` **removed** |
+
+That is R8's shape once more: a version-keyed structure carried as an integer. It is harmless
+only for as long as nothing reads it, because bit 2 means `hasAsync` on one supported version
+and nothing on another. And something *should* read it today — bit 1 decides what the next
+table means.
+
+### OB2 — the CJS module table has two meanings **[source]**
+
+`Array<std::pair<uint32_t, uint32_t>>`, `cjsModuleCount` entries, 4-aligned like every section.
+Upstream chooses between two tables on `options.cjsModulesStaticallyResolved`
+(`BytecodeDataProvider.cpp:300`):
+
+| bit | table | pair means |
+|---|---|---|
+| clear | `cjsModuleTable` | **filename string ID → function ID** ("modules are not resolved, use the filename → function ID mapping") |
+| set | `cjsModuleTableStatic` | **module ID → function ID** |
+
+Both are pair arrays sized by the same header count at v96 **[source]**, so `parse_pair_table`
+consumes exactly the right bytes either way — this is **not** a parse bug and nothing
+downstream desynchronises. The gap is interpretation: `inspect.rs:89` labels the first element
+`symbol_id` unconditionally, so `dump --kind cjs` is wrong about half the possible bundles, and
+the crate *cannot* be right about it because the deciding bit lives in the byte OB1 never
+decodes. Fixing OB1 fixes this; there is no separate format work.
+
+### Function source table **[source]**
+
+`Array<std::pair<uint32_t, uint32_t>>`, `functionSourceCount` entries, present from **v84**
+(`header.rs:9`, `LEGACY_FUNCTION_SOURCE_MIN_VERSION`). Upstream:
+
+> Mapping function ids to the string table offsets that store their non-default source code
+> representation that would be used by `toString`. These are only available when functions are
+> declared with source visibility directives such as 'show source', 'hide source', etc.
+
+So: function ID → string ID, and normally empty. Parsed and resolved already (`inspect.rs:248`,
+`dump --kind function-sources`); the only gap is emission, and the only thing that could
+invalidate it is inserting or removing a function — a `RELOCATION_PLAN.md` P3 concern, not a
+size-delta one, because it stores **indices, not offsets**.
+
+### Object shape table **[source]**
+
+`ShapeTableEntry { uint32_t keyBufferOffset; uint32_t numProps; }`
+(`include/hermes/BCGen/ShapeTableEntry.h`), `objShapeTableCount` entries. **Modern only** — the
+field does not exist in the v96 header, and our parser correctly makes it `Option`
+(`header.rs:129`). A shape names the key sequence of an object literal: where its keys begin in
+the literal key buffer, and how many there are.
+
+Read-side this is done and used (`parser/mod.rs:40` resolves a shape id). It is listed here for
+one reason: **it is the region that makes "just copy the buffers through" stop working.**
+`keyBufferOffset` is an offset into the object key buffer, so any future op that rewrites or
+repacks that buffer must rewrite the shape table with it — the same coupling the string table
+has with its storage, and the reason a serializer cannot treat the two as independent blobs.
+
 ---
 
 ## Plan
@@ -291,6 +392,54 @@ it. Cross-check a handful against the source pattern text recovered from the str
 Nothing needs this today, and the section-relative offsets mean nothing breaks without it.
 Listed only so the boundary is explicit. Do not build it speculatively.
 
+### P5 — Decode the options bitfield (fixes OB1, and OB2 with it)
+
+**Goal.** Stop carrying a version-keyed structure as an integer, and let the CJS table be
+labelled correctly.
+
+**Do.** Add a `BytecodeOptions` newtype over the byte with version-keyed accessors —
+`static_builtins()`, `cjs_modules_statically_resolved()`, and `has_async()` returning
+`Option<bool>`, `None` above v96 because the bit does not exist there rather than because it is
+clear. Keep the raw byte on the header: the write path round-trips it verbatim and must go on
+doing so. Then key `dump --kind cjs`'s labels on bit 1, and say which form it is showing.
+
+**Pin it.** This is a two-line addition to `tests/upstream_pin.rs` and it is the point of the
+phase: parse the bitfield members out of `BytecodeFileFormat.h` in each checkout and assert the
+bit order and the *set* of bits match. The v96 → v98 loss of `hasAsync` is precisely the drift
+that pin exists to catch, and it already happened once unnoticed.
+
+**Acceptance.** A statically-resolved bundle dumps as module IDs and an unresolved one as
+filename string IDs, each labelled; `upstream_pin` fails if a checkout adds, removes or
+reorders a bit.
+
+**Cost.** Hours, not days. It is the cheapest item in this document and the only one that fixes
+a wrong output rather than a missing one.
+
+### P6 — Emission: what a total serializer owes each region
+
+**Goal.** The write-side half of the inventory, and the thing `RELOCATION_PLAN.md` P3 is
+blocked on. Not a phase to start speculatively — it exists so that when an op finally demands a
+rebuild, the per-region contract is already written down.
+
+Per region, what "emit" actually means:
+
+| Region | To emit it you must | Coupled to |
+|---|---|---|
+| array / literal-value / object key + value buffers | re-encode `LiteralValue`s with the tag encoding `parser/buffer.rs` already decodes — the decoder is the spec, so this is a mirror, not a derivation | object shape table (key buffer offsets) |
+| object shape table | recompute `keyBufferOffset` / `numProps` as the key buffer is laid out | the key buffer, tightly |
+| bigint table + storage | offset/length pairs over a byte blob; the same shape as the string table minus packing | nothing |
+| RegExp table + storage | copy storage verbatim and re-point offsets, or P3/P4 if the bytecode must change | nothing (storage-relative) |
+| CJS + function source tables | pairs of **indices**; trivial to write, but both are invalidated by inserting or removing a function | function ids |
+| debug info | P1's reader run backwards, plus P2's relocation | function offsets, `DebugOffsets` |
+
+**The gate is the same one P3 of the relocation plan states**: byte-identical re-emit of a real
+bundle, then `hbcdump` differential, then a VM run. A serializer that reparses is not a
+serializer.
+
+**Do not** build P6 region-by-region as a side project. Each region emitted without the others
+produces a file that no test can hold to account, because the only meaningful assertion is over
+the whole image.
+
 ---
 
 ## Non-goals
@@ -302,14 +451,25 @@ Listed only so the boundary is explicit. Do not build it speculatively.
   above so the *shape of the drift* is on record, not because it needs implementing.
 - **Making debug info survive a string-table rebuild.** Separate concern from DI2; the debug
   string table is its own table and is not affected by `strings.rs`.
+- **Interpreting the buffers, bigints, shape table or function source table any further.** They
+  are already read correctly and used; their only gap is emission, which is P6's problem and
+  nobody's until an op needs it.
+- **Speculative emission.** Writing one region's emitter "while we are in here" produces
+  untestable code — see P6.
 
 ## Ordering
 
 ```
 P0  ──────────────► ship immediately, independent
 P1  ──► P2         relocation needs a reader first
-P3                 independent of all of the above
+P3  ──► P4         disassemble before you assemble; P4 only on demand
+P5  ──────────────► independent, hours, fixes a wrong output
+P6                 blocked on P1+P2 for debug info, and on a demand that does not exist yet
 ```
 
 P0 before P1 is deliberate: the guard removes a live correctness hole in a day, while P1 is
 the larger piece of work. Shipping P1 first would leave DI2 open for the duration.
+
+P5 is unordered with respect to everything else and is the smallest item here; it is separated
+out only because it fixes an output that is *wrong* rather than one that is *missing*, which
+makes it worth more than its size suggests.

@@ -12,7 +12,7 @@ needs, and the thing it does need is **written out three times by hand**, in thr
 three slightly different contracts. This plan is about closing that gap, and about deciding
 whether the placeholder should exist at all.
 
-Read alongside `DEBUG_INFO_AND_REGEXP_PLAN.md` (which owns the *contents* of the debug section)
+Read alongside `UNMODELED_REGIONS_PLAN.md` (which owns the *contents* of the debug section)
 and `STRING_PACKING_PLAN.md` (which owns how the string region is rebuilt before it is spliced).
 Neither overlaps this one: both stop at "and then everything after the region shifts", which is
 exactly where this begins.
@@ -225,7 +225,7 @@ an op cannot be expressed as "splice one region, shift what follows" — realist
 - repacking the string table wholesale (`STRING_PACKING_PLAN.md` P2/P3).
 
 What it requires, none of which exists: a total serializer covering debug info
-(`DEBUG_INFO_AND_REGEXP_PLAN.md`), RegExp, CJS modules, the function source table, and the object
+(`UNMODELED_REGIONS_PLAN.md`), RegExp, CJS modules, the function source table, and the object
 shape table — every region currently preserved only because it is copied through verbatim.
 
 **The gate, if it is ever built.** Byte-identical re-emit of the 11.39.0 bundle
