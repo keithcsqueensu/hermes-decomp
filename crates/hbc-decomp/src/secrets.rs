@@ -194,7 +194,7 @@ mod tests {
                 cjs_module_count: 0,
                 function_source_count: None,
                 debug_info_offset: 0,
-                options: 0,
+                options_raw: 0,
                 layout: HeaderLayout::Legacy,
                 function_header_layout: FunctionHeaderLayout::Legacy16,
             },

@@ -53,6 +53,7 @@ use std::path::{Path, PathBuf};
 
 use hbc_decomp::debug::{DebugLayout, StreamEncoding};
 use hbc_decomp::modern_layout::ModernLayout;
+use hbc_decomp::BytecodeOptions;
 use hbc_decomp::BytecodeFormat;
 
 mod common;
@@ -542,6 +543,223 @@ fn opcode_tables_match_upstream() {
             Oracle::Src,
             None,
             "no HERMES_SRC_V* checkouts configured; asserted nothing",
+        );
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// The options bitfield (what `BytecodeOptions` decodes)
+// ---------------------------------------------------------------------------
+
+/// One bit of upstream's `BytecodeOptions`, in declaration order.
+#[derive(Debug)]
+struct OptionBit {
+    /// Lowercased, because the BitField rewrite recapitalised every field
+    /// (`staticBuiltins` -> `StaticBuiltins`) without changing what any of them
+    /// mean. Case is the one difference between the two forms that is not a
+    /// format change, so it is the one difference this normalises away.
+    name: String,
+    width: u32,
+}
+
+/// Parse the bits of `BytecodeOptions` out of BytecodeFileFormat.h.
+///
+/// Two shapes exist inside the range we support, and the rewrite that changed
+/// them is the same commit that dropped `hasAsync` — so a parser that handled
+/// only one form would report the drop as "cannot parse" rather than as a
+/// missing bit.
+///
+/// v96, v97 — a union over a plain bitfield chain:
+/// ```text
+/// union BytecodeOptions {
+///   struct {
+///     bool staticBuiltins : 1;
+///     bool cjsModulesStaticallyResolved : 1;
+/// ```
+///
+/// v98, v99 — upstream's BitField macros, which state the chain explicitly:
+/// ```text
+/// struct BytecodeOptions {
+///   HERMES_FIRST_BITFIELD(uint8_t, flags, bool, StaticBuiltins, 1);
+///   HERMES_NEXT_BITFIELD(StaticBuiltins, flags, bool, CjsModulesStaticallyResolved, 1);
+/// ```
+/// i.e. `FIRST(<storage-type>, <storage-name>, <api-type>, <Name>, <bits>)` and
+/// `NEXT(<previous-field>, <storage-name>, <api-type>, <Name>, <bits>)`. The
+/// `NEXT` form names its predecessor, so declaration order and bit order can be
+/// cross-checked rather than assumed; this asserts they agree.
+fn parse_bytecode_options_bits(root: &Path) -> Vec<OptionBit> {
+    let src = strip_comments(&read(root, "include/hermes/BCGen/HBC/BytecodeFileFormat.h"));
+    // `union BytecodeOptions {` at v96/v97, `struct BytecodeOptions {` from v98.
+    let at = src
+        .find("BytecodeOptions {")
+        .expect("BytecodeOptions declaration");
+    let body = &src[at..];
+    let end = body.find("\n};").expect("end of BytecodeOptions");
+    let body = &body[..end];
+
+    let mut bits = Vec::new();
+
+    // The macro form first: if it is present, the plain-bitfield scan below must
+    // find nothing, because the two never coexist.
+    for marker in ["HERMES_FIRST_BITFIELD", "HERMES_NEXT_BITFIELD"] {
+        for (idx, _) in body.match_indices(marker) {
+            let open = idx + marker.len();
+            let close = body[open..].find(')').expect("unterminated bitfield macro") + open;
+            let args: Vec<&str> = body[open + 1..close].split(',').map(str::trim).collect();
+            assert_eq!(
+                args.len(),
+                5,
+                "{marker} takes 5 arguments upstream, found {}: {:?}",
+                args.len(),
+                args
+            );
+            if marker == "HERMES_NEXT_BITFIELD" {
+                let prev = bits
+                    .last()
+                    .map(|b: &OptionBit| b.name.clone())
+                    .unwrap_or_default();
+                assert_eq!(
+                    args[0].to_ascii_lowercase(),
+                    prev,
+                    "HERMES_NEXT_BITFIELD({}, ...) follows {prev:?} in the source but names a \
+                     different predecessor. Declaration order and bit order have come apart, \
+                     which this parser assumes they do not.",
+                    args[0]
+                );
+            }
+            bits.push(OptionBit {
+                name: args[3].to_ascii_lowercase(),
+                width: args[4].parse().expect("bitfield width"),
+            });
+        }
+    }
+
+    if bits.is_empty() {
+        for line in body.lines().map(str::trim) {
+            let Some(rest) = line.strip_prefix("bool ") else {
+                continue;
+            };
+            let Some((name, width)) = rest.split_once(':') else {
+                continue;
+            };
+            bits.push(OptionBit {
+                name: name.trim().to_ascii_lowercase(),
+                width: width
+                    .trim()
+                    .trim_end_matches(';')
+                    .trim()
+                    .parse()
+                    .expect("bitfield width"),
+            });
+        }
+    }
+
+    assert!(
+        !bits.is_empty(),
+        "parsed no bits out of BytecodeOptions; the declaration shape probably changed again"
+    );
+    bits
+}
+
+/// OB1's tripwire: the set, order and width of the options bits.
+///
+/// The byte was carried as an opaque `u8` that nothing read, and in that state it
+/// silently lost a bit inside the range we support — `hasAsync` is bit 2 at v96
+/// and v97 and does not exist at v98, and upstream bumped `BYTECODE_VERSION` for
+/// neither the addition nor the removal. That is the same shape as R8 and R19,
+/// and it had already happened unnoticed once. So nothing here is transcribed:
+/// every expectation is re-derived from `BytecodeOptions` itself and matched
+/// against the checkout, which makes an added bit, a removed bit and a reordered
+/// bit three distinct failures rather than one silent pass.
+#[test]
+fn bytecode_options_bits_match_upstream() {
+    let mut checked = 0;
+    for version in CHECKOUT_VERSIONS {
+        let Some(root) = checkout_for(version) else {
+            common::skip_or_fail(Oracle::Src, Some(version), &format!("no HERMES_SRC_V{version}"));
+            continue;
+        };
+        let bits = parse_bytecode_options_bits(&root);
+
+        // Every bit is one bit wide. A widened field would shift every bit above
+        // it, and the probes below would keep passing for the bits underneath.
+        for (i, bit) in bits.iter().enumerate() {
+            assert_eq!(
+                bit.width, 1, "v{version}: {} is {} bits wide upstream, not 1; every bit above \
+                 position {i} has moved",
+                bit.name, bit.width
+            );
+        }
+
+        // Added or removed: the bits are contiguous from bit 0, so upstream's
+        // count is the mask.
+        assert!(bits.len() <= 8, "v{version}: {} bits do not fit a byte", bits.len());
+        let upstream_mask = ((1u16 << bits.len()) - 1) as u8;
+        let ours = BytecodeOptions::new(0xff, version).defined_mask();
+        assert_eq!(
+            ours,
+            upstream_mask,
+            "v{version}: upstream declares {} option bit(s) ({:?}), so the defined mask is \
+             {upstream_mask:#04b}, but BytecodeOptions says {ours:#04b}. Upstream added or \
+             removed a bit -- which it does without bumping BYTECODE_VERSION.",
+            bits.len(),
+            bits.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(),
+        );
+
+        // Reordered: light one bit at a time and require the accessor upstream
+        // names for that position to be the one that sees it.
+        for (i, bit) in bits.iter().enumerate() {
+            let probe = BytecodeOptions::new(1 << i, version);
+            let seen = match bit.name.as_str() {
+                "staticbuiltins" => probe.static_builtins(),
+                "cjsmodulesstaticallyresolved" => probe.cjs_modules_statically_resolved(),
+                "hasasync" => probe.has_async().unwrap_or_else(|| {
+                    panic!(
+                        "v{version}: upstream declares hasAsync but BytecodeOptions reports None \
+                         for it. OPTION_HAS_ASYNC_MAX_VERSION is {}.",
+                        hbc_decomp::format::OPTION_HAS_ASYNC_MAX_VERSION
+                    )
+                }),
+                other => panic!(
+                    "v{version}: upstream's BytecodeOptions declares a bit this crate does not \
+                     model: {other:?} at position {i}. Add it to BytecodeOptions -- an unmodelled \
+                     bit is what OB1 was."
+                ),
+            };
+            assert!(
+                seen,
+                "v{version}: bit {i} is {:?} upstream, but the matching accessor does not read \
+                 bit {i}. The bits have been reordered.",
+                bit.name
+            );
+            assert_eq!(
+                probe.unknown_bits(),
+                0,
+                "v{version}: bit {i} ({:?}) is declared upstream yet reads as unknown",
+                bit.name
+            );
+        }
+
+        // The converse of the hasAsync arm above: if upstream stops declaring it,
+        // we must stop reporting it, rather than reading a bit that means nothing.
+        let declares_async = bits.iter().any(|b| b.name == "hasasync");
+        assert_eq!(
+            BytecodeOptions::new(0, version).has_async().is_some(),
+            declares_async,
+            "v{version}: upstream {} hasAsync, but BytecodeOptions::has_async {} it. Reporting \
+             Some(false) for a bit that does not exist is the failure OB1 describes.",
+            if declares_async { "declares" } else { "does not declare" },
+            if declares_async { "does not model" } else { "models" },
+        );
+
+        checked += 1;
+    }
+    if checked == 0 {
+        common::skip_or_fail(
+            Oracle::Src,
+            None,
+            "no HERMES_SRC_V* checkouts configured; option bits unchecked",
         );
     }
 }

@@ -8,7 +8,7 @@
 
 use crate::error::Result;
 use crate::file::BytecodeFile;
-use crate::format::FunctionHeader;
+use crate::format::{CjsModuleForm, FunctionHeader};
 use crate::opcode::BytecodeFormat;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -81,14 +81,29 @@ pub fn dump_table(file: &BytecodeFile, kind: TableKind) -> String {
     let mut out = String::new();
     match kind {
         TableKind::CjsModules => {
+            // OB2: the pair's first half is a filename string id or a module
+            // index depending on `options` bit 1, and nothing else in the file
+            // tells the two apart. Resolving a module index against the string
+            // table prints an unrelated string rather than failing, so the label
+            // has to be keyed on the bit.
+            let form = file.header.options().cjs_module_form();
+            let field = form.first_field();
             out.push_str(&format!(
-                "CommonJS Module Table ({} entries):\n",
-                file.cjs_module_table.len()
+                "CommonJS Module Table ({} entries, {}):\n",
+                file.cjs_module_table.len(),
+                form.describe()
             ));
             out.push_str("----------------------------------------\n");
-            for (i, (symbol_id, function_id)) in file.cjs_module_table.iter().enumerate() {
+            for (i, (first, function_id)) in file.cjs_module_table.iter().enumerate() {
+                let resolved = match form {
+                    CjsModuleForm::Filenames => file
+                        .string_at(*first)
+                        .map(|e| format!(" ({:?})", e.value))
+                        .unwrap_or_default(),
+                    CjsModuleForm::StaticallyResolved => String::new(),
+                };
                 out.push_str(&format!(
-                    "[{i}] symbol_id={symbol_id} function_id={function_id}\n"
+                    "[{i}] {field}={first}{resolved} function_id={function_id}\n"
                 ));
             }
         }
@@ -211,15 +226,34 @@ pub fn dump_table(file: &BytecodeFile, kind: TableKind) -> String {
 // Dump a structural table as JSON.
 pub fn dump_table_json(file: &BytecodeFile, kind: TableKind) -> Value {
     match kind {
-        TableKind::CjsModules => Value::Array(
-            file.cjs_module_table
-                .iter()
-                .enumerate()
-                .map(|(i, (symbol_id, function_id))| {
-                    json!({ "index": i, "symbol_id": symbol_id, "function_id": function_id })
-                })
-                .collect(),
-        ),
+        TableKind::CjsModules => {
+            // Same OB2 keying as `dump_table`. `symbol_id` was the old name for
+            // the pair's first half and was only ever right on an unresolved
+            // bundle; `form` now states which of the two tables this is, so a
+            // consumer does not have to guess.
+            let form = file.header.options().cjs_module_form();
+            Value::Array(
+                file.cjs_module_table
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (first, function_id))| match form {
+                        CjsModuleForm::Filenames => json!({
+                            "index": i,
+                            "form": "filenames",
+                            "filename_string_id": first,
+                            "filename": file.string_at(*first).map(|e| e.value.clone()),
+                            "function_id": function_id,
+                        }),
+                        CjsModuleForm::StaticallyResolved => json!({
+                            "index": i,
+                            "form": "statically-resolved",
+                            "module_id": first,
+                            "function_id": function_id,
+                        }),
+                    })
+                    .collect(),
+            )
+        }
         TableKind::RegExp => Value::Array(
             file.reg_exp_table
                 .iter()

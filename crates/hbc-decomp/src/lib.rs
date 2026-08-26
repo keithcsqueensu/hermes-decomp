@@ -75,7 +75,10 @@ pub mod write;
 pub use disasm::{collect_label_offsets, disassemble_all, disassemble_function, DisasmOptions};
 pub use error::{Error, Result};
 pub use file::{BytecodeFile, Instruction, SectionInfo};
-pub use format::{BytecodeHeader, FunctionHeader, FunctionHeaderLayout, HeaderLayout};
+pub use format::{
+    BytecodeHeader, BytecodeOptions, CjsModuleForm, FunctionHeader, FunctionHeaderLayout,
+    HeaderLayout,
+};
 pub use opcode::{BytecodeFormat, Operand, OperandType, OperandValue};
 pub use util::{escape_js_string, is_valid_identifier};
 

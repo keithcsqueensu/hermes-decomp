@@ -13,13 +13,19 @@ pub fn print_info(file: &BytecodeFile) {
     println!("  Strings: {}", file.header.string_count);
     println!("  Identifiers: {}", file.header.identifier_count);
     println!("  RegExp: {}", file.header.reg_exp_count);
-    println!("  CJS Modules: {}", file.header.cjs_module_count);
+    print!("  CJS Modules: {}", file.header.cjs_module_count);
+    if file.header.cjs_module_count > 0 {
+        // OB2: which of the two tables this count refers to (see `dump --kind cjs`).
+        print!(" ({})", file.header.options().cjs_module_form().describe());
+    }
+    println!();
     if let Some(count) = file.header.big_int_count {
         println!("  BigInt: {count}");
     }
     if let Some(count) = file.header.function_source_count {
         println!("  Function sources: {count}");
     }
+    println!("  Options: {}", file.header.options());
     println!("  Instruction offset: {}", file.instruction_offset);
 }
 

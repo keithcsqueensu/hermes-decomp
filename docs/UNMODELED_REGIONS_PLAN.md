@@ -52,12 +52,13 @@ something with meaning attached, not merely into a `Vec`. "Emit" means `create` 
 | bigint table + storage | ✅ | ✅ resolved by id (`parser/helpers.rs:8`) | ❌ empty only | write side only |
 | object shape table | ✅ `ShapeTableEntry` | ✅ shape lookup (`parser/mod.rs:40`) | ❌ empty only | write side only; **v98+ only** |
 | function source table | ✅ pairs | ✅ dumped and resolved (`inspect.rs:248`) | ❌ empty only | write side only |
-| **CJS module table** | ✅ pairs | ⚠️ **one of two meanings, and we cannot tell which** | ❌ empty only | OB2 |
-| **`options` byte** | ✅ as a `u8` | ❌ **never decoded, anywhere** | carried | OB1 |
+| CJS module table | ✅ pairs | ✅ labelled by `options` bit 1 (`inspect.rs`) | ❌ empty only | write side only; OB2 closed by P5 |
+| `options` byte | ✅ as a `u8` | ✅ `BytecodeOptions`, version-keyed (`format.rs`) | carried verbatim | OB1 closed by P5 |
 | **RegExp table + storage** | table ✅, storage ❌ raw | ❌ | ❌ empty only | P3 |
 | **debug info** | ✅ version-keyed (96/98/99) | ✅ locations + scopes; **not** the lexical/envIdx data | ❌ empty only | DI2 guarded (P0), DI1 read (P1), decompiler wiring is P1b |
 
-The four bolded rows are the read-side gaps; everything else on the list is a write-side gap
+The two bolded rows are the read-side gaps that remain; everything else on the list is a
+write-side gap
 only, and none of them can be *emitted* today. `create` writes a zero count for every one
 (`serialize.rs:246-254`), which is honest for a minimal image and is exactly why `create` is a
 smoke-test emitter rather than a serializer.
@@ -113,8 +114,8 @@ inventing it.)
 over a directory, with `moduleIDs` supplied in `metadata.json` and `-Wunresolved-static-require`
 silent, still emitted the **unresolved** table: `options` bit 1 clear, pairs resolving to
 filenames. So the statically-resolved half of OB2 remains static-analysis-only, and P5's
-acceptance test cannot currently be written against a real artifact — it will have to assert the
-decoder on a synthesised byte pattern until someone finds the invocation that produces one.
+acceptance test could not be written against a real artifact — it asserts the decoder on a
+synthesised byte pattern, and will until someone finds the invocation that produces one.
 Separately, `hermesc` at **v98 and v99 crashes** on `-commonjs` with a single-file input where
 v96 succeeds, so the CJS path is only exercisable at v96 on these builds.
 
@@ -122,6 +123,12 @@ v96 succeeds, so the CJS path is only exercisable at v96 on these builds.
 `hermesc -emit-binary -g3 -out <out>.hbc <in>.js`, and `-g3` does populate the section at all
 three versions (`debug_info_offset` non-zero, every function flagged). That is the flag P0 asks
 someone to confirm; it is confirmed.
+
+P5's two fixtures came out of the same bench and are now committed: `hermesc -emit-binary
+-out asyncy.v<N>.hbc asyncy.js` at each version, and `hermesc -emit-binary -commonjs -out
+cjsdir.v96.hbc cjsdir/` — the latter needing a `metadata.json` in the directory (a `segments`
+object listing the files), which the note above did not record and which is the one thing that
+stops `-commonjs` before it starts.
 
 ---
 
@@ -328,10 +335,10 @@ Simpler in every way, and notably **not** version-keyed:
   **byte-identical v96 → v99** (verified by `diff`), so one decoder covers every supported
   version and no `ModernLayout`-style keying is needed.
 
-### OB1 — the `options` byte is never decoded **[source]**
+### OB1 — the `options` byte is never decoded **[source]** — ✅ **fixed by P5**
 
-`BytecodeHeader::options` is a bare `u8` (`format.rs:80`) and **nothing in the crate reads it** —
-grep `header.options` and every hit is some unrelated `Options` struct. Upstream it is a
+`BytecodeHeader::options` was a bare `u8` (`format.rs:80`) that **nothing in the crate read** —
+grep `header.options` and every hit was some unrelated `Options` struct. Upstream it is a
 bitfield, and it lost a bit inside the range we support:
 
 | version | bits |
@@ -339,12 +346,21 @@ bitfield, and it lost a bit inside the range we support:
 | v96 | `staticBuiltins`, `cjsModulesStaticallyResolved`, `hasAsync` |
 | v98, v99 | `StaticBuiltins`, `CjsModulesStaticallyResolved` — `hasAsync` **removed** |
 
-That is R8's shape once more: a version-keyed structure carried as an integer. It is harmless
-only for as long as nothing reads it, because bit 2 means `hasAsync` on one supported version
-and nothing on another. And something *should* read it today — bit 1 decides what the next
-table means.
+That is R8's shape once more: a version-keyed structure carried as an integer. It was harmless
+only for as long as nothing read it, because bit 2 means `hasAsync` on one supported version
+and nothing on another. And something *should* have been reading it — bit 1 decides what the
+next table means.
 
-### OB2 — the CJS module table has two meanings **[source]** **[compiler]**
+`BytecodeOptions` now holds the version alongside the byte, so `has_async()` returns `None`
+above v97 — *the bit does not exist*, which is a different claim from `Some(false)`. One more
+wrinkle the table above does not show, and the reason the boundary is a named constant
+(`OPTION_HAS_ASYNC_MAX_VERSION`) with the two commits written beside it: upstream neither
+*added* the bit (2021-01-25, tree at v81) nor *removed* it (2025-02-25, tree at v98) with a
+`BYTECODE_VERSION` bump. v98 is therefore a version whose meaning changed under it, and a v98
+image built before that commit can still carry bit 2 — which surfaces through
+`unknown_bits()` rather than being read as a flag that no longer exists.
+
+### OB2 — the CJS module table has two meanings **[source]** **[compiler]** — ✅ **fixed by P5**
 
 `Array<std::pair<uint32_t, uint32_t>>`, `cjsModuleCount` entries, 4-aligned like every section.
 The reader chooses between two tables on `options.cjsModulesStaticallyResolved`
@@ -357,13 +373,14 @@ the kind of thing reading only the reader would miss (`BytecodeGenerator.cpp:354
 | clear | `cjsModuleTable` | `{nameID, functionID}` — **filename string ID → function ID** | `addCJSModule(functionID, nameID)` |
 | set | `cjsModuleTableStatic` | `{moduleID, functionID}` — **module index → function ID** | `addCJSModuleStatic(moduleID, functionID)` |
 
-So `.second` is the function ID in **both** forms. That narrows the defect considerably from
-where the first pass left it: `inspect.rs:89` labels the pair `(symbol_id, function_id)`, and
-the second half is right either way. What is wrong is the first half on a statically-resolved
+So `.second` is the function ID in **both** forms. That narrowed the defect considerably from
+where the first pass left it: `inspect.rs:89` labelled the pair `(symbol_id, function_id)`, and
+the second half was right either way. What was wrong is the first half on a statically-resolved
 bundle, where the value is a module index and the label invites resolving it as a string id —
-which would print an unrelated string, not an obvious error. The crate cannot currently tell
-the two apart, because the deciding bit lives in the byte OB1 never decodes. Fixing OB1 fixes
-this; there is no separate format work.
+which would print an unrelated string, not an obvious error. The crate could not tell the two
+apart, because the deciding bit lived in the byte OB1 never decoded. Fixing OB1 fixed this;
+there was no separate format work. `CjsModuleForm` now names the two, and both the text and
+JSON dumps say which one they are showing.
 
 **The invariant an emitter must uphold** **[compiler]**. The serializer writes *both* arrays,
 back to back, into the one section (`BytecodeStream.cpp:129-138`):
@@ -380,8 +397,11 @@ table.size()` (`BytecodeStream.cpp:16-20`). The format is therefore only well-fo
 `addCJSModuleStatic`). Nothing in the *file* records which one you are looking at except the
 options bit, and nothing in the file would reveal a violation: both tables non-empty would
 produce a section longer than its count, and every later section would still parse, having
-started at the wrong offset. P6's emitter has to preserve this; a reader could cheaply
-sanity-check it once OB1 lands.
+started at the wrong offset. P6's emitter has to preserve this. **P5 deliberately did not add
+the reader-side check** the first pass imagined: our section extents are derived from where
+the reader lands, not recorded independently, so there is nothing to compare a too-long
+section against. Detecting a violation needs an independent length — which only an emitter,
+or a parser that bounds sections some other way, could supply. It stays P6's.
 
 ### Function source table **[source]**
 
@@ -633,31 +653,51 @@ it. Cross-check a handful against the source pattern text recovered from the str
 Nothing needs this today, and the section-relative offsets mean nothing breaks without it.
 Listed only so the boundary is explicit. Do not build it speculatively.
 
-### P5 — Decode the options bitfield (fixes OB1, and OB2 with it)
+### P5 — Decode the options bitfield (fixes OB1, and OB2 with it) — ✅ **shipped**
 
 **Goal.** Stop carrying a version-keyed structure as an integer, and let the CJS table be
 labelled correctly.
 
-**Do.** Add a `BytecodeOptions` newtype over the byte with version-keyed accessors —
-`static_builtins()`, `cjs_modules_statically_resolved()`, and `has_async()` returning
-`Option<bool>`, `None` above v96 because the bit does not exist there rather than because it is
-clear. Keep the raw byte on the header: the write path round-trips it verbatim and must go on
-doing so. Then key `dump --kind cjs`'s labels on bit 1, and say which form it is showing.
+**Done.** `BytecodeOptions` (`format.rs`) is a newtype over `(byte, version)` with
+`static_builtins()`, `cjs_modules_statically_resolved()`, and `has_async() -> Option<bool>`,
+`None` above **v97** — the plan said v96, and the checkouts say the bit survives at v97 and dies
+at v98. Plus `unknown_bits()`, which reports set bits this version does not define: upstream
+removed `hasAsync` without a version bump, so a v98 image built before that commit is a real
+byte this must not silently mis-read. The raw byte stays on the header, renamed `options_raw`
+to state at the declaration that it is carried verbatim, and read through
+`BytecodeHeader::options()`; the write path still never touches it. `dump --kind cjs-modules`
+keys both its text and JSON labels on bit 1 and names the form it is showing (`CjsModuleForm`),
+and `info` prints the decoded byte.
 
-**Pin it.** This is a two-line addition to `tests/upstream_pin.rs` and it is the point of the
-phase: parse the bitfield members out of `BytecodeFileFormat.h` in each checkout and assert the
-bit order and the *set* of bits match. The v96 → v98 loss of `hasAsync` is precisely the drift
-that pin exists to catch, and it already happened once unnoticed.
+**Pinned.** `upstream_pin.rs::bytecode_options_bits_match_upstream` parses the bitfield
+members out of `BytecodeFileFormat.h` in each checkout and checks the bit order and the *set* of
+bits. It is more than the two lines this predicted, for two reasons. First, there are **two
+declaration shapes** inside the supported range — a `union` over a `bool : 1` chain at v96/v97,
+and upstream's `HERMES_FIRST_BITFIELD` / `HERMES_NEXT_BITFIELD` macros from v98 — and the commit
+that changed the shape is the same commit that dropped `hasAsync`, so a parser handling one form
+would report the drop as "cannot parse" rather than as a missing bit. Second, nothing in the
+test is transcribed: every expectation is re-derived from `BytecodeOptions` itself, which makes
+an **added** bit (an unmodelled name panics), a **removed** bit (the defined mask stops matching
+upstream's count) and a **reordered** bit (each bit is lit alone and must be seen by the
+accessor upstream names for that position) three distinct failures rather than one silent pass.
+Widths are checked too — a field widened to two bits would shift everything above it while the
+bits underneath kept passing. Mutation-checked: moving `OPTION_HAS_ASYNC_MAX_VERSION` from 97 to
+98 fails at v98 with the mask mismatch.
 
-**Acceptance.** An unresolved bundle dumps as filename string IDs, labelled as such —
-`cjsdir.v96` is a real artifact for this, and its first fields resolve to `index.js` and
-`helper.js` **[measured]**. `upstream_pin` fails if a checkout adds, removes or reorders a bit;
-the `hasAsync`-at-v96-only case is a real bundle too. The statically-resolved arm has **no
-artifact**: it could not be produced with these compilers (see What compiling actually showed),
-so assert that decoder against a synthesised byte pattern and say so in the test name rather
-than pretending a fixture exists.
+**Acceptance**, in `tests/bytecode_options.rs`, against two fixtures compiled for it and
+committed beside the others. `cjsdir.v96.hbc` (from `tests/fixtures/cjsdir/`, which carries the
+`metadata.json` that `-commonjs` requires of a directory input) dumps as filename string IDs,
+labelled as such, its two entries resolving to `index.js` and `helper.js` **[measured]**.
+`asyncy.v{96,98,99}.hbc` is the same async source at three versions: `options = 0b100` at v96,
+`0b000` at v98 and v99 — R27's drift as an artifact, not an inference. The statically-resolved
+arm has **no artifact**: it could not be produced with these compilers (see What compiling
+actually showed), so its decoder is asserted against a synthesised byte, and the test that does
+it says so in its name. That test earns its keep anyway — it flips bit 1 on the *real*
+unresolved table and requires the labels to change and the filenames to stop being resolved,
+which is OB2's failure mode exactly: those string ids are valid indices, so mislabelling them
+printed a plausible wrong answer rather than an error.
 
-**Cost.** Hours, not days. It is the cheapest item in this document and the only one that fixes
+**Cost.** Hours, as predicted — the cheapest item in this document, and the only one that fixed
 a wrong output rather than a missing one.
 
 ### P6 — Emission: what a total serializer owes each region
@@ -722,13 +762,13 @@ P0  ✅ ──────────► shipped: the guard
 P1  ✅ ──► P2 ✅    shipped: the reader, then relocation for insertions
 P1b                specified and measured; blocked on codegen having a name context
 P3  ──► P4         disassemble before you assemble; P4 only on demand
-P5  ──────────────► independent, hours, fixes a wrong output
+P5  ✅ ────────────► shipped: the bitfield, and the CJS labels with it
 P6                 blocked on P1+P2 for debug info, and on a demand that does not exist yet
 ```
 
 P0 before P1 is deliberate: the guard removes a live correctness hole in a day, while P1 is
 the larger piece of work. Shipping P1 first would leave DI2 open for the duration.
 
-P5 is unordered with respect to everything else and is the smallest item here; it is separated
-out only because it fixes an output that is *wrong* rather than one that is *missing*, which
-makes it worth more than its size suggests.
+P5 was unordered with respect to everything else and the smallest item here; it was separated
+out only because it fixed an output that was *wrong* rather than one that was *missing*, which
+made it worth more than its size suggested.
