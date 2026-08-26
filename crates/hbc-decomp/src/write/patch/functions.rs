@@ -70,12 +70,14 @@ pub fn patch_function_body(
             if let Some(fh) = file.function_headers.get(function_id as usize) {
                 if fh.flags() & crate::format::FLAG_HAS_DEBUG_INFO != 0 {
                     return Err(Error::Write(format!(
-                        "function {function_id} carries debug info; size-changing \
-                         edits are not supported (its source locations are \
-                         body-relative and would be left pointing at the wrong \
-                         instructions). Pass allow_stale_debug_info / \
-                         --allow-stale-debug-info to discard that function's line \
-                         numbers and proceed. See WRITE_PATH_GUIDE R24."
+                        "function {function_id} carries debug info, and replacing a \
+                         body wholesale cannot preserve it: source locations are \
+                         addresses *within* the function, and there is no mapping \
+                         from an old address to a new one when the code is different. \
+                         An insertion does have one, which is why `inject-stub` \
+                         relocates rather than refusing (R24 P2). Pass \
+                         allow_stale_debug_info / --allow-stale-debug-info to discard \
+                         this function's line numbers and proceed."
                     )));
                 }
             }

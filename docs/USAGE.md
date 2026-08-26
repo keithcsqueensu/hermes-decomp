@@ -112,14 +112,19 @@ hermes-decomp inject-stub dbg.hbc --function 5 --kind log -o out.hbc --allow-sta
 hermes-decomp create --version 96 -o tiny.hbc
 ```
 
-⚠️ **Size-changing edits are refused on a function that carries debug info.** A location
-stream stores bytecode addresses *within* the function, and nothing rewrites them on a resize,
-so every line number past the edit point would silently point at the wrong instruction. `asm`,
-`patch-function` and `inject-stub` therefore refuse, and name `--allow-stale-debug-info`, which
-proceeds and discards that function's line numbers. Same-size edits are unaffected, and so are
-React Native bundles: they ship with per-function debug info stripped, so the guard does not
-fire on them (0 of 62,909 functions in the reference bundle carry the flag). See
-`WRITE_PATH_GUIDE.md` R24.
+⚠️ **A function that carries debug info is handled carefully on a size-changing edit.** Its
+location stream stores bytecode addresses *within* the function, so a resize that ignored them
+would leave every line number past the edit pointing at the wrong instruction.
+
+- **`inject-stub` relocates them.** It inserts at one known point, so each address moves by the
+  size of the insertion and the line table follows. No flag needed.
+- **`asm` and `patch-function` refuse.** Replacing a body wholesale gives new code with no
+  correspondence to the old addresses, so there is nothing to relocate *to*. Pass
+  `--allow-stale-debug-info` to proceed and discard that function's line numbers.
+
+Same-size edits are unaffected either way, and so are React Native bundles: they ship with
+per-function debug info stripped, so none of this fires on them (0 of 62,909 functions in the
+reference bundle carry the flag). See `WRITE_PATH_GUIDE.md` R24.
 
 Legacy files (HBC 96 and below) are fully supported and verified against the real
 Hermes VM. `patch-string` handles both same length edits, done in place, and

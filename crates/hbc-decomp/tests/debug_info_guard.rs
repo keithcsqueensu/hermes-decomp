@@ -73,20 +73,27 @@ fn fixture_actually_carries_debug_info() {
     }
 }
 
+/// A *wholesale* body replacement is what the guard covers. An insertion is
+/// relocated instead (P2, `tests/debug_relocation.rs`) — the difference is whether
+/// old addresses map to new ones at all.
 #[test]
 fn size_changing_edit_on_a_debug_bearing_function_is_refused() {
     for version in VERSIONS {
         let bytes = fixture("locations.debug", version);
         let mut file = BytecodeFile::parse_auto(&bytes).expect("parse");
         let format = format_for(&file);
-        let err = inject_stub(
+        let mut body = file
+            .decode_function_instructions(&format, 1)
+            .expect("decode function 1");
+        body.truncate(body.len().saturating_sub(2));
+        let err = hbc_decomp::write::patch::patch_function_body(
             &mut file,
             &format,
             1,
-            InjectStubKind::NopPad,
+            &body,
             &PatchOptions::default(),
         )
-        .expect_err("a resize on a debug-bearing function must be refused");
+        .expect_err("a wholesale resize of a debug-bearing function must be refused");
         let msg = err.to_string();
         assert!(
             msg.contains("debug info"),
@@ -105,11 +112,15 @@ fn the_opt_out_permits_the_same_edit() {
         let bytes = fixture("locations.debug", version);
         let mut file = BytecodeFile::parse_auto(&bytes).expect("parse");
         let format = format_for(&file);
+        let mut body = file
+            .decode_function_instructions(&format, 1)
+            .expect("decode function 1");
+        body.truncate(body.len().saturating_sub(2));
         let opts = PatchOptions {
             allow_stale_debug_info: true,
             ..Default::default()
         };
-        let out = inject_stub(&mut file, &format, 1, InjectStubKind::NopPad, &opts)
+        let out = hbc_decomp::write::patch::patch_function_body(&mut file, &format, 1, &body, &opts)
             .unwrap_or_else(|e| panic!("v{version}: opt-out should permit the edit: {e}"));
         BytecodeFile::parse_auto(&out).expect("the patched image still reparses");
     }

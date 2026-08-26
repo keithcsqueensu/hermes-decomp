@@ -11,8 +11,9 @@ use crate::modern_layout::{
     MODERN_LARGE_FRAME_SIZE, MODERN_SMALL_FLAGS_POS, MODERN_SMALL_HEADER_SIZE,
 };
 use crate::write::header_write::read_modern_large_pointer;
-use crate::write::serialize::section_offset;
+use crate::write::serialize::{commit_image, section_offset};
 
+use super::debug_reloc;
 use super::functions::patch_function_body;
 use super::PatchOptions;
 
@@ -239,6 +240,13 @@ pub fn inject_stub(
     options: &PatchOptions,
 ) -> Result<Vec<u8>> {
     let mut body = file.decode_function_instructions(format, function_id)?;
+    let old_size: i64 = body.iter().map(|i| i.length as i64).sum();
+    // Where the new bytes go in. Both stubs insert at exactly one point, which is
+    // what makes the line table relocatable afterwards (R24 P2): every location at
+    // or past this offset moves by the size delta, and every location before it
+    // stays put. A wholesale body replacement has no such point, which is why
+    // `patch_function_body` still refuses those.
+    let mut insert_at: u32 = 0;
     match kind {
         InjectStubKind::NopPad => {
             // Find AsyncBreakCheck opcode by name if present; else no-op success with identity.
@@ -249,7 +257,7 @@ pub fn inject_stub(
                 .map(|d| d.opcode)
             {
                 // Insert before final Ret if present
-                let insert_at = body
+                let nop_at = body
                     .iter()
                     .rposition(|i| {
                         format
@@ -259,8 +267,13 @@ pub fn inject_stub(
                             .unwrap_or(false)
                     })
                     .unwrap_or(body.len());
+                insert_at = body
+                    .iter()
+                    .take(nop_at)
+                    .map(|i| i.length)
+                    .sum();
                 body.insert(
-                    insert_at,
+                    nop_at,
                     Instruction {
                         offset: 0,
                         opcode: op,
@@ -271,11 +284,43 @@ pub fn inject_stub(
             }
         }
         InjectStubKind::LogEntry => {
+            // The prologue goes in at the front, so everything in the function
+            // moves by its length.
             build_log_entry(file, format, function_id, &mut body)?;
         }
     }
+
+    // The body edit itself. `allow_stale_debug_info` here is not "the line table
+    // does not matter" -- it is "this caller is about to fix it", two lines down.
+    // Going through the guarded path and then relocating would just refuse.
+    let body_options = PatchOptions {
+        allow_stale_debug_info: true,
+        ..options.clone()
+    };
     // Recompute offsets in the instruction list for encode (encode ignores insn.offset).
-    patch_function_body(file, format, function_id, &body, options)
+    let out = patch_function_body(file, format, function_id, &body, &body_options)?;
+
+    // `file` was refreshed by the commit inside `patch_function_body`, so its
+    // headers and debug_info_offset describe the image we are holding.
+    let new_size = file
+        .function_headers
+        .get(function_id as usize)
+        .map(|h| h.bytecode_size_in_bytes() as i64)
+        .unwrap_or(old_size);
+    let delta = new_size - old_size;
+
+    match debug_reloc::relocate_locations_for_insertion(file, out.clone(), function_id, insert_at, delta)
+    {
+        Ok(relocated) => commit_image(file, relocated),
+        // The only failure is a version whose debug layout is not modelled. If the
+        // caller explicitly accepted a stale line table, honour that; otherwise the
+        // refusal is the point.
+        Err(e) if options.allow_stale_debug_info => {
+            let _ = e;
+            Ok(out)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

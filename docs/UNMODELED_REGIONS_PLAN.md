@@ -516,21 +516,36 @@ checkout — and was checked by breaking each of them and watching it fail. Asse
 and `variable_map_for_function` returns them keyed by slot. Both consumers (`ir_gen`,
 `pipeline`) were switched off the stream-scanning lookup, so they resolve the right scope.
 
-### P1b — Put the recovered names in the decompiler *(the rest of P1's acceptance)*
+### P1b — Put the recovered names in the decompiler — **specified and measured, not shipped**
 
 **Goal.** `closure_0` → `count` in decompiled output.
 
-**Why it is separate.** The names are slot-indexed and the rename path is register-indexed, so
-this is not a wiring change but a naming-source change in
-`analysis/closure/info/naming.rs`, where `format!("closure_{raw_slot}")` is chosen. That code
-has no access to the debug info or to the function's scope, and threading it there touches the
-closure-context analysis, whose output every decompiler test compares against.
+**The rule, measured rather than assumed.** For an environment reference at IR level `L`,
+slot `S`, in function `F`: walk `L + h` parent links up the debug scope chain from `F`'s own
+scope (`DebugOffsets.scopeDescData`) and take `names[S]`, where `h` is 0 if `F` creates its own
+environment and 1 if it does not. The discriminator is whether `F`'s body contains
+`CreateEnvironment`, and both halves were checked on a four-function fixture:
 
-**The premise is measured, so whoever does it does not have to guess**: slot index and scope
-name index correspond, verified on two fixtures — one capture (`count` ↔ `closure_0`) and
-three (`first`/`second`/`third` ↔ `closure_0..2`), with the names in declaration order. The
-scope to read is the *parent* of the function's own scope: `bump`'s scope is 13, whose parent
-9 holds `count`.
+| function | own env | IR level | hops | scope | name |
+|---|---|---|---|---|---|
+| `makeCounter` | yes | 0 | 0 | 9 | `count` |
+| `bump` | no | 0 | 1 | 13 → 9 | `count` |
+| `threeCaptures` | yes | 0 | 0 | 16 | `first`/`second`/`third` |
+| `readsAll` | no | 0 | 1 | 22 → 16 | same |
+
+**Why it is not shipped, which is a real blocker rather than an effort estimate.** The
+rendered name `closure_N` is *load-bearing for other analyses*: `analysis/metro/propagation`
+recovers a slot id by `strip_prefix("closure_")`. Substituting a debug name before those run
+would break Metro module analysis, and the `var_naming` layer that could rename it only handles
+registers (`rename_registers`), while `ClosureInfo::get_slot_name` — the obvious hook — has no
+callers in the pipeline at all. The substitution therefore belongs at **print time**, in the
+codegen layer, which today has no name-resolution context.
+
+**And the payoff is small**: Hermes names only captured variables, and only in files built with
+debug info — of which the Equinox bundle has none (0 of 62,909 functions). This is decompiler
+cosmetics for debug builds. Worth doing when the codegen layer next grows a context; not worth
+threading one through on a four-function sample, where a wrong name would be worse than
+`closure_0`.
 
 **Do.**
 0. Fix DI3 first: thread the bytecode version into `DebugInfo::parse` and key the header shape
@@ -560,22 +575,45 @@ what the decoder implements. The v96 →
 v97 → v98 drift documented above is exactly the shape R19 exists to catch, and it will happen
 again.
 
-### P2 — Relocate addresses on resize (removes P0's guard)
+### P2 — Relocate addresses on resize — ✅ **shipped, for the edits where it means anything**
 
-**Goal.** Rewrite a function's location stream so a size-changing edit keeps debug info
-correct, making P0's refusal unnecessary.
+**Goal.** Keep a function's line table correct across a size-changing edit, instead of
+refusing the edit.
 
-**Do.** Given the edit's offset and delta, re-emit that function's stream with every
-`address >= edit_offset` shifted by `delta`. Because addresses are delta-encoded in SLEB128,
-the re-emitted stream can change length, so the debug data region must be rebuilt and every
-`DebugOffsets.sourceLocations` past the rewrite point re-pointed — the same
-rebuild-and-repoint shape as the string-table rebuild in `strings.rs`, not an in-place patch.
+**The finding that shaped it: only an insertion can be relocated, and that is not a
+limitation of the implementation.** `inject-stub` adds instructions at one known point and
+leaves the rest of the body alone, so old address `A` maps to `A` or `A + delta` and the line
+table can follow. A wholesale body replacement — `asm`, `patch-function` — has no such
+mapping: the new body is *different code*, and there is no answer to "which new address
+corresponds to old address `A`". Relocating one would mean inventing a correspondence, so
+those keep P0's refusal, with a message that now says which case it is and why. The plan's
+"then drop the P0 guard" was written before that distinction existed.
 
-**Do not** attempt this before P1: relocation without a reader is unfalsifiable.
+**Shipped as** `write/patch/debug_reloc.rs` (`relocate_locations_for_insertion`), called by
+`inject_stub` after the body edit. What keeps it small: **addresses are deltas**, so shifting
+every address at or past the insertion point means adding `delta` to exactly *one* delta — the
+first entry that crosses the point — because every later entry is relative to it. Nothing else
+in the stream is read or rewritten, so statement deltas, `envReg`, `envIdx` and the conditional
+fields survive without this code understanding them. When the re-encoded SLEB128 changes
+length, the debug data region changes size, so the header's `debugDataSize`, its interior
+region offsets (v96) and every later function's `DebugOffsets.sourceLocations` are adjusted;
+the debug section is the last thing before the footer, so nothing beyond it needs to move.
 
-**Acceptance.** Round-trip on a real fixture: parse → resize a function → re-parse → every
-location in the edited function maps to the same *instruction* it did before (not the same
-address), and locations in other functions are byte-identical. Then drop the P0 guard.
+**Acceptance, as tested** (`tests/debug_relocation.rs`, four cases at v96/v98/v99): an
+insertion no longer needs the opt-out; every pre-edit location exists after the edit at the
+address the insertion moved it to, carrying the same line; no other function's table moves; and
+a wholesale replacement is still refused.
+
+⚠️ **The first version of that test was vacuous and passed with relocation disabled** — it
+skipped when no location existed at the mapped address instead of failing there. It now asserts
+the mapping (`A` → `A` or `A + delta`) and requires at least one location to have actually
+moved. Re-checked by disabling the splice and confirming the failure, which is the only way to
+know a relocation test tests anything: relocation moves addresses and leaves lines alone, so
+"the lines are unchanged" is true whether or not it ran.
+
+`vm_verify`'s resize sweep runs through this path on debug-bearing fixtures and the results
+still execute on real v96/v98/v99 engines, which is the check that the rewritten debug section
+is not merely reparseable.
 
 ### P3 — Disassemble RegExp
 
@@ -680,8 +718,9 @@ the whole image.
 ## Ordering
 
 ```
-P0  ──────────────► ship immediately, independent
-P1  ──► P2         relocation needs a reader first
+P0  ✅ ──────────► shipped: the guard
+P1  ✅ ──► P2 ✅    shipped: the reader, then relocation for insertions
+P1b                specified and measured; blocked on codegen having a name context
 P3  ──► P4         disassemble before you assemble; P4 only on demand
 P5  ──────────────► independent, hours, fixes a wrong output
 P6                 blocked on P1+P2 for debug info, and on a demand that does not exist yet
