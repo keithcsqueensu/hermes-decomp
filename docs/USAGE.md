@@ -108,8 +108,18 @@ hermes-decomp patch-string app.hbc --old "done" --new "fini" -o app2.hbc
 hermes-decomp patch-string app.hbc --id 42 --new "hello" -o app2.hbc
 hermes-decomp patch-function app.hbc --function 5 --hasm f5.hasm -o app2.hbc
 hermes-decomp inject-stub app.hbc --function 5 --kind log -o app2.hbc
+hermes-decomp inject-stub dbg.hbc --function 5 --kind log -o out.hbc --allow-stale-debug-info
 hermes-decomp create --version 96 -o tiny.hbc
 ```
+
+⚠️ **Size-changing edits are refused on a function that carries debug info.** A location
+stream stores bytecode addresses *within* the function, and nothing rewrites them on a resize,
+so every line number past the edit point would silently point at the wrong instruction. `asm`,
+`patch-function` and `inject-stub` therefore refuse, and name `--allow-stale-debug-info`, which
+proceeds and discards that function's line numbers. Same-size edits are unaffected, and so are
+React Native bundles: they ship with per-function debug info stripped, so the guard does not
+fire on them (0 of 62,909 functions in the reference bundle carry the flag). See
+`WRITE_PATH_GUIDE.md` R24.
 
 Legacy files (HBC 96 and below) are fully supported and verified against the real
 Hermes VM. `patch-string` handles both same length edits, done in place, and

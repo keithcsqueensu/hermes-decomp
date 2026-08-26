@@ -18,4 +18,15 @@ pub use strings::{add_string, patch_string_by_id, patch_string_replace, retarget
 #[derive(Debug, Clone, Default)]
 pub struct PatchOptions {
     pub serialize: SerializeOptions,
+    /// Permit a size-changing edit to a function that carries debug info,
+    /// knowing the edit leaves that function's source locations stale.
+    ///
+    /// Default `false` — the edit is refused, mirroring the exception-handler
+    /// guard. Location streams store bytecode addresses *within* a function, so a
+    /// resize silently repoints every location past the edit; see R24 and
+    /// `docs/UNMODELED_REGIONS_PLAN.md` P0. Measured: no function in the Equinox
+    /// bundle carries `FLAG_HAS_DEBUG_INFO` (0 of 62,909), so refusing by default
+    /// costs the workflow this crate exists for nothing, and fires only on
+    /// debug-built bundles where it is right.
+    pub allow_stale_debug_info: bool,
 }

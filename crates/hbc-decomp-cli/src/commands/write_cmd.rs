@@ -110,6 +110,7 @@ pub fn run_frida_hooks(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_asm(
     input: &PathBuf,
     hasm: &PathBuf,
@@ -118,13 +119,18 @@ pub fn run_asm(
     layout: LayoutArg,
     function_layout: FunctionLayoutArg,
     format_version: Option<u32>,
+    allow_stale_debug_info: bool,
 ) -> Result<(), BoxErr> {
     let mut file = load_file(input, layout, function_layout)?;
     let format = load_format(&file, format_version)?;
     warn_modern_write(&file);
     let text = std::fs::read_to_string(hasm)?;
     let insns = parse_hasm_with_context(&text, &format, &file)?;
-    let out = patch_function_body(&mut file, &format, function, &insns, &PatchOptions::default())?;
+    let opts = PatchOptions {
+        allow_stale_debug_info,
+        ..Default::default()
+    };
+    let out = patch_function_body(&mut file, &format, function, &insns, &opts)?;
     std::fs::write(output, out)?;
     eprintln!(
         "Assembled function {function} from {} → {}",
@@ -344,6 +350,7 @@ pub fn run_patch_string(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_patch_function(
     input: &PathBuf,
     output: &PathBuf,
@@ -352,6 +359,7 @@ pub fn run_patch_function(
     layout: LayoutArg,
     function_layout: FunctionLayoutArg,
     format_version: Option<u32>,
+    allow_stale_debug_info: bool,
 ) -> Result<(), BoxErr> {
     run_asm(
         input,
@@ -361,9 +369,11 @@ pub fn run_patch_function(
         layout,
         function_layout,
         format_version,
+        allow_stale_debug_info,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_inject_stub(
     input: &PathBuf,
     output: &PathBuf,
@@ -372,6 +382,7 @@ pub fn run_inject_stub(
     layout: LayoutArg,
     function_layout: FunctionLayoutArg,
     format_version: Option<u32>,
+    allow_stale_debug_info: bool,
 ) -> Result<(), BoxErr> {
     let mut file = load_file(input, layout, function_layout)?;
     let format = load_format(&file, format_version)?;
@@ -386,7 +397,10 @@ pub fn run_inject_stub(
         &format,
         function,
         kind,
-        &PatchOptions::default(),
+        &PatchOptions {
+            allow_stale_debug_info,
+            ..Default::default()
+        },
     )?;
     std::fs::write(output, out)?;
     eprintln!("Injected stub into function {function} → {}", output.display());

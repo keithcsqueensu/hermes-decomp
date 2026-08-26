@@ -20,7 +20,7 @@ pub fn patch_function_body(
     format: &BytecodeFormat,
     function_id: u32,
     new_body: &[Instruction],
-    _options: &PatchOptions,
+    options: &PatchOptions,
 ) -> Result<Vec<u8>> {
     let old_size = file
         .function_headers
@@ -46,6 +46,38 @@ pub fn patch_function_body(
                      size-changing edits are not supported (handler offsets are \
                      body-relative and would be left stale). See WRITE_PATH_GUIDE Q3."
                 )));
+            }
+        }
+        // The same defect in a second structure (R24). A location stream stores
+        // bytecode addresses *within* the function as SLEB128 deltas, and a resize
+        // rewrites none of them, so every location past the edit point maps to the
+        // wrong instruction -- silently, since the stream still decodes and still
+        // terminates. Checked after the handler guard so a function carrying both
+        // reports the handler reason, which is the one that breaks execution rather
+        // than only debugging.
+        //
+        // Ordinary React Native bundles are unaffected: FLAG_HAS_DEBUG_INFO is set
+        // on 0 of the Equinox bundle's 62,909 functions [measured]. This fires on
+        // debug-built bundles, which is where it should.
+        // `debug_info_offset == 0` means the file carries no debug section at all, so
+        // there is nothing for the edit to invalidate and refusing would be theatre.
+        // That case is not hypothetical: `create` emits no debug info but sets flags
+        // `0x12` on its legacy global function, which includes FLAG_HAS_DEBUG_INFO --
+        // the image claims debug info it does not have (the modern path emits `0x22`
+        // and does not claim it). Keying on both means the guard follows the data
+        // rather than a flag that can be wrong.
+        if !options.allow_stale_debug_info && file.header.debug_info_offset != 0 {
+            if let Some(fh) = file.function_headers.get(function_id as usize) {
+                if fh.flags() & crate::format::FLAG_HAS_DEBUG_INFO != 0 {
+                    return Err(Error::Write(format!(
+                        "function {function_id} carries debug info; size-changing \
+                         edits are not supported (its source locations are \
+                         body-relative and would be left pointing at the wrong \
+                         instructions). Pass allow_stale_debug_info / \
+                         --allow-stale-debug-info to discard that function's line \
+                         numbers and proceed. See WRITE_PATH_GUIDE R24."
+                    )));
+                }
             }
         }
     }

@@ -241,8 +241,11 @@ and `data_start` is computed from `28 +` when it should be `16 +`.
 
 The bounds checks (`slice_in_bounds`, `slice_range`) then usually make this degrade to
 `Ok(DebugInfo::default())` — silently "no debug info" — rather than crash, which is why it has
-never been noticed. It has also never been exercised: **every committed fixture is built
-without debug info**, so no test reaches this path at any version.
+never been noticed. ~~It has also never been exercised: every committed fixture is built without
+debug info.~~ **Wrong, and measured wrong** while building P0: every committed fixture carries
+debug info on every function, so this path runs on *every* fixture parse at every version. It is
+not unexercised — it is unasserted, which is worse, because the wrongness is in the return value
+of a call nothing checks.
 
 Confirmed on real bundles **[measured]**: one source compiled `-g3` at three versions parses to
 5 scope descriptors and an 8-entry debug string table at v96, and to **zeros** at v98 and v99.
@@ -430,28 +433,50 @@ downstream shape id.
 Phases are ordered by value per unit of risk. **P0 is worth shipping on its own** and should
 not wait for the rest.
 
-### P0 — Guard the resize (fixes DI2)
+### P0 — Guard the resize (fixes DI2) — ✅ **shipped**
 
-**Goal.** Stop silently emitting wrong debug info. Mirror the exception-handler guard exactly;
-this is a five-line change with a large correctness payoff.
+**Goal.** Stop silently emitting wrong debug info. Mirror the exception-handler guard; refuse
+rather than emit a function whose line table now points at the wrong instructions.
 
-**Do.** In the size-changing path (`write/patch/functions.rs`, beside the handler check at
-`:35`), refuse when the target function has `FLAG_HAS_DEBUG_INFO` and `delta != 0`. Error text
-should name the reason and point here, matching the handler guard's wording.
+**Shipped as** a second guard in `patch_function_body` (`write/patch/functions.rs`), directly
+after the handler check and inside the same `delta != 0` arm, plus
+`PatchOptions::allow_stale_debug_info` and `--allow-stale-debug-info` on `asm`,
+`patch-function` and `inject-stub`. The handler check stays first, so a function carrying both
+still reports the handler reason — that one breaks execution, this one breaks only debugging.
 
-**Escape hatch.** Add an explicit opt-out — `--allow-stale-debug-info` on the CLI ops, or a
-field on the patch options — because for most patching work the line table is worthless and
-refusing outright would regress a working flow. The default must be refuse; the opt-out must
-say in one line what it is discarding.
+**The guard is keyed on two things, not one**, and the second was not in the original plan:
+`FLAG_HAS_DEBUG_INFO` on the function **and** `header.debug_info_offset != 0`. A file with no
+debug section has nothing to invalidate, and that case is not hypothetical — `create` emits no
+debug info at all but sets flags `0x12` on its legacy global function, which *includes*
+`FLAG_HAS_DEBUG_INFO`. On the flag alone the guard refused edits to created images over debug
+info they do not contain, and five unit tests said so immediately. The modern `create` path
+emits `0x22` and does not claim it, so the two paths disagree; keying on the section means the
+guard follows the data rather than a flag that is sometimes wrong. **`create`'s bogus legacy
+flag is left as it is and recorded here** — changing what `create` emits is R14's territory, not
+this guard's.
 
-**Acceptance.** A size-changing `patch-function` on a debug-built fixture is refused with a
-message naming debug info; the same edit with the opt-out succeeds; a same-length edit is
-unaffected in both modes; a function with no debug info is unaffected.
+**Acceptance, as tested** (`tests/debug_info_guard.rs`, five cases): the fixture really does
+carry debug info (checked first, or the rest asserts nothing); a size-changing `inject-stub` on
+a debug-bearing function is refused with a message naming both debug info and the opt-out; the
+same edit with the opt-out succeeds and reparses; an identical-body (same-size) edit is
+unaffected; and a file with no debug section is unaffected. All five run at v96, v98 and v99.
 
-**Tests.** Needs a debug-info fixture, which does not exist today — every fixture is built
-with plain `-emit-binary`. Add one: `hermesc -g -emit-binary` (confirm the flag that emits
-debug info at each version) and wire it into `scripts/build_hermes_vm.ps1 -Fixtures`. Assert
-`has_debug_info()` is actually true on it, or the test proves nothing.
+**Two corrections to this plan's own premises**, both measured while building the guard:
+
+- *"Needs a debug-info fixture, which does not exist today — every fixture is built with plain
+  `-emit-binary`."* **Backwards.** Every committed fixture already carries
+  `FLAG_HAS_DEBUG_INFO` on every function, `plain` included: `hermesc` emits per-function debug
+  info without being asked. What no fixture had was *full* debug info, so
+  `locations.debug.js` is committed and built with `-g3` — the `.debug.js` suffix is what tells
+  `scripts/build_hermes_vm.ps1 -Fixtures` to pass the flag. It is the fixture P1 will need.
+- *Refusing by default might regress a working flow.* It does not, and the number is the reason
+  the default is safe: **0 of the Equinox bundle's 62,909 functions** carry
+  `FLAG_HAS_DEBUG_INFO` [measured]. React Native ships bundles with per-function debug info
+  stripped, so the guard cannot fire on the workflow this crate exists for. The escape hatch is
+  still there, and `vm_verify`'s resize sweep uses it — which gives the opt-out the only
+  coverage that matters: what comes out still runs on a real VM.
+
+**What P0 does not do.** It refuses; it does not relocate. P2 is still the fix.
 
 ### P1 — Read the location streams (fixes DI1)
 

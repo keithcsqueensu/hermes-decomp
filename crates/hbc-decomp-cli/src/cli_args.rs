@@ -418,6 +418,11 @@ pub enum Command {
         layout: LayoutArg,
         #[arg(long, value_enum, default_value = "auto")]
         function_layout: FunctionLayoutArg,
+        /// Proceed with a size-changing edit to a function that carries debug info,
+        /// discarding that function's line numbers (they would point at the wrong
+        /// instructions afterwards). Refused by default. See WRITE_PATH_GUIDE R24.
+        #[arg(long)]
+        allow_stale_debug_info: bool,
     },
     /// Patch a single string-id operand in one instruction (no function-body rebuild).
     PatchOperand {
@@ -524,6 +529,11 @@ pub enum Command {
         layout: LayoutArg,
         #[arg(long, value_enum, default_value = "auto")]
         function_layout: FunctionLayoutArg,
+        /// Proceed with a size-changing edit to a function that carries debug info,
+        /// discarding that function's line numbers (they would point at the wrong
+        /// instructions afterwards). Refused by default. See WRITE_PATH_GUIDE R24.
+        #[arg(long)]
+        allow_stale_debug_info: bool,
     },
     /// Inject a small bytecode stub into a function.
     InjectStub {
@@ -541,6 +551,11 @@ pub enum Command {
         layout: LayoutArg,
         #[arg(long, value_enum, default_value = "auto")]
         function_layout: FunctionLayoutArg,
+        /// Proceed with a size-changing edit to a function that carries debug info,
+        /// discarding that function's line numbers (they would point at the wrong
+        /// instructions afterwards). Refused by default. See WRITE_PATH_GUIDE R24.
+        #[arg(long)]
+        allow_stale_debug_info: bool,
     },
     /// Create a minimal valid .hbc from scratch. Legacy headers for v96 and lower, modern headers for v97 and newer.
     Create {

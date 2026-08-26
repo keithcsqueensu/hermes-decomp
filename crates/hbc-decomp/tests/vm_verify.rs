@@ -226,12 +226,21 @@ fn handler_free_functions_accept_size_change_and_still_run() {
         for id in 0..probe.header.function_count {
             let mut file = BytecodeFile::parse_auto(&bytes).expect("reparse");
             let format = format_for(&file);
+            // `hermesc` emits per-function debug info even without `-g3`, so every
+            // function in every fixture trips the R24 guard. This test is about
+            // handler-free functions accepting a resize and still executing, not
+            // about line numbers, so it opts out explicitly -- which also gives the
+            // opt-out the only coverage that matters for it: that what comes out
+            // still runs on a real VM.
             let out = inject_stub(
                 &mut file,
                 &format,
                 id,
                 InjectStubKind::NopPad,
-                &PatchOptions::default(),
+                &PatchOptions {
+                    allow_stale_debug_info: true,
+                    ..Default::default()
+                },
             )
             .unwrap_or_else(|e| panic!("v{version} fn#{id} has no handlers but was refused: {e}"));
 

@@ -524,6 +524,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             format_version,
             layout,
             function_layout,
+            allow_stale_debug_info,
         } => {
             commands::write_cmd::run_asm(
                 &input,
@@ -533,6 +534,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 layout,
                 function_layout,
                 format_version,
+                allow_stale_debug_info,
             )?;
         }
         Command::PatchOperand {
@@ -633,6 +635,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             format_version,
             layout,
             function_layout,
+            allow_stale_debug_info,
         } => {
             commands::write_cmd::run_patch_function(
                 &input,
@@ -642,6 +645,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 layout,
                 function_layout,
                 format_version,
+                allow_stale_debug_info,
             )?;
         }
         Command::InjectStub {
@@ -652,6 +656,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             format_version,
             layout,
             function_layout,
+            allow_stale_debug_info,
         } => {
             commands::write_cmd::run_inject_stub(
                 &input,
@@ -661,6 +666,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 layout,
                 function_layout,
                 format_version,
+                allow_stale_debug_info,
             )?;
         }
         Command::Create {

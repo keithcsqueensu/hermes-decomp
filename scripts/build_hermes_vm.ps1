@@ -320,9 +320,16 @@ if ($Fixtures) {
     try {
         Get-ChildItem -Path $fixtureDir -Filter '*.js' | ForEach-Object {
             $dest = "$($_.BaseName).v$Version.hbc"
-            & $hermesc -emit-binary -out $dest $_.Name
+            # A `*.debug.js` fixture is built with -g3 so it actually carries debug
+            # info: FLAG_HAS_DEBUG_INFO on every function plus a source-location
+            # stream. That is what the R24 guard is tested against, and hermesc's
+            # default emits neither reliably -- so the flag is the fixture's whole
+            # point, and the name is what carries it (there is nowhere else to put
+            # per-fixture build flags in this loop).
+            $extra = if ($_.BaseName -like '*.debug') { @('-g3') } else { @() }
+            & $hermesc -emit-binary @extra -out $dest $_.Name
             if ($LASTEXITCODE -ne 0) { throw "hermesc failed on $($_.Name)" }
-            Write-Host "    $dest" -ForegroundColor DarkGray
+            Write-Host "    $dest$(if ($extra) { ' (-g3)' })" -ForegroundColor DarkGray
         }
     } finally {
         Pop-Location
