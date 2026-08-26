@@ -162,6 +162,14 @@ harness gate.
   bit 1, and the bit set is pinned against upstream. It was the only item in that plan that
   fixed an output which was *wrong* rather than one that was *missing*, which is why it was
   worth more than its size — hours — suggested.
+- **Putting a chosen RegExp into a bundle** → `UNMODELED_REGIONS_PLAN.md` **P4a**, newly split
+  out of P4 because a concrete ask arrived. It does *not* need P3 and does not need a regex
+  assembler: the bytecode stream is position-independent and byte-identical across v96/v98/v99
+  for the same pattern, so the payload is compiled by `hermesc` and transplanted. Two of its
+  three archetypes — repointing a `CreateRegExp` operand, and overwriting an entry whose slot is
+  big enough — need no new code; the third (append) is an 8-byte table entry plus the same
+  downstream shift `add_string` already performs, and should be taken as the occasion to stop
+  copying that shift (R26). Transplant-and-run is measured on a real v96 engine.
 - **String packing** → `STRING_PACKING_PLAN.md`. Not a correctness item; ~431 KB on disk and
   ~122 KB compressed, with the case resting on offset-ceiling headroom and on output fidelity
   rather than on the size itself. P0 (an always-on packing validator) is a prerequisite for

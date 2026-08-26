@@ -333,7 +333,25 @@ Simpler in every way, and notably **not** version-keyed:
   packed** — followed by an instruction stream.
 - The instruction set is `include/hermes/Regex/RegexOpcodes.def`, 29 opcodes. That file is
   **byte-identical v96 → v99** (verified by `diff`), so one decoder covers every supported
-  version and no `ModernLayout`-style keying is needed.
+  version and no `ModernLayout`-style keying is needed. **[measured]** The stronger form of that
+  claim also holds: the same pattern compiled by the v96, v98 and v99 `hermesc` builds produces
+  the *same bytes*, not merely a stream in the same dialect — `/^nope-(\d+)$/i` is
+  `010001000106010b054e4f50452d…` at all three. That is what makes P4a's donor trick work
+  across versions.
+- `syntaxFlags` **[source]** is `SyntaxFlags::toByte` (`Regex/RegexTypes.h:213`), bits
+  `i g m u s y d` from bit 0 up, bit 7 unused; `constraints` is `MatchConstraintFlags`
+  (`:180`) — `NonASCII`, `AnchoredAtStart`, `NonEmpty` in bits 0-2. **[measured]** on the
+  11.39.0 bundle's 909 entries: no entry sets flag bit 7 and none sets a constraint above bit
+  2, which corroborates the 6-byte header shape on real data rather than on the struct alone.
+  The observed flag bytes are only six distinct values (`0`×507, `g`×239, `i`×125, `gi`×29,
+  `gm`×8, `gim`×1).
+- **[measured]** Storage is packed end to end with no gaps and no inter-entry padding: the 909
+  entries tile `[0, 92533)` exactly, and every entry is at least a header long. The header's
+  `regExpStorageSize` records that **unpadded** 92,533; the trailing pad to
+  `BYTECODE_ALIGNMENT` (92,536 here) is layout, and is what our section walker reports.
+  `regExpCount` and `regExpStorageSize` sit at header bytes **72 and 76 in both layouts** for
+  v96 through v99, because the modern header always carries the bigint fields the legacy one
+  gained at v87.
 
 ### OB1 — the `options` byte is never decoded **[source]** — ✅ **fixed by P5**
 
@@ -650,8 +668,112 @@ it. Cross-check a handful against the source pattern text recovered from the str
 
 ### P4 — Write-side RegExp *(only if a need appears)*
 
-Nothing needs this today, and the section-relative offsets mean nothing breaks without it.
-Listed only so the boundary is explicit. Do not build it speculatively.
+Nothing needs a *regex compiler* today, and the section-relative offsets mean nothing breaks
+without one. Listed only so the boundary is explicit. Do not build it speculatively.
+
+"Write-side RegExp" as originally written meant *authoring a regex bytecode stream from a
+pattern string* — an assembler, which is why P4 was ordered behind P3's disassembler. That
+piece is still speculative and still nobody's. What follows is not that.
+
+### P4a — Put a chosen RegExp into a real bundle *(the need appeared)*
+
+**Why this is a separate phase.** A concrete ask arrived — a regex to be added to the Equinox
+bundle — and it turns out **not to need P3, and not to need an assembler at all**. The regex
+bytecode stream is self-contained and its offsets are storage-relative, so a stream *compiled by
+`hermesc`* transplants verbatim. Do not write a regex compiler to do what the reference compiler
+will hand you. That inverts P4's ordering note for this case only: you do not have to
+disassemble before you assemble, because you are not assembling.
+
+**Get the payload.** Compile a throwaway one-liner and lift the entry out of it:
+
+```bash
+echo 'var re = /^nope-(\d+)$/i; print(re.test("nope-7"));' > donor.js
+hermesc -emit-binary -out donor.v96.hbc donor.js
+hermes-decomp dump donor.v96.hbc --kind regexp --json     # entry 0 is the payload
+```
+
+Any of the three compilers will do (see the byte-identity note above). Read the first six bytes
+back before using them: `markedCount`, `loopCount`, `syntaxFlags`, `constraints`. They are the
+contract with the calling code, not decoration — see the four traps below.
+
+**Then pick the cheapest archetype that fits.** In cost order, which is also in
+blast-radius order:
+
+| | Archetype | Costs | Needs |
+|---|---|---|---|
+| **A** | **Repoint** an existing `CreateRegExp` at an entry the bundle already has | one instruction, in place | nothing new |
+| **B** | **Overwrite** an entry's storage with donor bytes that fit its slot | storage write + the entry's `length` + SHA1 | nothing new |
+| **C** | **Append** a new entry | table +8 B, storage +N, **tail relocation** | `add_string`-class shift |
+
+`CreateRegExp` is `(Reg8 dst, UInt32S patternStrId, UInt32S flagsStrId, UInt32 regexpIndex)` at
+v96, v98 and v99 alike **[source]** — 14 bytes, three of the four operands being ids. A is
+therefore a pure operand edit of the kind `write/patch/operands.rs` already does, and it is the
+right answer whenever the pattern you want is already among the bundle's regexes (909 of them at
+11.39.0). Finding *which* index that is does not need P3 either: the pattern text is a string in
+the table, so `xref --query <pattern>` reaches the `CreateRegExp` site and the site names the
+index in its fourth operand. Which also means the search is over patterns the bundle's *own*
+code uses — a table entry with no live `CreateRegExp` is invisible to that route.
+
+**B is measured, end to end, on a real engine.** Compile a host with `/^equinox-(\d+)$/i` and a
+donor with `/^nope-(\d+)$/i` (49 and 46 bytes); write the donor's bytes over the host's storage,
+set the entry's `length` to 46, refresh the trailing SHA1; the file is byte-for-byte the same
+size. The host then reports `equinox-42 -> false` and `nope-7 -> true` on a real engine at
+**all three versions**. Three things that proves at once: the stream really is
+position-independent, an entry may be *shrunk* by editing only its `length` (the slack tail is
+never read), and the VM accepts a stream it did not compile for that file.
+
+`scripts/regexp_transplant_demo.py --hermes <dir with hermesc and hvm>` is that run, kept
+runnable so the claim can be re-checked rather than believed. It is a demo, not a test: it
+builds its own throwaway bundles and touches nothing in the crate. The phase should land the
+same sequence as a `vm_verify` case.
+
+**C is the only one that needs code, and less than it looks.** Appending is *easier* than
+`add_string`: no packing, no identifier hashes, no string kinds, no overflow entries, and no
+interior fixups at all because storage offsets are storage-relative. It is two header counters
+(bytes 72 and 76 — write `regExpStorageSize` **unpadded**), an 8-byte table entry, N bytes of
+storage, and then the identical downstream shift: `debug_info_offset`, plus every function
+header's body offset and, when overflowed, its info offset. On 11.39.0 that shift moves
+10,302,900 bytes of bytecode and touches 62,909 function headers — the regexp section sits at
+0x6213AC, well upstream of the instruction stream at 0x63B56C.
+
+⚠️ **Do not copy the shift a fourth time.** It exists three times already and that is R26.
+Factor `add_string`'s tail relocation into something both callers use *before* adding the regexp
+caller, or the phase makes a known problem worse for a section that needed the least of it.
+
+**Four traps, two of them measured.**
+
+- **`.source` and `.flags` do not follow the bytecode.** They are `CreateRegExp`'s two string
+  operands, not the stream. **[measured]** the transplanted host above still reports
+  `source: ^equinox-(\d+)$` while matching `nope-`. Anything that logs, serialises or
+  re-compiles from `.source` sees the old pattern. Fix it with `add_string` + an operand edit,
+  or accept the divergence deliberately — but never by accident.
+- **`markedCount` is a contract with the calling code.** It is the capture-group count; code
+  doing `m[2]` on a pattern that now has one group gets `undefined`, silently and far from the
+  edit. Compare the donor's `markedCount` against the old entry's before writing.
+- **Literals are case-folded into the stream when `i` is set.** **[measured]** `/^equinox-…/i`
+  stores `455155494e4f582d` — `EQUINOX-`, upper case. Eyeballing a literal in a hex dump and
+  editing it in place is a trap; recompile a donor instead.
+- **`syntaxFlags` in the donor header must agree with the flags *string*.** They are two
+  independent encodings of the same thing, and only the header one affects matching. A donor
+  compiled with different flags than the site's `flagsStrId` names will match one way and report
+  another.
+
+**Acceptance.** A `regexp-set` op that takes a donor `.hbc` (or a pattern it compiles by
+shelling out to a configured `hermesc`) and an entry index, does B when the payload fits and C
+when it does not, and refuses rather than guessing when `markedCount` drops below the old
+entry's. Tested at v96, v98 and v99: the patched image reparses, `dump --kind regexp` shows the
+new bytes, and `vm_verify` runs it on a real engine and observes the *new* matching behaviour —
+the last being the only assertion that distinguishes "reparses" from "works", exactly as it was
+for the debug relocation in P2. Then the C arm once against the 11.39.0 corpus bundle, because a
+10 MB tail shift over 62,909 headers is not a thing to first attempt in production.
+
+**Cost.** A is hours and needs nothing. B is a day with the test. C is the real work, and most
+of it is the R26 refactor that should happen anyway.
+
+**Not in scope.** Compiling a pattern string to bytecode ourselves (that is P4, still
+speculative), and *inserting* a `CreateRegExp` where none exists — that is an instruction
+insertion, so it is `inject_stub` plus P2's debug relocation, and it is only worth doing if the
+site genuinely has no regex to repoint.
 
 ### P5 — Decode the options bitfield (fixes OB1, and OB2 with it) — ✅ **shipped**
 
@@ -762,6 +884,7 @@ P0  ✅ ──────────► shipped: the guard
 P1  ✅ ──► P2 ✅    shipped: the reader, then relocation for insertions
 P1b                specified and measured; blocked on codegen having a name context
 P3  ──► P4         disassemble before you assemble; P4 only on demand
+P4a ──────────────► independent of both: the donor comes from hermesc, not from us
 P5  ✅ ────────────► shipped: the bitfield, and the CJS labels with it
 P6                 blocked on P1+P2 for debug info, and on a demand that does not exist yet
 ```
@@ -772,3 +895,8 @@ the larger piece of work. Shipping P1 first would leave DI2 open for the duratio
 P5 was unordered with respect to everything else and the smallest item here; it was separated
 out only because it fixed an output that was *wrong* rather than one that was *missing*, which
 made it worth more than its size suggested.
+
+P4a is likewise unordered, and for a reason worth stating plainly: it was filed under P4 —
+behind P3, behind a regex assembler — until someone asked for the thing rather than for the
+capability, at which point most of the phase turned out not to exist. The payload comes from
+`hermesc`. Two of its three archetypes need no new code at all.
