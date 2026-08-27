@@ -24,7 +24,11 @@ use crate::opcode::BytecodeFormat;
 use crate::transforms::{Codegen, CodegenOptions};
 use crate::util::is_valid_identifier;
 
-#[derive(Debug, Clone, Default)]
+// `Hash` is load-bearing: `pipeline::cache::options_key` hashes the whole struct
+// so a new field cannot silently desync the cache key from what
+// `build_with_options` actually reads. Do not remove it, and do not add a field
+// that is not hashable.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct DecompileOptionsV2 {
     pub resolve_strings: bool,
     pub include_offsets: bool,

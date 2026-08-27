@@ -100,6 +100,7 @@ pub use transforms::{
 };
 
 pub use debug::{DebugInfo, ScopeDescriptor, SourceLocation};
+pub use file::{DebugInfoStatus, Diagnostic};
 
 pub use inspect::{
     dump_table, dump_table_json, function_info_banner, render_call_graph, TableKind,

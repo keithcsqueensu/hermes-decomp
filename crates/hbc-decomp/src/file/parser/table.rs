@@ -102,13 +102,21 @@ pub fn parse_pair_table(reader: &mut ByteReader<'_>, count: u32) -> Result<Vec<(
     Ok(entries)
 }
 
+// Decode the string table.
+//
+// Returns the entries plus the count of entries whose storage offset/length fell
+// outside the string storage and decoded to an `<invalid utf8>` / `<invalid
+// utf16>` placeholder. Those placeholders travel in-band, inside the string
+// value itself, so downstream they are indistinguishable from real content --
+// the count is the only way a caller can tell that some of what it is reading is
+// not what the file says. Zero on every intact bundle.
 pub fn decode_string_table(
     string_count: u32,
     kinds: &[StringKindEntry],
     small_entries: &[u32],
     overflow_entries: &[(u32, u32)],
     storage: &[u8],
-) -> Result<Vec<StringTableEntry>> {
+) -> Result<(Vec<StringTableEntry>, usize)> {
     // A corrupt or mis-read header can carry a string_count far larger than the
     // actual small-entry table; clamp so both the allocations and the loops
     // below stay bounded (for valid files the two are equal anyway).
@@ -132,6 +140,7 @@ pub fn decode_string_table(
 
     let mut strings = Vec::with_capacity(count);
     let mut overflow_index = 0usize;
+    let mut invalid = 0usize;
 
     for i in 0..count {
         let raw = small_entries
@@ -163,6 +172,7 @@ pub fn decode_string_table(
             let end = start.saturating_add(byte_len);
 
             if start >= storage.len() || end > storage.len() {
+                invalid += 1;
                 "<invalid utf16>".to_string()
             } else {
                 let slice = &storage[start..end];
@@ -176,6 +186,7 @@ pub fn decode_string_table(
             let start = offset as usize;
             let end = start.saturating_add(length as usize);
             if start >= storage.len() || end > storage.len() {
+                invalid += 1;
                 "<invalid utf8>".to_string()
             } else {
                 String::from_utf8_lossy(&storage[start..end]).to_string()
@@ -195,5 +206,5 @@ pub fn decode_string_table(
         });
     }
 
-    Ok(strings)
+    Ok((strings, invalid))
 }

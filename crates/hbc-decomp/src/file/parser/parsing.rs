@@ -1,6 +1,6 @@
 use crate::debug::{try_parse_debug_info, FunctionDebugOffsets};
 use crate::error::{Error, Result};
-use crate::file::structure::{ShapeTableEntry, StringKindEntry, TableEntry};
+use crate::file::structure::{Diagnostic, ShapeTableEntry, StringKindEntry, TableEntry};
 use crate::file::{BytecodeFile, ExceptionHandler, SectionInfo};
 use crate::format::{
     BytecodeHeader, FunctionHeader, FunctionHeaderLayout, HeaderLayout, FLAG_HAS_DEBUG_INFO,
@@ -8,6 +8,8 @@ use crate::format::{
 };
 use crate::io::ByteReader;
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
 use super::function::*;
 use super::header::*;
@@ -61,26 +63,56 @@ fn track_section<T>(
 
 // --- Entry points ---
 
+// Parse using the layout the declared version implies, falling back to the other
+// one only as a reported recovery.
+//
+// The version is authoritative, not a tie-break. The old form tried both layouts
+// and returned whichever one happened to parse -- so when only the *wrong* one
+// parsed, it was returned with no error and no warning, and every field had been
+// decoded at a stride the version says is wrong. Measured on the committed
+// fixtures: of 4,000 single-bit flips outside the magic/version bytes, 95 (v98)
+// and 76 (v99) parsed only under Legacy16 and were silently accepted as legacy.
+//
+// A clean v98/v99 file also parses "successfully" under the legacy layout, so
+// "it parsed" is not evidence of anything on a modern file. Ask the version first.
 pub fn parse_auto(bytes: &[u8]) -> Result<BytecodeFile> {
     let version = peek_version(bytes)?;
-    let legacy =
-        parse_with_layout(bytes, HeaderLayout::Legacy, FunctionHeaderLayout::Legacy16).ok();
-    let modern =
-        parse_with_layout(bytes, HeaderLayout::Modern, FunctionHeaderLayout::Modern12).ok();
+    let implied = if version >= MODERN_FUNCTION_HEADER_MIN_VERSION {
+        (HeaderLayout::Modern, FunctionHeaderLayout::Modern12)
+    } else {
+        (HeaderLayout::Legacy, FunctionHeaderLayout::Legacy16)
+    };
+    let other = if implied.0 == HeaderLayout::Modern {
+        (HeaderLayout::Legacy, FunctionHeaderLayout::Legacy16)
+    } else {
+        (HeaderLayout::Modern, FunctionHeaderLayout::Modern12)
+    };
 
-    match (legacy, modern) {
-        (Some(file), None) => Ok(file),
-        (None, Some(file)) => Ok(file),
-        (Some(legacy_file), Some(modern_file)) => {
-            if version >= MODERN_FUNCTION_HEADER_MIN_VERSION {
-                Ok(modern_file)
-            } else {
-                Ok(legacy_file)
-            }
+    let implied_err = match parse_with_layout(bytes, implied.0, implied.1) {
+        Ok(file) => return Ok(file),
+        Err(e) => e,
+    };
+
+    // The version-implied layout failed. The other one is worth trying -- a
+    // hand-patched or unusual image may genuinely need it -- but the result is a
+    // fallback, and it says so.
+    match parse_with_layout(bytes, other.0, other.1) {
+        Ok(mut file) => {
+            file.diagnostics.push(Diagnostic::LayoutFallback {
+                version,
+                used: other.0,
+                implied: implied.0,
+            });
+            Ok(file)
         }
-        (None, None) => Err(Error::Parse(
-            "failed to parse bytecode file using known layouts".to_string(),
-        )),
+        // Report the *implied* layout's failure: that is the one the caller cares
+        // about. The old code discarded both and returned a fixed string, so a
+        // genuinely bad file always produced the same uninformative message.
+        Err(other_err) => Err(Error::Parse(format!(
+            "failed to parse bytecode file: version {version} implies the {:?} layout, which \
+             failed with: {implied_err}. The {:?} layout also failed, with: {other_err}",
+            implied.0, other.0
+        ))),
     }
 }
 
@@ -299,14 +331,15 @@ fn parse_trailing_and_build(
     let instruction_offset = reader.position() as u32;
     let instructions = bytes[instruction_offset as usize..].to_vec();
 
-    sections.push(SectionInfo {
-        name: "bytecode",
-        offset: instruction_offset,
-        size: (bytes.len() as u32).saturating_sub(instruction_offset),
-        entries: None,
-    });
+    // The tail of the file is not one section. After the bytecode come the
+    // per-function info areas (exception tables, DebugOffsets), then the debug
+    // info section, then the 20-byte footer. Reporting all of it as "bytecode"
+    // overstates that section by the size of the other three -- 48 bytes on a
+    // stripped release build, megabytes on a `-g3` one -- and `dump --kind
+    // sections` is the tool people use for exactly this offset arithmetic.
+    push_tail_sections(&mut sections, bytes, instruction_offset, &header, &tables.function_headers);
 
-    let strings = decode_string_table(
+    let (strings, invalid_string_storage) = decode_string_table(
         header.string_count,
         &tables.string_kinds,
         &tables.small_string_table,
@@ -319,13 +352,34 @@ fn parse_trailing_and_build(
     // all, which is why `source_locations` was empty for the life of this crate.
     let debug_offsets =
         parse_debug_offsets(bytes, &tables.function_headers, header.version);
-    let debug_info = try_parse_debug_info(
+    let (debug_info, debug_info_status) = try_parse_debug_info(
         bytes,
         header.debug_info_offset,
         header.version,
         &debug_offsets,
     );
     let exception_handlers = parse_exception_handlers(bytes, &tables.function_headers);
+
+    // Integrity: two comparisons that separate "this image is intact" from "this
+    // image was hand-edited and never re-sealed". Neither fails the parse --
+    // reading a deliberately broken bundle is a legitimate use of this crate --
+    // but both are recorded so the CLI and the MCP can say so.
+    let mut diagnostics = Vec::new();
+    if header.file_length as usize != bytes.len() {
+        diagnostics.push(Diagnostic::LengthMismatch {
+            declared: header.file_length,
+            actual: bytes.len(),
+        });
+    }
+    if !crate::write::footer::verify_footer(bytes) {
+        diagnostics.push(Diagnostic::FooterMismatch);
+    }
+    if invalid_string_storage > 0 {
+        diagnostics.push(Diagnostic::InvalidStringStorage(invalid_string_storage));
+    }
+    if debug_info_status.is_failure() {
+        diagnostics.push(Diagnostic::DebugInfoUnreadable(debug_info_status));
+    }
 
     Ok(BytecodeFile {
         header,
@@ -347,11 +401,73 @@ fn parse_trailing_and_build(
         instruction_offset,
         instructions,
         debug_info,
+        debug_info_status,
         exception_handlers,
         sections,
+        diagnostics,
+        unresolved_string_ids: Arc::new(AtomicUsize::new(0)),
         raw_bytes: Some(bytes.to_vec()),
     })
 }
+
+// Split the tail of the file into the regions it actually contains.
+//
+// Layout after the function-source table, per `visitBytecodeSegmentsInOrder`:
+//   [bytecode] [per-function info areas] [debug info] [20-byte SHA-1 footer]
+//
+// Only two boundaries are knowable from the header: `debug_info_offset` and the
+// fixed footer length. The function info areas are interleaved per function and
+// have no section-level start, so they are reported as the gap between the last
+// function body and the debug info -- named `function_info` because that is what
+// upstream calls it, and left unentered when there is no gap.
+fn push_tail_sections(
+    sections: &mut Vec<SectionInfo>,
+    bytes: &[u8],
+    instruction_offset: u32,
+    header: &BytecodeHeader,
+    function_headers: &[FunctionHeader],
+) {
+    let file_end = bytes.len() as u32;
+    let footer_start = file_end.saturating_sub(crate::write::footer::FOOTER_LEN as u32);
+
+    // `debug_info_offset` is 0 / NO_OFFSET when the file carries none, and can be
+    // out of range on a corrupt image; in both cases it delimits nothing.
+    let debug_start = match header.debug_info_offset {
+        0 | u32::MAX => None,
+        off if off >= footer_start || off < instruction_offset => None,
+        off => Some(off),
+    };
+
+    // The last byte any function body reaches. Everything between that and the
+    // debug info (or the footer) is per-function info areas.
+    let bodies_end = function_headers
+        .iter()
+        .map(|h| h.offset().saturating_add(h.bytecode_size_in_bytes()))
+        .max()
+        .unwrap_or(instruction_offset)
+        .max(instruction_offset);
+    let tail_start = debug_start.unwrap_or(footer_start);
+    let info_start = bodies_end.min(tail_start);
+
+    let mut push = |name: &'static str, offset: u32, end: u32| {
+        if end > offset {
+            sections.push(SectionInfo {
+                name,
+                offset,
+                size: end - offset,
+                entries: None,
+            });
+        }
+    };
+
+    push("bytecode", instruction_offset, info_start);
+    push("function_info", info_start, tail_start);
+    if let Some(d) = debug_start {
+        push("debug_info", d, footer_start);
+    }
+    push("footer", footer_start, file_end);
+}
+
 
 // Read each function's `DebugOffsets.sourceLocations` -- the offset of its location
 // stream within the debug *data* region, or absent when it has none.

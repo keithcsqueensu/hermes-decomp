@@ -1,5 +1,6 @@
 mod builder;
 mod cfg;
+pub mod depth;
 pub mod expr;
 mod stmt;
 mod types;
@@ -8,6 +9,7 @@ mod visitor;
 
 pub use builder::*;
 pub use cfg::*;
+pub use depth::{DepthGuard, MAX_RENDER_DEPTH, TOO_DEEP};
 pub use expr::*;
 pub use stmt::{AssignTarget, ClassMethod, MethodKind, Statement, Terminator, VarKind};
 pub use types::*;

@@ -52,6 +52,11 @@ pub struct XrefParams {
     #[schemars(description = "Type of query: 'string' or 'function' (default: 'string')")]
     #[serde(default = "default_string")]
     pub kind: String,
+    #[schemars(description = "Maximum number of cross-references to return (default: all, capped                               by the response size limit)")]
+    pub limit: Option<usize>,
+    #[schemars(description = "Index of the first cross-reference to return, for paging (default: 0)")]
+    #[serde(default)]
+    pub offset: usize,
 }
 
 fn default_string() -> String {
@@ -82,6 +87,11 @@ pub struct DumpParams {
     #[schemars(description = "What to dump: 'strings', 'functions', 'identifiers', or 'all'")]
     #[serde(default = "default_strings")]
     pub kind: String,
+    #[schemars(description = "Maximum number of entries to return (default: all, capped by the                               response size limit)")]
+    pub limit: Option<usize>,
+    #[schemars(description = "Index of the first entry to return, for paging (default: 0)")]
+    #[serde(default)]
+    pub offset: usize,
 }
 
 fn default_strings() -> String {

@@ -17,6 +17,7 @@
 // `lib/BCGen/HBC/DebugInfo.cpp` (`DebugInfoGenerator::appendSourceLocations`) and
 // `FunctionDebugInfoDeserializer`. See `docs/UNMODELED_REGIONS_PLAN.md`.
 
+use crate::file::DebugInfoStatus;
 use crate::error::Result;
 use crate::io::ByteReader;
 use std::collections::BTreeMap;
@@ -200,24 +201,47 @@ impl DebugInfo {
         version: u32,
         offsets: &BTreeMap<u32, FunctionDebugOffsets>,
     ) -> Result<Self> {
+        Self::parse_with_status(bytes, debug_info_offset, version, offsets).0
+    }
+
+    /// As `parse`, but says *why* when the answer is empty.
+    ///
+    /// Five separate situations used to collapse onto one `Ok(default())` --
+    /// "the file has none", "the offset is past EOF", "we do not model this
+    /// version", "the header's own offsets leave the file", and "the streams
+    /// failed to parse" -- leaving every caller unable to distinguish a stripped
+    /// release build from a version this crate cannot read. They are now
+    /// distinguishable; the returned `DebugInfo` is unchanged in every case.
+    pub fn parse_with_status(
+        bytes: &[u8],
+        debug_info_offset: u32,
+        version: u32,
+        offsets: &BTreeMap<u32, FunctionDebugOffsets>,
+    ) -> (Result<Self>, DebugInfoStatus) {
         if debug_info_offset == 0 || debug_info_offset == u32::MAX {
-            return Ok(Self::default());
+            return (Ok(Self::default()), DebugInfoStatus::Absent);
         }
 
         let offset = debug_info_offset as usize;
         if offset >= bytes.len() {
-            return Ok(Self::default());
+            return (Ok(Self::default()), DebugInfoStatus::OffsetOutOfRange);
         }
 
         // An unmodelled version yields nothing rather than nonsense: reading a v98
         // section with v96's 28-byte header is exactly R25, and it produced an
         // empty result that looked like "this file has no debug info".
         let Some(layout) = DebugLayout::for_version(version) else {
-            return Ok(Self::default());
+            return (
+                Ok(Self::default()),
+                DebugInfoStatus::UnsupportedVersion(version),
+            );
         };
 
         let mut reader = ByteReader::new(&bytes[offset..]);
-        let header = Self::parse_header(&mut reader, layout)?;
+        let header = match Self::parse_header(&mut reader, layout) {
+            Ok(h) => h,
+            Err(e) => return (Err(e), DebugInfoStatus::ParseFailed),
+        };
 
         // Where the debug-data blob begins, relative to the section start.
         // Every term is bounded by header values; use u64 + saturating math so
@@ -230,7 +254,7 @@ impl DebugInfo {
         let Some(data) = slice_in_bounds(section, data_start, header.debug_data_size as u64) else {
             // Header points past the file: treat as "no debug info" rather than
             // failing the whole bytecode parse.
-            return Ok(Self::default());
+            return (Ok(Self::default()), DebugInfoStatus::HeaderOutOfRange);
         };
 
         let mut debug_info = DebugInfo::default();
@@ -265,7 +289,7 @@ impl DebugInfo {
         // exist. Reading it anyway is how the old parser produced garbage regions
         // on a modern file.
         if !layout.has_lexical_regions {
-            return Ok(debug_info);
+            return (Ok(debug_info), DebugInfoStatus::Present);
         }
 
         // Parse the string table first: scope descriptors and callees refer to
@@ -292,7 +316,7 @@ impl DebugInfo {
             debug_info.textified_callees = Self::parse_textified_callees(callee_data, string_data);
         }
 
-        Ok(debug_info)
+        (Ok(debug_info), DebugInfoStatus::Present)
     }
 
     fn parse_header(reader: &mut ByteReader<'_>, layout: DebugLayout) -> Result<DebugInfoHeader> {
@@ -601,8 +625,14 @@ pub fn try_parse_debug_info(
     debug_info_offset: u32,
     version: u32,
     offsets: &BTreeMap<u32, FunctionDebugOffsets>,
-) -> Option<DebugInfo> {
-    DebugInfo::parse(bytes, debug_info_offset, version, offsets).ok()
+) -> (Option<DebugInfo>, DebugInfoStatus) {
+    let (result, status) = DebugInfo::parse_with_status(bytes, debug_info_offset, version, offsets);
+    match result {
+        Ok(info) => (Some(info), status),
+        // `parse_with_status` already labelled why; do not relabel an error as
+        // absence, which is what `.ok()` used to do.
+        Err(_) => (None, status),
+    }
 }
 
 #[cfg(test)]

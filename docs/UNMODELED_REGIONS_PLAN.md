@@ -238,7 +238,18 @@ v98 / v99:
 The interior offsets are relative to the **start of the debug data**, not to the section.
 `debug.rs:100-107` computes `data_start` that way and gets it right — for v96.
 
-### DI3 — the header parser is version-blind
+### DI3 — the header parser is version-blind — ✅ **fixed**
+
+> **Fixed since this was written.** `DebugInfo::parse` takes a version and
+> `parse_header` branches on a version-keyed `DebugLayout` (`debug.rs`), so the
+> 28/20/16-byte split is modelled and an unmodelled version (v97, and anything
+> below v96 or above v99) returns nothing *deliberately* rather than reading the
+> wrong shape. The remaining gap was that it returned nothing *silently* — R25's
+> "wrongness in the return value of a call nothing checks" — and that is closed
+> too: `parse_with_status` now reports a `DebugInfoStatus`, surfaced on
+> `BytecodeFile::debug_info_status` and warned about by the CLI and MCP. See
+> `docs/READ_PATH_GUIDE.md` F10. The narrative below is kept as written.
+
 
 `DebugInfo::parse` takes `(bytes, debug_info_offset)` and **no version** (`debug.rs:88`), and
 `parse_header` reads seven `u32`s unconditionally (`debug.rs:148-158`). On a v98 or v99

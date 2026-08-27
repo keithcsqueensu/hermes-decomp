@@ -3,8 +3,15 @@ use super::{Codegen, indent_multiline};
 impl Codegen {
     // Generate code for an expression. Handles all types recursively so that
     // inline function bodies and import comments are applied at any nesting depth.
+    //
+    // Bounded: this is the real output path (the `Display` impl is the debug one),
+    // and both recurse once per level of nesting. See `crate::ir::depth`.
     pub(super) fn generate_expr(&self, expr: &crate::ir::Expression) -> String {
         use crate::ir::{Expression, Value, Constant};
+
+        let Some(_guard) = crate::ir::depth::DepthGuard::enter() else {
+            return crate::ir::depth::TOO_DEEP.to_string();
+        };
 
         match expr {
             Expression::Value(v) => format!("{v}"),

@@ -196,7 +196,20 @@ fn parse_large_header_legacy(
         environment_size: reader.read_u32()?,
         highest_read_cache_index: reader.read_u8()? as u32,
         highest_write_cache_index: reader.read_u8()? as u32,
-        flags: reader.read_u8()?,
+        // Hermes' `SmallFuncHeader(uint32_t largeHeaderOffset)` zeroes the whole
+        // small header and sets only `Overflowed`, so the large header never
+        // carries that bit -- at either layout. The modern path reinstates it
+        // (see `parse_large_header_modern`); this one did not, so every accessor
+        // built on `flags()` reported "not overflowed" for a legacy function that
+        // plainly is. Measured on a shipped v96 bundle: 15 small headers carry
+        // the bit, `is_overflowed()` reported 0, and six functions had a
+        // `frame_size` above 127 -- impossible in the small header's 7-bit field,
+        // so demonstrably read from a large one.
+        //
+        // The visible cost was cosmetic (`function_info` never printed
+        // "overflowed"), but `write::serialize::has_overflowed_functions` reads
+        // the same bit, and legacy is the v96 case -- the one this repo patches.
+        flags: reader.read_u8()? | FLAG_OVERFLOWED,
     };
     reader.seek(current)?;
     Ok(header)

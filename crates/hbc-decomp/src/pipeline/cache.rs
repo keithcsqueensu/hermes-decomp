@@ -62,9 +62,24 @@ pub fn binary_fingerprint() -> [u8; 32] {
     hash_bytes(env!("DECOMP_BUILD_FINGERPRINT").as_bytes())
 }
 
-// Only these options actually change the built context (see build_with_options).
+// Key over *every* option field, not the two that currently matter.
+//
+// `build_with_options` reads only `assembly_mode` and `include_offsets` today,
+// and this used to encode exactly those two bits. That was correct and
+// unenforced: adding a field to `DecompileOptionsV2` and consuming it in
+// `build_with_options` would have made every cache hit silently return a context
+// built with the old value, with the file hash and the build fingerprint both
+// matching so the entry looked perfectly valid. That is the same hand-synced
+// partial model the write path's `commit_image` check found in every write op.
+//
+// Hashing the whole struct cannot desync. The cost is a spurious rebuild when an
+// option that does not affect the context changes; the cost of the alternative is
+// a wrong answer that looks right.
 fn options_key(options: &DecompileOptionsV2) -> u32 {
-    (options.assembly_mode as u32) | ((options.include_offsets as u32) << 1)
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    options.hash(&mut h);
+    h.finish() as u32
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -287,6 +302,45 @@ mod tests {
         assert!(!want.matches(&other_opts));
     }
 
+    // F8: the key must move when *any* option moves, not just the two that
+    // `build_with_options` happens to read today. The old form encoded exactly
+    // those two bits, so adding a field and consuming it would have produced
+    // silently stale cache hits with the file hash and build fingerprint both
+    // matching.
+    #[test]
+    fn every_option_field_changes_the_cache_key() {
+        let base = DecompileOptionsV2::default();
+        let k = options_key(&base);
+        assert_eq!(k, options_key(&base), "the key must be deterministic");
+
+        // One mutator per field. If a field is added to DecompileOptionsV2 and not
+        // added here, the `exhaustive` destructure below stops compiling.
+        let DecompileOptionsV2 {
+            resolve_strings: _,
+            include_offsets: _,
+            propagate: _,
+            simplify: _,
+            recover_structures: _,
+            assembly_mode: _,
+        } = base.clone();
+
+        let variants = [
+            DecompileOptionsV2 { resolve_strings: !base.resolve_strings, ..base.clone() },
+            DecompileOptionsV2 { include_offsets: !base.include_offsets, ..base.clone() },
+            DecompileOptionsV2 { propagate: !base.propagate, ..base.clone() },
+            DecompileOptionsV2 { simplify: !base.simplify, ..base.clone() },
+            DecompileOptionsV2 { recover_structures: !base.recover_structures, ..base.clone() },
+            DecompileOptionsV2 { assembly_mode: !base.assembly_mode, ..base.clone() },
+        ];
+        for (i, v) in variants.iter().enumerate() {
+            assert_ne!(
+                options_key(v),
+                k,
+                "field {i} does not affect the cache key, so a context built with                  one value would be served for the other"
+            );
+        }
+    }
+
     #[test]
     fn binary_fingerprint_is_stable_and_derived_from_build() {
         let a = binary_fingerprint();
@@ -303,7 +357,13 @@ mod tests {
 fn try_save(path: &Path, header: &CacheHeader, ctx: &PipelineContext) -> std::io::Result<()> {
     // Write to a temp file then rename, so a concurrent reader never sees a
     // half-written cache.
-    let tmp = path.with_extension("hdcache.tmp");
+    //
+    // The temp name carries the pid: it used to be a fixed `.hdcache.tmp`, so two
+    // processes analysing the same bundle wrote the same file concurrently and
+    // interleaved their bytes. The rename stayed atomic, so the result was a
+    // corrupt cache that `try_load` rejects -- never a wrong answer, but a
+    // permanent miss until something happened to rewrite it.
+    let tmp = path.with_extension(format!("hdcache.{}.tmp", std::process::id()));
     {
         let f = std::fs::File::create(&tmp)?;
         let mut writer = BufWriter::new(f);

@@ -242,7 +242,15 @@ impl Codegen {
     }
 
     // Generate code for a list of statements.
+    //
+    // Bounded on the same budget as expressions: `if`/`while`/`try` bodies are
+    // themselves statement lists, so this recurses once per level of block
+    // nesting. See `crate::ir::depth`.
     pub fn generate_statements(&mut self, statements: &[Statement]) -> String {
+        let Some(_guard) = crate::ir::depth::DepthGuard::enter() else {
+            return format!("{}{}
+", self.current_indent(), crate::ir::depth::TOO_DEEP);
+        };
         let mut output = String::new();
         for stmt in statements {
             output.push_str(&self.generate_stmt(stmt));

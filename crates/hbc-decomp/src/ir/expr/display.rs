@@ -165,7 +165,16 @@ fn format_call(callee: &Expression, arguments: &[Expression], extra_suffix: &str
 }
 
 // Canonical expression formatter used by Display and Codegen.
+//
+// Every other formatter in this file (`format_expr_with_parens`, `join_exprs`,
+// `format_call`, `format_object_property`) recurses through here, so one bound at
+// this door covers the whole tree. See `crate::ir::depth` for why it exists and
+// what it is worth: measured, `Display` dies at ~5,000 levels on a 2 MiB stack,
+// and the deepest expression in a real 62k-function bundle is 79.
 pub fn format_expr(expr: &Expression) -> String {
+    let Some(_guard) = crate::ir::depth::DepthGuard::enter() else {
+        return crate::ir::depth::TOO_DEEP.to_string();
+    };
     match expr {
         Expression::Value(v) => format!("{v}"),
         Expression::Binary { op, left, right } => {

@@ -336,9 +336,13 @@ pub fn dump_table_json(file: &BytecodeFile, kind: TableKind) -> Value {
 fn register_summary(header: &FunctionHeader) -> String {
     match header {
         FunctionHeader::Legacy(h) => format!("env={}", h.environment_size),
+        // saturating: in the *small* modern header these are 5-bit fields and
+        // cannot overflow, but the large header reads both as full u32 straight
+        // out of the file, so the sum is input-controlled. This was the only
+        // reachable panic across a 260,000-mutant sweep of the read path.
         FunctionHeader::Modern(h) => format!(
             "regs={}(num={},nonptr={})",
-            h.number_reg_count + h.non_ptr_reg_count,
+            h.number_reg_count.saturating_add(h.non_ptr_reg_count),
             h.number_reg_count,
             h.non_ptr_reg_count
         ),

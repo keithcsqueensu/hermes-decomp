@@ -31,7 +31,22 @@ pub fn load_file_with_bytes(
             BytecodeFile::parse_with_layout(&bytes, HeaderLayout::Modern, function_layout)?
         }
     };
+    warn_diagnostics(&file);
     Ok((file, bytes))
+}
+
+// Print everything the parse found wrong but recovered from.
+//
+// The read path deliberately degrades instead of failing -- reading a broken or
+// hand-patched image is a legitimate use -- and for most of this crate's life it
+// did so in complete silence. A stale SHA-1 footer, a file decoded under the
+// layout its version says is wrong, or a debug section this build cannot read all
+// produced output that looked exactly like a clean read. Say it once, on stderr,
+// before the output the user actually asked for.
+pub fn warn_diagnostics(file: &BytecodeFile) {
+    for w in file.warnings() {
+        eprintln!("warning: {w}");
+    }
 }
 
 // Forcing a layout that contradicts the file's declared version reads every
@@ -127,8 +142,14 @@ pub fn load_format(
     let version = format_version.unwrap_or(file.header.version);
     let (format, used_version) = BytecodeFormat::for_version_or_latest(version)?;
     if used_version != version {
+        // Spell out the consequence, not just the substitution. A wrong opcode
+        // table does not fail: at v99 eight phantom opcodes shifted twelve later
+        // ones and `===` decoded as `>=`, which reads as perfectly good
+        // JavaScript that says the opposite of what the program does.
         eprintln!(
-            "warning: using opcode format version {used_version} for bytecode version {version}"
+            "warning: no opcode table for bytecode version {version}; decoding with the version \
+             {used_version} table. Opcode numbering and operand shapes may differ, which silently \
+             changes which instruction each byte means."
         );
     }
     Ok(format)

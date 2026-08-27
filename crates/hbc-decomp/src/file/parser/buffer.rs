@@ -1,6 +1,27 @@
 use crate::error::{Error, Result};
 use crate::file::structure::{BytecodeFile, LiteralValue};
 use crate::io::ByteReader;
+use std::sync::atomic::Ordering;
+
+// Resolve a literal-buffer string id, counting the misses.
+//
+// A miss means the id addresses nothing in the string table, and the value the
+// caller gets back is the placeholder `<string:N>` -- which then travels through
+// decompiled output, xrefs and secret scanning looking exactly like a real
+// string. That is the strongest available signal that the buffer sections were
+// read at the wrong offsets (parsing BigInt before the array buffer once
+// produced ~93,000 of these on a Discord HBC96 bundle), so it is counted rather
+// than discarded. The counter is on the file because these buffers are read
+// lazily, on demand from the IR builder, long after the parse has returned.
+fn resolve_string(file: &BytecodeFile, id: u32) -> String {
+    match file.string_at(id) {
+        Some(entry) => entry.value.clone(),
+        None => {
+            file.unresolved_string_ids.fetch_add(1, Ordering::Relaxed);
+            format!("<string:{id}>")
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum DataBufferTag {
@@ -93,27 +114,15 @@ fn read_buffer_value(
         DataBufferTag::Integer => LiteralValue::Integer(reader.read_i32()?),
         DataBufferTag::ShortString => {
             let id = reader.read_u16()? as u32;
-            let value = file
-                .string_at(id)
-                .map(|entry| entry.value.clone())
-                .unwrap_or_else(|| format!("<string:{id}>"));
-            LiteralValue::String(value)
+            LiteralValue::String(resolve_string(file, id))
         }
         DataBufferTag::LongString => {
             let id = reader.read_u32()?;
-            let value = file
-                .string_at(id)
-                .map(|entry| entry.value.clone())
-                .unwrap_or_else(|| format!("<string:{id}>"));
-            LiteralValue::String(value)
+            LiteralValue::String(resolve_string(file, id))
         }
         DataBufferTag::ByteString => {
             let id = reader.read_u8()? as u32;
-            let value = file
-                .string_at(id)
-                .map(|entry| entry.value.clone())
-                .unwrap_or_else(|| format!("<string:{id}>"));
-            LiteralValue::String(value)
+            LiteralValue::String(resolve_string(file, id))
         }
         DataBufferTag::Undefined => LiteralValue::Undefined,
     })

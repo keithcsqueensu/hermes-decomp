@@ -17,8 +17,10 @@ pub struct Decompiler {
 
 impl Decompiler {
     pub fn new(bytes: &[u8]) -> Result<Self> {
-        let file = BytecodeFile::parse_auto(bytes)?;
-        let (format, _) = BytecodeFormat::for_version_or_latest(file.header.version)?;
+        let mut file = BytecodeFile::parse_auto(bytes)?;
+        // Records a diagnostic if a different version's opcode table is
+        // substituted; read it back via `self.file.warnings()`.
+        let format = file.resolve_format()?;
         Ok(Self {
             file,
             format,
