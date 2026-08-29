@@ -20,6 +20,11 @@ Scope: parsing, decoding, analysis, and the CLI/MCP surfaces that expose them. T
 path is out of scope except where reading feeds it — and one finding below (**F5**) is
 exactly that case.
 
+> **Ownership.** *Owns* read-path robustness: F1–F14, what degrades silently, and the two
+> regression harnesses. *Delegates* the debug section's format and interpretation to
+> `UNMODELED_REGIONS_PLAN.md` (F10 is the read-side symptom; the formats are there), and the
+> decompiler's closure/env-slot naming to `CLOSURE_MODEL_PLAN.md`.
+
 Everything marked **[measured]** was reproduced in this pass against the committed fixtures
 or the shipped Equinox v96 bundle (`com.equinoxfitness.equinox_11.39.0`, 16,837,408 bytes,
 62,909 functions, 98,917 strings). Harness sources are in the appendix.

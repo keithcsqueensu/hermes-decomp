@@ -1,21 +1,18 @@
 # Impl plan — relocation
 
-`WRITE_PATH_GUIDE.md` lists, under design limits:
+> **Ownership.** Split out of `WRITE_PATH_GUIDE.md` § Known design limitations, the
+> `apply_reloc` bullet. *Owns* the absolute-offset surface and the splice-and-shift primitive —
+> and, per P0, whether `RelocPlan` should exist at all, which is why the guide's bullet is a
+> pointer rather than a copy: after P0 a copy would be describing a deleted type.
+> *Delegates* the *contents* of the regions being shifted to `UNMODELED_REGIONS_PLAN.md`, and
+> how the string region is rebuilt before it is spliced to `STRING_PACKING_PLAN.md`. Neither
+> overlaps this one: both stop at "and then everything after the region shifts", which is
+> exactly where this begins.
 
-> **`apply_reloc` on structured headers is intentionally unimplemented** — it errors and points
-> callers at `patch_function_bytes`/`finalize_raw_image` (`reloc.rs:23`). `RelocPlan` is a
-> placeholder type for a future structured-rebuild path.
-
-That is true, and it is the right refusal. What the bullet does not say is the more useful half:
-the thing the stub names — relocation over *structured headers* — is not what the write path
-needs, and the thing it does need is **written out three times by hand**, in three files, with
-three slightly different contracts. This plan is about closing that gap, and about deciding
-whether the placeholder should exist at all.
-
-Read alongside `UNMODELED_REGIONS_PLAN.md` (which owns the *contents* of the debug section)
-and `STRING_PACKING_PLAN.md` (which owns how the string region is rebuilt before it is spliced).
-Neither overlaps this one: both stop at "and then everything after the region shifts", which is
-exactly where this begins.
+The guide's refusal is right. What it delegates here is the more useful half: the thing the stub
+names — relocation over *structured headers* — is not what the write path needs, and the thing
+it does need is **written out three times by hand**, in three files, with three slightly
+different contracts. This plan is about closing that gap.
 
 ---
 

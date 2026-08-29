@@ -32,9 +32,15 @@ and parsing it back with this crate — see What compiling actually showed. Stat
 the formats right; compiling corrected two claims that reading could not have, and one region
 could not be produced at all.
 
-Companion to `WRITE_PATH_GUIDE.md` § Pending impl plans, and to `RELOCATION_PLAN.md` (which
-owns *moving* these regions) and `STRING_PACKING_PLAN.md` (which owns rebuilding one of them).
-Same conventions: derive from upstream, pin what you derive, refuse rather than approximate.
+> **Ownership.** Split out of `RELOCATION_PLAN.md` P3, whose structured rebuild is blocked on
+> a total serializer this document inventories. *Owns* each region's read / interpret / emit
+> status and its derived format. *Delegates* **moving** a region to `RELOCATION_PLAN.md`,
+> rebuilding the string region to `STRING_PACKING_PLAN.md`, the read-path *symptoms* of a
+> silent debug-info failure to `READ_PATH_GUIDE.md` F10, and — since P1b — the decompiler's
+> closure/env-slot model to `CLOSURE_MODEL_PLAN.md`.
+
+Same conventions as its siblings: derive from upstream, pin what you derive, refuse rather than
+approximate.
 
 ---
 
@@ -55,7 +61,7 @@ something with meaning attached, not merely into a `Vec`. "Emit" means `create` 
 | CJS module table | ✅ pairs | ✅ labelled by `options` bit 1 (`inspect.rs`) | ❌ empty only | write side only; OB2 closed by P5 |
 | `options` byte | ✅ as a `u8` | ✅ `BytecodeOptions`, version-keyed (`format.rs`) | carried verbatim | OB1 closed by P5 |
 | **RegExp table + storage** | table ✅, storage ❌ raw | ❌ | ❌ empty only | P3 |
-| **debug info** | ✅ version-keyed (96/98/99) | ✅ locations + scopes; **not** the lexical/envIdx data | ❌ empty only | DI2 guarded (P0), DI1 read (P1), decompiler wiring is P1b |
+| **debug info** | ✅ version-keyed (96/98/99) | ✅ locations + scopes; **not** the lexical/envIdx data | ❌ empty only | DI2 guarded (P0), DI1 read (P1), decompiler wiring is P1b (behind CLOSURE_MODEL_PLAN.md) |
 
 The two bolded rows are the read-side gaps that remain; everything else on the list is a
 write-side gap
@@ -565,6 +571,38 @@ checkout — and was checked by breaking each of them and watching it fail. Asse
 and `variable_map_for_function` returns them keyed by slot. Both consumers (`ir_gen`,
 `pipeline`) were switched off the stream-scanning lookup, so they resolve the right scope.
 
+**The spec this phase was executed from, kept as the record.** It was written before the
+three corrections above were known — step 3 in particular is the `scopeAddress` mistake,
+left standing so the corrections have something to be corrections *to*.
+
+**Do.**
+0. Fix DI3 first: thread the bytecode version into `DebugInfo::parse` and key the header shape
+   (28 / 20 / 16 B) off it. Nothing else in this phase is trustworthy until the header is read
+   at the right size, and the fix is a precondition for even *locating* the streams at v98+.
+1. Read per-function `DebugOffsets` (version-keyed size table above) during function parsing;
+   store `source_locations_offset: Option<u32>` on the function.
+2. Add a version-keyed stream decoder — one function per encoding, selected the way
+   `ModernLayout::for_version` selects, **including its refusal habit**: an unknown version is
+   an error, not a best guess.
+3. Populate `source_locations` keyed by `function_id`, with `scope_offset` filled from
+   `scopeAddress` at v96 and left `None` at v97+.
+
+**Acceptance, as it turned out.** The end-to-end signal was specified as `decompile` emitting
+real names; that is P1b, below, for the reason given there. What P1 itself delivers, and what the tests
+assert: streams decode at v96/v98/v99; the decoded lines *are* the fixture's lines (8, 10, 12,
+15 for `classify`; 18–21 for `total`); the two encodings agree about the same program, which is
+the check that catches a missed prologue field or a collapsed address cursor; and
+`debug --vars` prints four captured variable names that no version of this crate had ever
+recovered.
+
+**Pin it.** Add both version-keyed quantities to `tests/upstream_pin.rs` the way opcodes and
+function-header fields already are: derive `sizeof(DebugInfoHeader)` and `sizeof(DebugOffsets)`
+by counting `uint32_t` members in each checkout, and parse the shift width and flag-bit
+meanings out of each checkout's `FunctionDebugInfoDeserializer`, asserting all of it matches
+what the decoder implements. The v96 →
+v97 → v98 drift documented above is exactly the shape R19 exists to catch, and it will happen
+again.
+
 ### P1b — Put the recovered names in the decompiler — **specified and measured, not shipped**
 
 **Goal.** `closure_0` → `count` in decompiled output.
@@ -583,46 +621,39 @@ environment and 1 if it does not. The discriminator is whether `F`'s body contai
 | `readsAll` | no | 0 | 1 | 22 → 16 | same |
 
 **Why it is not shipped, which is a real blocker rather than an effort estimate.** The
-rendered name `closure_N` is *load-bearing for other analyses*: `analysis/metro/propagation`
-recovers a slot id by `strip_prefix("closure_")`. Substituting a debug name before those run
-would break Metro module analysis, and the `var_naming` layer that could rename it only handles
-registers (`rename_registers`), while `ClosureInfo::get_slot_name` — the obvious hook — has no
-callers in the pipeline at all. The substitution therefore belongs at **print time**, in the
-codegen layer, which today has no name-resolution context.
+rendered name `closure_N` is *load-bearing for other analyses*: seventeen sites across ten
+files test or parse that spelling, including `analysis/metro/propagation`, which recovers a
+slot id by `strip_prefix("closure_")`. Substituting a debug name before those run would break
+Metro module analysis.
+
+The blocker is **not** that there is nowhere to put the name — it is that the thing to attach
+it to has already been destroyed. `resolve_closures` (`analysis/closure/mod.rs:139,217`,
+reached from `pipeline/ir_gen.rs:244` and `pipeline/context/closures.rs:40`) lowers
+`ClosureVar { level, slot }` to `Variable(String)` at stage W6, and `ClosureInfo::get_slot_name`
+is what renders that string — it is the incumbent namer, not an unused hook. After W6 a debug
+name and a placeholder are both just strings, distinguishable only by spelling. So print-time
+substitution cannot work as originally sketched here: `Codegen` does carry injected analysis
+context (`import_map`, `dep_names`, `dep_ids`, `inline_bodies`, with a `with_*` builder
+pattern at `transforms/codegen/mod.rs:193`), and a `with_variable_names` would be routine —
+but by then there is no `ClosureVar` left to key it on. Likewise `var_naming` already renames
+captures beyond registers (`rename_closure_variables_cross_function`,
+`rename_closures_from_definitions`); it does so **by string**, which is the same problem one
+layer up.
+
+`ClosureSlotValue` also has no rung for a better source of truth: it carries a value, never a
+provenance, so a name Hermes itself recorded has no way to outrank one inferred from a store.
+**See `CLOSURE_MODEL_PLAN.md`** — that is where this belongs, it is justified without debug
+info (94,453 rendered placeholders per Equinox run), and P1b becomes a short consequence of
+its K1/K3 rather than a project. Two of its findings are P1b's own, arrived at early: the `h`
+above is a bit the IR builder already observes and discards, and the slot→name map this phase
+would produce is currently consumed as a *register*→name map.
 
 **And the payoff is small**: Hermes names only captured variables, and only in files built with
-debug info — of which the Equinox bundle has none (0 of 62,909 functions). This is decompiler
-cosmetics for debug builds. Worth doing when the codegen layer next grows a context; not worth
-threading one through on a four-function sample, where a wrong name would be worse than
-`closure_0`.
+debug info — of which the Equinox bundle has none (0 of 62,909 functions, re-measured). This is
+decompiler cosmetics for debug builds. Worth doing once the closure model keeps its structure
+to print time; not worth threading a name through a lossy lowering on a four-function sample,
+where a wrong name would be worse than `closure_0`.
 
-**Do.**
-0. Fix DI3 first: thread the bytecode version into `DebugInfo::parse` and key the header shape
-   (28 / 20 / 16 B) off it. Nothing else in this phase is trustworthy until the header is read
-   at the right size, and the fix is a precondition for even *locating* the streams at v98+.
-1. Read per-function `DebugOffsets` (version-keyed size table above) during function parsing;
-   store `source_locations_offset: Option<u32>` on the function.
-2. Add a version-keyed stream decoder — one function per encoding, selected the way
-   `ModernLayout::for_version` selects, **including its refusal habit**: an unknown version is
-   an error, not a best guess.
-3. Populate `source_locations` keyed by `function_id`, with `scope_offset` filled from
-   `scopeAddress` at v96 and left `None` at v97+.
-
-**Acceptance, as it turned out.** The end-to-end signal was specified as `decompile` emitting
-real names; that is P1b, for the reason above. What P1 itself delivers, and what the tests
-assert: streams decode at v96/v98/v99; the decoded lines *are* the fixture's lines (8, 10, 12,
-15 for `classify`; 18–21 for `total`); the two encodings agree about the same program, which is
-the check that catches a missed prologue field or a collapsed address cursor; and
-`debug --vars` prints four captured variable names that no version of this crate had ever
-recovered.
-
-**Pin it.** Add both version-keyed quantities to `tests/upstream_pin.rs` the way opcodes and
-function-header fields already are: derive `sizeof(DebugInfoHeader)` and `sizeof(DebugOffsets)`
-by counting `uint32_t` members in each checkout, and parse the shift width and flag-bit
-meanings out of each checkout's `FunctionDebugInfoDeserializer`, asserting all of it matches
-what the decoder implements. The v96 →
-v97 → v98 drift documented above is exactly the shape R19 exists to catch, and it will happen
-again.
 
 ### P2 — Relocate addresses on resize — ✅ **shipped, for the edits where it means anything**
 
@@ -893,7 +924,7 @@ the whole image.
 ```
 P0  ✅ ──────────► shipped: the guard
 P1  ✅ ──► P2 ✅    shipped: the reader, then relocation for insertions
-P1b                specified and measured; blocked on codegen having a name context
+P1b                specified and measured; blocked on the closure model — CLOSURE_MODEL_PLAN.md K1/K3
 P3  ──► P4         disassemble before you assemble; P4 only on demand
 P4a ──────────────► independent of both: the donor comes from hermesc, not from us
 P5  ✅ ────────────► shipped: the bitfield, and the CJS labels with it

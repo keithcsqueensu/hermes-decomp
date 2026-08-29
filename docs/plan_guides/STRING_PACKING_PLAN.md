@@ -4,6 +4,11 @@ Research and plan for the *"No string dedup/merge"* limitation: what `hermesc` a
 when it lays out string storage, how much it buys, whether we can mimic it, and what it would
 cost us in safety.
 
+> **Ownership.** Split out of `WRITE_PATH_GUIDE.md` § Known design limitations, *"No string
+> dedup/merge"*. *Owns* how string storage is laid out and how it could be repacked.
+> *Delegates* the shift that follows a resized string region to `RELOCATION_PLAN.md` — P1
+> there is a prerequisite for P1 here, which would otherwise become a fourth copy of it.
+
 **[source]** = read out of the Hermes checkouts wired up for `tests/upstream_pin.rs`.
 **[measured]** = computed against
 `com.equinoxfitness.equinox_11.39.0/hermes_bundle/assets/index.android.bundle.backup`

@@ -16,6 +16,15 @@ independent tests for `functions.rs`/`inject.rs`); re-check them if the code has
 Scope: the read/decompile path is out of scope except where a write op depends on it
 (`decode_function_instructions`, `disassemble_function`).
 
+> **Ownership.** *Owns* the write path's invariants, hazards, op inventory and risk
+> register — and the decision of what counts as a write-path limitation. *Delegates*
+> relocation mechanics to `RELOCATION_PLAN.md` (R26), region contents and emission to
+> `UNMODELED_REGIONS_PLAN.md`, and string repacking to `STRING_PACKING_PLAN.md`. Those three
+> were split out of limitation bullets in this file; the bullets stay as **pointers**, and
+> must not grow back into summaries — see `README.md` § Splitting.
+
+
+
 > **Revision note — a real v99 engine is now on this machine.** A compiled
 > facebook/hermes (`static_h`, `v0.12.0-5581-ge9edc8b52`, `BYTECODE_VERSION = 99`) sits at
 > `C:\src\hermes-v99` with binaries in `build\bin\Release`. Two things follow, and this pass
@@ -154,9 +163,8 @@ harness gate.
 - **Debug info: names in the decompiler** → `UNMODELED_REGIONS_PLAN.md` P1b. **P0, P1 and P2
   are shipped** — the guard, the version-keyed reader, and relocation for insertions, so R24,
   R25 and R28 are all closed. What remains is putting the recovered names into decompiler
-  output, which is blocked on the codegen layer having a name-resolution context: `closure_N`
-  is currently parsed back into a slot id by the Metro analysis, so it cannot simply be
-  renamed earlier. The rule and its discriminator are measured and written down there.
+  output, which is blocked on the decompiler's closure model rather than on anything in the
+  write path → `CLOSURE_MODEL_PLAN.md`. Nothing here waits on it.
 - **The `options` bitfield, and the CJS table's two meanings** → R27, **shipped** as P5 of
   `UNMODELED_REGIONS_PLAN.md`. The byte is decoded version-keyed, the CJS dump is labelled by
   bit 1, and the bit set is pinned against upstream. It was the only item in that plan that
@@ -328,15 +336,13 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   → **`STRING_PACKING_PLAN.md`** for the algorithm, the measured decomposition, and a phased
   plan that keeps the overlap-safety property via a pin set.
 - **Debug info is read; RegExp is still an opaque `u8` buffer.** The debug half of this
-  limitation is gone: the section is parsed with a version-keyed header, the per-function
-  `DebugOffsets` are followed, and both location-stream encodings decode, so
-  `DebugInfo::source_locations` is populated and captured variable names are recovered
-  (R25 fixed, R28 fixed, DI1 closed by P1 — the remaining step is putting those names into
-  decompiler output, P1b). RegExp really is raw bytes, which is harmless: its offsets are
-  storage-relative, so shifting the section cannot invalidate them. What is *not* fixed is the
-  write side: resize ops shift `debug_info_offset` but never rewrite debug-info internals, so a
-  size-changing edit to a debug-bearing function is refused rather than corrected — R24, guarded
-  by P0, relocated by P2.
+  limitation is gone on the read side (R25, R28 fixed). RegExp really is raw bytes, which is
+  harmless *here*: its offsets are storage-relative, so shifting the section cannot invalidate
+  them. What matters to the write path is the remaining half — resize ops shift
+  `debug_info_offset` but never rewrite debug-info internals, so a size-changing edit to a
+  debug-bearing function is refused rather than corrected (R24, guarded and then relocated for
+  insertions). The read-side state and the phase numbering behind those fixes are
+  → **`UNMODELED_REGIONS_PLAN.md`**'s; do not restate them here.
 - **Those two are not the whole opaque list, and the read side is not where most of it is.**
   The buffers, bigints, the object shape table, the CJS and function-source tables are all
   parsed *and* interpreted — but **none of them can be emitted**: `create` writes a zero count
@@ -352,10 +358,9 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
 - **`apply_reloc` on structured headers is intentionally unimplemented** — it errors and
   points callers at `patch_function_bytes`/`finalize_raw_image` (`reloc.rs:23`).
   `RelocPlan` is a placeholder type for a future structured-rebuild path: nothing constructs
-  one, and no shipped op needs one. The refusal is right; what is wrong is underneath it —
-  the relocation the write path *does* perform is written out three times by hand
-  (`functions.rs:168`, `strings.rs:461`, `strings.rs:756`), which is R26.
-  → **`RELOCATION_PLAN.md`** for the offset surface and a phased plan.
+  one, and no shipped op needs one. The refusal is right. What is wrong is underneath it, and
+  it is R26's, not this document's — including whether the placeholder should exist at all.
+  → **`RELOCATION_PLAN.md`** owns the offset surface, the duplication and the plan.
 - **`retarget_string` refuses overflow entries** (v1 scope) and allows — but the CLI warns
   on — a string↔identifier cross-kind retarget (`strings.rs:258`; note moved to the CLI
   layer, see Q5).
@@ -898,7 +903,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R23 | An op's output is only ever checked against our own model | all | M×H | 🟩 | Three independent oracles now exist: a real VM (does it run), upstream headers and `BytecodeList.def` (does our format model match theirs), and `hbcdump` (does a second implementation read the same instructions) | Keep reaching for an external oracle when adding a check. The three findings this pass — stale model, opcode drift, debug stack overflow — were each invisible to a test written against our own assumptions, and each fell out immediately once something else was asked. |
 | R24 | A size-changing edit silently invalidates a function's debug info | fn/inject | M×M | ⬜ **fixed** | **Neither silent nor invalid any more: an insertion is relocated, a wholesale replacement is refused.** `inject-stub` shifts the affected addresses (`write/patch/debug_reloc.rs`, P2) — one SLEB128 delta, because every later entry is relative to it — and re-points the debug region when that changes length. `asm`/`patch-function` still refuse, because a replaced body has no old-address-to-new-address mapping to follow; that is a capability gap, not a correctness one. Previously: **guarded** (P0 of `UNMODELED_REGIONS_PLAN.md`, `tests/debug_info_guard.rs`): `patch_function_body` refuses a size-changing edit to a function with `FLAG_HAS_DEBUG_INFO` when the file actually has a debug section, with `--allow-stale-debug-info` / `PatchOptions::allow_stale_debug_info` as the explicit opt-out. Keyed on the section as well as the flag because `create` sets the flag on an image with no debug info at all. Refusing by default is free on real targets: **0 of the Equinox bundle's 62,909 functions carry the flag** [measured]. Previously: nothing. Location streams store bytecode addresses *within* a function as SLEB128 deltas; a resize shifts `debug_info_offset` (the section) and rewrites nothing inside it, so every location past the edit point maps to the wrong instruction. No error, no warning | — (fixed). Two residuals worth naming rather than hiding: a wholesale body replacement still cannot keep its line table, by nature rather than by omission; and both the guard and the relocation key on `FLAG_HAS_DEBUG_INFO`, so a file whose functions carry debug info the flag does not admit to would slip past — unmeasured, and unlikely, since the flag is what upstream's own serializer writes the region from |
 | R25 | The debug-info reader is hardcoded to the v96 header shape | all | M×M | ⬜ **fixed** | `DebugLayout::for_version` keys the header size (28 B at v96, 16 at v98+), whether the lexical sub-regions exist, and which of the two location-stream encodings applies; unmodelled versions yield no debug info rather than a mis-ruled read. `debug_info_shapes_match_upstream` derives all four quantities from each checkout and fails if any drifts — verified by breaking each in turn. Previously: `DebugInfo::parse` takes no version (`debug.rs:88`) and `parse_header` reads seven `u32`s unconditionally (`debug.rs:148`), but `DebugInfoHeader` is **28 B at v96, 20 B at v97, 16 B at v98/v99** — upstream deleted the scope-descriptor, textified-callee and string-table offsets. On a modern file it reads 12 bytes too many and computes `data_start` from the wrong base | — (fixed). The old claim that this was "never exercised because every fixture lacks debug info" was backwards: every fixture *has* debug info, so the wrong-sized read ran on every parse and was merely unasserted. Confirmed before the fix by compiling one source at three versions: 5 scope descriptors and an 8-entry debug string table at v96, zeros at v98/v99 |
-| R26 | Relocation after a splice is implemented three times by hand, and promised a fourth time by a stub that cannot work | string/fn | L×H | 🟧 | All three copies are currently correct, and checked by machine rather than by reading: `vm_verify` runs every op on a real engine, `corpus` sweeps the 62,909-function production bundle, and `commit_image` re-derives the model afterwards so none of them can leave it stale. The one asymmetry — `patch_function_bytes` re-encodes each legacy small header from the model where the string paths shift bits in place — was measured lossless on all 62,894 non-overflowed headers of the 11.39.0 bundle | The copies cannot diverge silently today because nothing compares them: a fix landing in one and not the others is invisible until a bundle is wrong. `RELOCATION_PLAN.md` P1 collapses them into one primitive and adds the differential that would catch it — a string-region grow and a body grow of the same 4-aligned delta must shift every header identically. P0 first: delete `apply_reloc`/`RelocPlan` or give them the real signature, since an exported type with no producer is R20's shape |
+| R26 | Relocation after a splice is implemented three times by hand, and promised a fourth time by a stub that cannot work | string/fn | L×H | 🟧 | All three copies are currently correct, and checked by machine rather than by reading: `vm_verify` runs every op on a real engine, `corpus` sweeps the 62,909-function production bundle, and `commit_image` re-derives the model afterwards so none of them can leave it stale. The one asymmetry — `patch_function_bytes` re-encodes each legacy small header from the model where the string paths shift bits in place — was measured lossless on all 62,894 non-overflowed headers of the 11.39.0 bundle | The copies cannot diverge silently today because nothing compares them: a fix landing in one and not the others is invisible until a bundle is wrong. Collapse them into one primitive, with a differential that would catch it — specified as `RELOCATION_PLAN.md` P0–P2, roughly a day, and a prerequisite for `STRING_PACKING_PLAN.md` P1 |
 | R27 | The `options` bitfield is carried as an integer and never decoded, and the CJS module table's meaning depends on it | all | L×M | ⬜ **fixed** | **Decoded, and the CJS table is labelled by it.** `BytecodeOptions` (`format.rs`) is a version-keyed view over the byte — `static_builtins()`, `cjs_modules_statically_resolved()`, and `has_async()` returning `Option<bool>`, `None` from v98 because the bit *does not exist* there rather than because it is clear — plus `unknown_bits()`, which is what a v98 image built before upstream's BitField rewrite trips. The raw byte stays on the header as `options_raw` and the write path still round-trips it verbatim. `dump --kind cjs-modules` now keys its labels on bit 1 and says which of the two tables it is showing; `info` prints the decoded byte. The bit set is pinned against every configured checkout by `upstream_pin.rs::bytecode_options_bits_match_upstream`, which derives its expectations from `BytecodeOptions` rather than transcribing them, so an added, removed or reordered bit are three distinct failures. Acceptance in `tests/bytecode_options.rs` against two new fixtures — `asyncy.v{96,98,99}.hbc` (the same async source: `0b100` at v96, `0` above) and `cjsdir.v96.hbc` (two modules resolving to `index.js` and `helper.js`). The statically-resolved arm has no artifact and is asserted against a synthesised byte, which its test name says. **The original evidence:** nothing decoded `BytecodeHeader::options` (`format.rs:80`); grep it. Upstream it is a version-keyed bitfield — `staticBuiltins`, `cjsModulesStaticallyResolved`, `hasAsync` at v96, with `hasAsync` **removed** by v98 — so bit 2 means one thing on one supported version and nothing on another. The byte round-trips verbatim, so no written image is affected | Live consequence, small: `cjsModulesStaticallyResolved` selects between two tables of identical byte shape but different meaning — filename string ID → function ID when clear, module ID → function ID when set (`BytecodeDataProvider.cpp:300`) — and `inspect.rs:89` labelled the pair `(symbol_id, function_id)` unconditionally. Checked against the generator rather than the reader, the damage is narrower than it first looked: both forms store `{key, functionID}`, so the *second* field is right either way — it is the first that is a module index rather than a string id on a statically-resolved bundle, and the label invites resolving it as one. The parse was *not* affected: both forms are pair arrays sized by the same count. Fixed by P5 in `UNMODELED_REGIONS_PLAN.md`, in the hours it was costed at — and it did pin the bit set in `upstream_pin.rs`, because the v96 → v98 loss of `hasAsync` is R8's drift again, already happened, unnoticed |
 | R28 | Scope-descriptor names were resolved as string-table *indices*, not byte offsets | read | L×M | ⬜ **fixed** | Upstream's `appendString` writes a byte offset into the debug string table and `decodeString` seeks there for a LEB128 length; `parse_scope_descriptors` treated the value as an index into the decoded list. Offset 0 and index 0 coincide, so the first name of every scope resolved and the rest came back empty. Found by P1, on a scope with three captured variables that decoded as `["alpha", "", ""]` | — (fixed: `name_at_offset`). The failure mode is why it survived: an empty name reads as "the compiler did not record one", which is *also* true of most variables, so nothing about the output looked wrong. Pinned by `every_captured_name_resolves_not_just_the_first`, which needs three names — a one-name test passes both before and after |
 
