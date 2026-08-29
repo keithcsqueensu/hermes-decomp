@@ -1,11 +1,11 @@
 # Impl plan — relocation
 
-> **Ownership.** Split out of `WRITE_PATH_GUIDE.md` § Known design limitations, the
+> **Ownership.** Split out of `../RISKS.md` § Known design limitations, the
 > `apply_reloc` bullet. *Owns* the absolute-offset surface and the splice-and-shift primitive —
 > and, per P0, whether `RelocPlan` should exist at all, which is why the guide's bullet is a
 > pointer rather than a copy: after P0 a copy would be describing a deleted type.
-> *Delegates* the *contents* of the regions being shifted to `UNMODELED_REGIONS_PLAN.md`, and
-> how the string region is rebuilt before it is spliced to `STRING_PACKING_PLAN.md`. Neither
+> *Delegates* the *contents* of the regions being shifted to `../../01_read/unmodeled_regions/PLAN.md`, and
+> how the string region is rebuilt before it is spliced to `../string_packing/PLAN.md`. Neither
 > overlaps this one: both stop at "and then everything after the region shifts", which is
 > exactly where this begins.
 
@@ -219,10 +219,10 @@ an op cannot be expressed as "splice one region, shift what follows" — realist
 
 - inserting or removing a function (the function-header table itself resizes, and the CJS table
   and `global_code_index` become index-invalid);
-- repacking the string table wholesale (`STRING_PACKING_PLAN.md` P2/P3).
+- repacking the string table wholesale (`../string_packing/PLAN.md` P2/P3).
 
 What it requires, none of which exists: a total serializer covering debug info
-(`UNMODELED_REGIONS_PLAN.md`), RegExp, CJS modules, the function source table, and the object
+(`../../01_read/unmodeled_regions/PLAN.md`), RegExp, CJS modules, the function source table, and the object
 shape table — every region currently preserved only because it is copied through verbatim.
 
 **The gate, if it is ever built.** Byte-identical re-emit of the 11.39.0 bundle
@@ -254,7 +254,7 @@ than left implicit.
 
 1. **P0 + P1 + P2 as one change.** Roughly a day. It removes two duplicate implementations and
    one dead promise, and it is the prerequisite for anything that touches offsets afterwards
-   (including `STRING_PACKING_PLAN.md` P1, which splices a differently-sized string region and
+   (including `../string_packing/PLAN.md` P1, which splices a differently-sized string region and
    would otherwise be a fourth copy).
 2. **P3 only on a named trigger** — the first op that inserts a function or repacks the table.
    Until then the honest state is "the write path splices one region and shifts what follows",

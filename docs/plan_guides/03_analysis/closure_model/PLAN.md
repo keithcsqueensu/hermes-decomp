@@ -1,6 +1,6 @@
 # Impl plan — the closure / env-slot model
 
-`UNMODELED_REGIONS_PLAN.md` backlogs **P1b** ("put the recovered debug names in the
+`../../01_read/unmodeled_regions/PLAN.md` backlogs **P1b** ("put the recovered debug names in the
 decompiler") on a cost/benefit call: the payoff is debug-build cosmetics, and the plumbing to
 get there is large. That call is right. This plan is about the plumbing it named, because
 the plumbing is **not** debug-info plumbing — it is the crate's model of closures, it is
@@ -14,10 +14,10 @@ renders into a **string**, and then spends seventeen sites in ten files trying t
 out. Debug info is simply one more producer that has nowhere to plug in. Fixing that is
 worth doing on its own terms; P1b then becomes a consequence rather than a project.
 
-> **Ownership.** Split out of `UNMODELED_REGIONS_PLAN.md` P1b, which is blocked on it.
+> **Ownership.** Split out of `../../01_read/unmodeled_regions/PLAN.md` P1b, which is blocked on it.
 > *Owns* the decompiler's closure / environment-slot model: how a capture is represented,
 > named, and rendered. *Delegates* the debug section's on-disk format, and the question of
-> emitting it, to `UNMODELED_REGIONS_PLAN.md`. Nothing here is write-path work.
+> emitting it, to `../../01_read/unmodeled_regions/PLAN.md`. Nothing here is write-path work.
 
 Conventions follow the sibling plans. **[code]** is `file:line` at the time of writing —
 re-derive rather than trust. **[measured]** is a number produced by running the tree, and
@@ -100,7 +100,7 @@ That, not the codegen layer, is why P1b has nowhere to put its result.
 **[measured]** — `hermes-decomp decompile` (release) over
 `com.equinoxfitness.equinox_11.39.0/hermes_bundle/assets/index.android.bundle.backup`
 (v96, 62,909 functions), 17.0 s, output 41,447,553 B / 959,894 lines — byte-identical in size
-to the figure `READ_PATH_GUIDE.md` records, so this is the shipped behaviour, not a variant.
+to the figure `../../01_read/RISKS.md` records, so this is the shipped behaviour, not a variant.
 
 | quantity | count |
 |---|---|
@@ -278,7 +278,7 @@ question the pipeline has to keep track of.
 
 ---
 
-## 4. Relationship to `UNMODELED_REGIONS_PLAN.md` § P1b
+## 4. Relationship to `../../01_read/unmodeled_regions/PLAN.md` § P1b
 
 P1b's prose stated three things about this machinery that the code contradicts — that
 `get_slot_name` had no pipeline callers, that `var_naming` renames only registers, and that
@@ -367,7 +367,7 @@ being a project. Its own payoff is still small — that part of the plan's judge
 ## 7. Non-goals
 
 - **Emitting debug info.** Everything here is read-side and analysis-side. The write-side
-  question is `UNMODELED_REGIONS_PLAN.md` § P6 and is untouched.
+  question is `../../01_read/unmodeled_regions/PLAN.md` § P6 and is untouched.
 - **Making up names.** `closure_3` is honest. A wrong name is worse than a placeholder — the
   plan says so about P1b and it is equally true of K2: a level ≥ 1 capture becoming reachable
   by W10/W11 must still only be renamed on the same evidence W10/W11 already demand.

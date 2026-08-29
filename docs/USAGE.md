@@ -124,7 +124,7 @@ would leave every line number past the edit pointing at the wrong instruction.
 
 Same-size edits are unaffected either way, and so are React Native bundles: they ship with
 per-function debug info stripped, so none of this fires on them (0 of 62,909 functions in the
-reference bundle carry the flag). See `WRITE_PATH_GUIDE.md` R24.
+reference bundle carry the flag). See `plan_guides/06_write/RISKS.md` R24.
 
 Legacy files (HBC 96 and below) are fully supported and verified against the real
 Hermes VM. `patch-string` handles both same length edits, done in place, and

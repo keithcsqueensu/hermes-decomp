@@ -10,7 +10,7 @@ The gap has two independent halves, and conflating them is why the old title und
   local-variable names, regex sources, which of two meanings a table has) and a drift we cannot
   detect. Most sections are past this line already; four are not.
 - **Write.** A region we cannot *emit* is a region that survives only because the raw image is
-  spliced rather than rebuilt. That is the whole of `RELOCATION_PLAN.md` P3's blocker, and it
+  spliced rather than rebuilt. That is the whole of `../../06_write/relocation/PLAN.md` P3's blocker, and it
   is true of every section listed below including the ones we read perfectly well.
 
 Written so an impl agent can execute without re-deriving the formats. Everything marked
@@ -32,12 +32,12 @@ and parsing it back with this crate — see What compiling actually showed. Stat
 the formats right; compiling corrected two claims that reading could not have, and one region
 could not be produced at all.
 
-> **Ownership.** Split out of `RELOCATION_PLAN.md` P3, whose structured rebuild is blocked on
+> **Ownership.** Split out of `../../06_write/relocation/PLAN.md` P3, whose structured rebuild is blocked on
 > a total serializer this document inventories. *Owns* each region's read / interpret / emit
-> status and its derived format. *Delegates* **moving** a region to `RELOCATION_PLAN.md`,
-> rebuilding the string region to `STRING_PACKING_PLAN.md`, the read-path *symptoms* of a
-> silent debug-info failure to `READ_PATH_GUIDE.md` F10, and — since P1b — the decompiler's
-> closure/env-slot model to `CLOSURE_MODEL_PLAN.md`.
+> status and its derived format. *Delegates* **moving** a region to `../../06_write/relocation/PLAN.md`,
+> rebuilding the string region to `../../06_write/string_packing/PLAN.md`, the read-path *symptoms* of a
+> silent debug-info failure to `../RISKS.md` F10, and — since P1b — the decompiler's
+> closure/env-slot model to `../../03_analysis/closure_model/PLAN.md`.
 
 Same conventions as its siblings: derive from upstream, pin what you derive, refuse rather than
 approximate.
@@ -53,7 +53,7 @@ something with meaning attached, not merely into a `Vec`. "Emit" means `create` 
 | Section | Parsed | Interpreted | Emit | Gap |
 |---|---|---|---|---|
 | function headers, exception handlers | ✅ | ✅ | ✅ | resize of a handler-bearing function is refused (Q3/Q4) |
-| string table, storage, kinds, identifier hashes | ✅ | ✅ | ✅ | packing — `STRING_PACKING_PLAN.md` |
+| string table, storage, kinds, identifier hashes | ✅ | ✅ | ✅ | packing — `../../06_write/string_packing/PLAN.md` |
 | array / literal-value / object key + value buffers | ✅ | ✅ decoded to `LiteralValue` (`parser/buffer.rs`) | ❌ empty only | write side only |
 | bigint table + storage | ✅ | ✅ resolved by id (`parser/helpers.rs:8`) | ❌ empty only | write side only |
 | object shape table | ✅ `ShapeTableEntry` | ✅ shape lookup (`parser/mod.rs:40`) | ❌ empty only | write side only; **v98+ only** |
@@ -61,7 +61,7 @@ something with meaning attached, not merely into a `Vec`. "Emit" means `create` 
 | CJS module table | ✅ pairs | ✅ labelled by `options` bit 1 (`inspect.rs`) | ❌ empty only | write side only; OB2 closed by P5 |
 | `options` byte | ✅ as a `u8` | ✅ `BytecodeOptions`, version-keyed (`format.rs`) | carried verbatim | OB1 closed by P5 |
 | **RegExp table + storage** | table ✅, storage ❌ raw | ❌ | ❌ empty only | P3 |
-| **debug info** | ✅ version-keyed (96/98/99) | ✅ locations + scopes; **not** the lexical/envIdx data | ❌ empty only | DI2 guarded (P0), DI1 read (P1), decompiler wiring is P1b (behind CLOSURE_MODEL_PLAN.md) |
+| **debug info** | ✅ version-keyed (96/98/99) | ✅ locations + scopes; **not** the lexical/envIdx data | ❌ empty only | DI2 guarded (P0), DI1 read (P1), decompiler wiring is P1b (behind ../../03_analysis/closure_model/PLAN.md) |
 
 The two bolded rows are the read-side gaps that remain; everything else on the list is a
 write-side gap
@@ -254,7 +254,7 @@ The interior offsets are relative to the **start of the debug data**, not to the
 > "wrongness in the return value of a call nothing checks" — and that is closed
 > too: `parse_with_status` now reports a `DebugInfoStatus`, surfaced on
 > `BytecodeFile::debug_info_status` and warned about by the CLI and MCP. See
-> `docs/READ_PATH_GUIDE.md` F10. The narrative below is kept as written.
+> `../RISKS.md` F10. The narrative below is kept as written.
 
 
 `DebugInfo::parse` takes `(bytes, debug_info_offset)` and **no version** (`debug.rs:88`), and
@@ -449,7 +449,7 @@ or a parser that bounds sections some other way, could supply. It stays P6's.
 
 So: function ID → string ID, and normally empty. Parsed and resolved already (`inspect.rs:248`,
 `dump --kind function-sources`); the only gap is emission, and the only thing that could
-invalidate it is inserting or removing a function — a `RELOCATION_PLAN.md` P3 concern, not a
+invalidate it is inserting or removing a function — a `../../06_write/relocation/PLAN.md` P3 concern, not a
 size-delta one, because it stores **indices, not offsets**.
 
 ⚠️ That upstream comment is not the whole rule **[measured]**: an `async function` with no
@@ -642,7 +642,7 @@ layer up.
 
 `ClosureSlotValue` also has no rung for a better source of truth: it carries a value, never a
 provenance, so a name Hermes itself recorded has no way to outrank one inferred from a store.
-**See `CLOSURE_MODEL_PLAN.md`** — that is where this belongs, it is justified without debug
+**See `../../03_analysis/closure_model/PLAN.md`** — that is where this belongs, it is justified without debug
 info (94,453 rendered placeholders per Equinox run), and P1b becomes a short consequence of
 its K1/K3 rather than a project. Two of its findings are P1b's own, arrived at early: the `h`
 above is a bit the IR builder already observes and discards, and the slot→name map this phase
@@ -866,7 +866,7 @@ a wrong output rather than a missing one.
 
 ### P6 — Emission: what a total serializer owes each region
 
-**Goal.** The write-side half of the inventory, and the thing `RELOCATION_PLAN.md` P3 is
+**Goal.** The write-side half of the inventory, and the thing `../../06_write/relocation/PLAN.md` P3 is
 blocked on. Not a phase to start speculatively — it exists so that when an op finally demands a
 rebuild, the per-region contract is already written down.
 
@@ -924,7 +924,7 @@ the whole image.
 ```
 P0  ✅ ──────────► shipped: the guard
 P1  ✅ ──► P2 ✅    shipped: the reader, then relocation for insertions
-P1b                specified and measured; blocked on the closure model — CLOSURE_MODEL_PLAN.md K1/K3
+P1b                specified and measured; blocked on the closure model — ../../03_analysis/closure_model/PLAN.md K1/K3
 P3  ──► P4         disassemble before you assemble; P4 only on demand
 P4a ──────────────► independent of both: the donor comes from hermesc, not from us
 P5  ✅ ────────────► shipped: the bitfield, and the CJS labels with it

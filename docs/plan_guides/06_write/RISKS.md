@@ -1,11 +1,21 @@
-# Write path — engineering guide (invariants, hazards, open work)
+# Write — risk register (invariants, hazards, open work)
+
+> **Spine note.** This is the **write stage's** risk register — the write path is entirely one
+> stage, so nothing was scattered to sibling registers. What *was* pulled out is the
+> background/derivation matter, into `reference/`: the reference Hermes engines, the version
+> layouts (the v99 delta, the v99 opcode drift, why v97 names two tables) and the legacy/modern
+> audit are in `reference/VERSION_LAYOUTS.md`; the test-harness catalogue and the git-history
+> findings are in `reference/HARNESSES_AND_HISTORY.md`. Cross-references to those sections below
+> name the file. The write stage's *description* (non-risk) is `../../arch_guides/06_WRITE_PATH.md`.
+> (This document was formerly `WRITE_PATH_GUIDE.md`, the root of the plan-guides lineage.)
 
 Standing reference for the bytecode **write path** (`crates/hbc-decomp/src/write/`
 + `crates/hbc-decomp-cli/src/commands/write_cmd.rs`). Read this *before* adding a new
 `patch-*` op, a `create` variant, a stub kind, or any code that mutates a `.hbc` image.
 It is the "where write-path changes go wrong" map: the invariants every mutation must
 hold, the design limits not to "fix" by accident, the high-risk areas, what the tests do
-and don't cover, the legacy/modern fork, and the decided-but-unbuilt work.
+and don't cover, and the decided-but-unbuilt work — with the legacy/modern fork and the
+version-drift evidence now in `reference/`.
 
 Everything below is derived from the current code, not from the prose docs. Where the
 code and the docs disagree, the disagreement is called out — the code is described as it
@@ -18,8 +28,8 @@ Scope: the read/decompile path is out of scope except where a write op depends o
 
 > **Ownership.** *Owns* the write path's invariants, hazards, op inventory and risk
 > register — and the decision of what counts as a write-path limitation. *Delegates*
-> relocation mechanics to `RELOCATION_PLAN.md` (R26), region contents and emission to
-> `UNMODELED_REGIONS_PLAN.md`, and string repacking to `STRING_PACKING_PLAN.md`. Those three
+> relocation mechanics to `relocation/PLAN.md` (R26), region contents and emission to
+> `../01_read/unmodeled_regions/PLAN.md`, and string repacking to `string_packing/PLAN.md`. Those three
 > were split out of limitation bullets in this file; the bullets stay as **pointers**, and
 > must not grow back into summaries — see `README.md` § Splitting.
 
@@ -31,10 +41,10 @@ Scope: the read/decompile path is out of scope except where a write op depends o
 > rewrites the doc around them:
 > 1. **Modern output is now verifiable, on Windows, from Rust, with no FFI** — `hvm.exe`
 >    is a standalone VM driver that takes a `.hbc` path. The "modern cannot be verified"
->    design limit is repealed; see Reference VM and toolchain.
+>    design limit is repealed; see `reference/VERSION_LAYOUTS.md` (Reference VMs and toolchain).
 > 2. **R8 has fired.** The modern large function header is **36 bytes at v99, 37 at v98**,
 >    and the write path is hard-pinned to 37. Every claim about it below is now backed by
->    a measurement against the real engine rather than by reading. See The v99 delta.
+>    a measurement against the real engine rather than by reading. See `reference/VERSION_LAYOUTS.md` § The v99 delta.
 >
 > Claims marked **[measured]** were reproduced against a real `hvm.exe` on `hermesc.exe`-built
 > fixtures; claims marked **[source]** are read off
@@ -59,12 +69,12 @@ Scope: the read/decompile path is out of scope except where a write op depends o
 >
 > **Harness pass — four more harnesses, and each of the first two found a bug.** The theme
 > of this doc has been that the suite asserted the wrong thing; this pass attacks that
-> directly. See Test harnesses for what exists and how to run it.
+> directly. See `reference/HARNESSES_AND_HISTORY.md` § Test harnesses for what exists and how to run it.
 >
 > | Harness | Found |
 > |---|---|
 > | `commit_image` I1 check (`serialize.rs`) | **Every write op had a partly-stale model.** Fixed structurally by re-deriving instead of hand-syncing, which also retired **R1**, the top risk. |
-> | `tests/upstream_pin.rs` | **`===` and `==` decoded as numeric comparisons on v99.** Eight phantom opcodes shifted twelve later ones. See The v99 opcode drift. |
+> | `tests/upstream_pin.rs` | **`===` and `==` decoded as numeric comparisons on v99.** Eight phantom opcodes shifted twelve later ones. See `reference/VERSION_LAYOUTS.md` § The v99 opcode drift. |
 > | `tests/corpus.rs` + hbcdump differential | Nothing wrong: 62,909/62,909 bodies re-encode byte-identically, 62,637 match hbcdump. First coverage of the **1,449 overflowed string entries** no fixture can produce. |
 > | `hbc-decomp-cli/tests/stdout_contract.rs` | **The debug CLI binary had always overflowed its stack**, which is very likely why R17 was never closed. |
 >
@@ -151,26 +161,26 @@ harness gate.
   (`vm_verify`) and the production bundle (`corpus`). Both are infrastructure, not code.
 - **One relocation primitive, and an honest `apply_reloc`** → R26. Three hand-rolled copies of
   "splice a region, shift every offset past it", plus a stub that promises a fourth and cannot
-  work. Small and self-contained, and a prerequisite for `STRING_PACKING_PLAN.md` P1, which
+  work. Small and self-contained, and a prerequisite for `string_packing/PLAN.md` P1, which
   splices a differently-sized string region and would otherwise become the fourth copy.
-  → `RELOCATION_PLAN.md`.
+  → `relocation/PLAN.md`.
 - **A way to *fix* a drifted opcode table** → R19, done. `tests/upstream_pin.rs` detects drift
   and names it precisely; `scripts/gen_bytecode_table.py` applies the fix, preserving each
   file's existing shape rather than imposing one (which is what sank the earlier attempt) and
   gated on reproducing all four committed tables byte for byte.
 - **Exception-handler relocation** (the one large planned feature) → Pending impl plans (Q3),
   in two phases. Unblocked: the table can now be located correctly on every supported layout.
-- **Debug info: names in the decompiler** → `UNMODELED_REGIONS_PLAN.md` P1b. **P0, P1 and P2
+- **Debug info: names in the decompiler** → `../01_read/unmodeled_regions/PLAN.md` P1b. **P0, P1 and P2
   are shipped** — the guard, the version-keyed reader, and relocation for insertions, so R24,
   R25 and R28 are all closed. What remains is putting the recovered names into decompiler
   output, which is blocked on the decompiler's closure model rather than on anything in the
-  write path → `CLOSURE_MODEL_PLAN.md`. Nothing here waits on it.
+  write path → `../03_analysis/closure_model/PLAN.md`. Nothing here waits on it.
 - **The `options` bitfield, and the CJS table's two meanings** → R27, **shipped** as P5 of
-  `UNMODELED_REGIONS_PLAN.md`. The byte is decoded version-keyed, the CJS dump is labelled by
+  `../01_read/unmodeled_regions/PLAN.md`. The byte is decoded version-keyed, the CJS dump is labelled by
   bit 1, and the bit set is pinned against upstream. It was the only item in that plan that
   fixed an output which was *wrong* rather than one that was *missing*, which is why it was
   worth more than its size — hours — suggested.
-- **Putting a chosen RegExp into a bundle** → `UNMODELED_REGIONS_PLAN.md` **P4a**, newly split
+- **Putting a chosen RegExp into a bundle** → `../01_read/unmodeled_regions/PLAN.md` **P4a**, newly split
   out of P4 because a concrete ask arrived. It does *not* need P3 and does not need a regex
   assembler: the bytecode stream is position-independent and byte-identical across v96/v98/v99
   for the same pattern, so the payload is compiled by `hermesc` and transplanted. Two of its
@@ -178,7 +188,7 @@ harness gate.
   big enough — need no new code; the third (append) is an 8-byte table entry plus the same
   downstream shift `add_string` already performs, and should be taken as the occasion to stop
   copying that shift (R26). Transplant-and-run is measured on a real v96 engine.
-- **String packing** → `STRING_PACKING_PLAN.md`. Not a correctness item; ~431 KB on disk and
+- **String packing** → `string_packing/PLAN.md`. Not a correctness item; ~431 KB on disk and
   ~122 KB compressed, with the case resting on offset-ceiling headroom and on output fidelity
   rather than on the size itself. P0 (an always-on packing validator) is a prerequisite for
   any of it and is worth having regardless.
@@ -333,7 +343,7 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   exact dedup is worth **6 bytes**, because upstream uniques strings at the table level; the
   entire win is substring sharing. What we emit is precisely upstream's non-optimising
   `fastPackStrings`, so the gap is only against `-O` builds.
-  → **`STRING_PACKING_PLAN.md`** for the algorithm, the measured decomposition, and a phased
+  → **`string_packing/PLAN.md`** for the algorithm, the measured decomposition, and a phased
   plan that keeps the overlap-safety property via a pin set.
 - **Debug info is read; RegExp is still an opaque `u8` buffer.** The debug half of this
   limitation is gone on the read side (R25, R28 fixed). RegExp really is raw bytes, which is
@@ -342,7 +352,7 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   `debug_info_offset` but never rewrite debug-info internals, so a size-changing edit to a
   debug-bearing function is refused rather than corrected (R24, guarded and then relocated for
   insertions). The read-side state and the phase numbering behind those fixes are
-  → **`UNMODELED_REGIONS_PLAN.md`**'s; do not restate them here.
+  → **`../01_read/unmodeled_regions/PLAN.md`**'s; do not restate them here.
 - **Those two are not the whole opaque list, and the read side is not where most of it is.**
   The buffers, bigints, the object shape table, the CJS and function-source tables are all
   parsed *and* interpreted — but **none of them can be emitted**: `create` writes a zero count
@@ -350,7 +360,7 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   rebuilt. The two read-side gaps that used to sit beside debug info and RegExp are closed:
   the `options` byte is decoded per version and the CJS table is labelled by the bit inside it
   that decides which of its two meanings applies (R27, P5).
-  → **`UNMODELED_REGIONS_PLAN.md`** for the full inventory, the derived formats and a phased
+  → **`../01_read/unmodeled_regions/PLAN.md`** for the full inventory, the derived formats and a phased
   plan. (Formerly `DEBUG_INFO_AND_REGEXP_PLAN.md` — renamed because those two were never the
   whole list.)
 - **No JS recompilation.** The write path assembles HASM (our disasm dialect) and patches
@@ -360,7 +370,7 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   `RelocPlan` is a placeholder type for a future structured-rebuild path: nothing constructs
   one, and no shipped op needs one. The refusal is right. What is wrong is underneath it, and
   it is R26's, not this document's — including whether the placeholder should exist at all.
-  → **`RELOCATION_PLAN.md`** owns the offset surface, the duplication and the plan.
+  → **`relocation/PLAN.md`** owns the offset surface, the duplication and the plan.
 - **`retarget_string` refuses overflow entries** (v1 scope) and allows — but the CLI warns
   on — a string↔identifier cross-kind retarget (`strings.rs:258`; note moved to the CLI
   layer, see Q5).
@@ -375,8 +385,8 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   was that driving a modern VM needs C++ because `hermesvm` exports only mangled C++/JSI
   symbols with no C ABI. True — and irrelevant, because you do not need to *link* the VM.
   `hvm.exe` is a standalone command-line VM driver that takes a `.hbc` path; a
-  `std::process::Command` reaches it and the crate stays pure Rust. See Reference VM and
-  toolchain. Two knock-on corrections:
+  `std::process::Command` reaches it and the crate stays pure Rust. See
+  `reference/VERSION_LAYOUTS.md` (Reference VMs and toolchain). Two knock-on corrections:
   - **USAGE.md § "Why modern output cannot be verified inside the Rust tool"** (docs/USAGE.md:150)
     is now wrong on its central claim and on "macOS only". Rewrite it.
   - ~~**The `warn_modern_write` note points at a script that does not exist.**~~ Fixed: it
@@ -386,7 +396,7 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
 - **`create` produces a single global function** with hardcoded shape (legacy: flags
   `0x12`, frame 2, param 1 — `serialize.rs:179`; modern: `ProhibitNone` overflowed global
   — `serialize.rs:313`). It is a smoke-test artifact, not a general emitter. **At v99 it is
-  also not executable** — see The v99 delta.
+  also not executable** — see `reference/VERSION_LAYOUTS.md` § The v99 delta.
   ⚠️ That legacy `0x12` includes `FLAG_HAS_DEBUG_INFO` on an image that carries **no debug
   section at all** (`debug_info_offset == 0`), while the modern path emits `0x22` and does not
   claim it. Found by R24's guard, which had to be keyed on the section as well as the flag to
@@ -398,7 +408,7 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   artifacts from different eras with different indentation and different per-entry fields, and
   one that imposes a single shape silently destroys real data (v96's populated
   `AbstractDefinitions`). The one that works preserves each file's shape and must reproduce all
-  four byte for byte before it may write. See R19 and The v99 opcode drift.
+  four byte for byte before it may write. See R19 and `reference/VERSION_LAYOUTS.md` § The v99 opcode drift.
 - **Only two modern layouts are known: v98 and v99.** This *is* a real limitation, but now a
   declared one, and since a v97 checkout exists it is a *measured* one. `ModernLayout::for_version`
   is an allow-list; v97 and any future v100+ are **hard errors**, not best-effort guesses.
@@ -424,422 +434,14 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   Hermes main line between `16b5ada82` and `c00cc5759`), the refusal is the right call and this
   table is here so the next person does not re-derive it. It holds across all 518 of those
   commits: `BytecodeFileFormat.h` does not change once inside v97.
-
-### v97 is two opcode tables — the pin has to pick one
-
-Adding a v97 checkout to `upstream_pin` immediately failed, in a table nobody had ever checked.
-Against `e5c8ebf2f`, `Bytecode97.json` was missing `TypedLoadParent` and `TypedStoreParent`
-(opcodes 149 and 150), so **every opcode from 149 onward was numbered two too low** — the whole
-jump family included:
-
-```
-e5c8ebf2f v97         our table said
-  149 TypedLoadParent   149 Jmp
-  150 TypedStoreParent  150 JmpLong
-  151 Jmp               151 JmpTrue
-  153 JmpFalse          153 JmpUndefined
-```
-
-Read as a v99-style drift, and first fixed that way — regenerated from `e5c8ebf2f`, the last
-commit that still declares 97. Checking the *other* end of the version's life showed that
-reading was wrong, and the real finding is worse than a stale table.
-
-v97 exists only on `static_h`, from `16b5ada82` (2024-05-24, the bump to 97) to `c00cc5759`
-(2024-08-30, the bump to 98) — 518 commits. Of the three files the pin reads, only
-`BytecodeList.def` moves across that span, and only at `e5c8ebf2f`:
-
-| | `16b5ada82` — first commit declaring 97 | `e5c8ebf2f` — last commit declaring 97 |
-|---|---|---|
-| opcodes | 197 | 199 (`TypedLoadParent`/`TypedStoreParent`) |
-| commits carrying that table | **517** | **1** |
-| how long it existed | 3 months | **3 h 19 min** |
-| `BytecodeFileFormat.h`, `BytecodeVersion.h` | byte-identical | byte-identical |
-
-So **the version integer 97 names two different opcode tables**, and one `Bytecode97.json` can
-only encode one of them. This is not a table that drifted away from its version; it is a version
-that never had one table. The header shape is not involved: run the pin against an early tree and
-`modern_layout_matches_upstream_headers` passes — only `opcode_tables_match_upstream` fails, by
-exactly those two opcodes. Everything the refusal above rests on holds at both ends.
-
-The pre-fix table was not from "some earlier commit" either: it is *exactly* the `16b5ada82`
-table, names and operand types — v97-at-birth, correct for 517 of the 518 commits that ever
-declared 97, and simply undeclared.
-
-**Pinned at `16b5ada82`.** Two reasons. The rule it was supposed to follow — "the same rule as
-the v96 ref" — actually picks this commit: `2afc7b09f` is `main`'s 95→96 bump, the *first*
-commit declaring 96, not the last. And it is the arm 99.8% of v97's life carries, so if a v97
-artifact ever did surface it is overwhelmingly the one that decodes it.
-
-That rule is vacuous for v96, which is why the ambiguity went unnoticed: `main` has never left 96
-(still 96 at HEAD, 1177 commits and three years later), and its `BytecodeList.def` and
-`BytecodeFileFormat.h` are byte-identical from `2afc7b09f` to that HEAD — every commit in v96's
-life gives the same tables. For v97 the choice is real, and a single table necessarily picks
-which arm to be silently wrong about. Since v97 never shipped, no artifact is at stake either
-way; what matters is that the arm is *declared* and the pin enforces it.
-
-⚠ `main` and `static_h` are separate lines — they forked in 2022-08 and bumped the version
-independently — so `2afc7b09f` is **not** an ancestor of the v97 bump, and "the last v96 commit
-before v97" is not a thing that exists across the two.
-
----
-
-## Reference VMs and toolchain (facebook/hermes)
-
-A facebook/hermes clone lives at `C:\src\hermes-src`, with one built `git worktree` per
-bytecode version beside it — `C:\src\hermes-v96`, `-v98`, `-v99`. These are the ground truth
-this doc is checked against, and each is a *build* as well as a checkout, so both the source
-and the running engine are available. `scripts/build_hermes_vm.ps1` produces them.
-
-### v99 means the release branch
-
-`C:\src\hermes-v99` is `origin/260318099.0.0-stable` (`b7b58dd3c`) — the branch React Native
-ships from — and **not** `static_h`, which is what the clone is on. The distinction is easy to
-miss and expensive:
-
-| | `static_h` (`e9edc8b52`) | release (`b7b58dd3c`) |
-|---|---|---|
-| `BYTECODE_VERSION` | 99 | 99 |
-| `BytecodeFileFormat.h` | \<byte-identical\> | \<byte-identical\> |
-| `NewFastArray` | `DEFINE_OPCODE_3(…, Reg8, Reg8, UInt16)` — 5 bytes | `DEFINE_OPCODE_2(…, Reg8, UInt16)` — 4 bytes |
-
-So the version integer does not identify the dialect, and neither does the header layout —
-`modern_layout_matches_upstream_headers` passes against *either* checkout. Only
-`opcode_tables_match_upstream` separates them. A real v99 bundle comes from the release
-branch, so that is what `resources/bytecode/Bytecode99.json` encodes; pointing
-`HERMES_SRC_V99` at `static_h` fails the pin with a one-opcode operand-count mismatch, and
-that failure is the tripwire doing its job.
-
-When a checkout legitimately moves, re-derive the table rather than hand-editing it:
-
-```powershell
-python scripts/gen_bytecode_table.py --version 99 --src C:/src/hermes-v99 `
-    --commit (git -C C:/src/hermes-v99 rev-parse HEAD)
-python scripts/gen_bytecode_table.py --version 99 --src C:/src/hermes-v99 --check  # verify only
-```
-
-### What each binary is good for
-
-| Binary | Use | Notes |
-|---|---|---|
-| `hvm.exe <f.hbc>` | **Execute a patched image.** The verifier. | Prints program output; non-zero exit + a JS stack trace on an uncaught error. This is the whole "modern verification" problem, solved by a subprocess. |
-| `hvm.exe -d <f.hbc>` | VM-side header dump + disassembly | Disassembles *instead of* running. Independent of `hbcdump`'s path, so a useful second opinion |
-| `hermesc.exe -emit-binary -out f.hbc f.js` | **Mint fixtures.** | Deterministic, sub-second; the only way to get a *known-good* modern image to diff against |
-| `hbcdump.exe -mode=objdump <f.hbc>` | **Reference disassembler + table dump.** | Interactive; drive it non-interactively as `echo disassemble \| hbcdump -mode=objdump f.hbc`. Prints the string table with kind, byte range **and identifier hash** (`i3[ASCII, 14..18] #CE5FC8AC: risky`) — a direct oracle for I9's Jenkins implementation |
-| `hbc-diff.exe`, `hbc-deltaprep.exe` | delta form | Not used here; note `DELTA_MAGIC = ~MAGIC` marks a non-executable form |
-| `hbc-attribute.exe` | per-function byte attribution | Useful in principle (confirms `headers:function:small` = 12 B, `headers:global:bundle` = 128 B) but **crashes partway through on Windows** — do not build tooling on it |
-
-### The one real constraint: each VM is version-locked
-
-`hvm.exe` refuses anything but its own version, with a clean message rather than a crash:
-
-```
-$ hvm.exe c96.hbc
-Wrong bytecode version. Expected 99 but got 96
-```
-
-So this build verifies **v99 only**. That is the *opposite* of the coverage the project most
-needs — Equinox is **v96** — so do not read "we can verify modern now" as "we can verify the
-bundle we actually ship". Two independent gaps remain:
-
-**Both gaps are now closed** — `scripts/build_hermes_vm.ps1` builds a per-version VM into a
-`git worktree` beside the clone, leaving the original checkout untouched:
-
-| Version | Upstream ref | Why it matters |
-|---|---|---|
-| **96** | `2afc7b09f` | **The Equinox bundles.** The only VM that can verify the legacy paths this project actually ships against |
-| **98** | `origin/250829098.0.0-stable` | The RN-shipped v98, and the 37-byte arm of `ModernLayout` |
-| **99** | `origin/260318099.0.0-stable` | The 36-byte arm. The release branch specifically — see v99 means the release branch |
-
-Each needs small MSVC/CMake portability patches, applied idempotently by the script and
-explained at each call site (upstream does not build these tools on Windows/MSVC, so these
-are toolchain fixes, not semantic ones): v96 needs a CMake-4 policy fix and a union
-value-init fix in `HadesGC.cpp`; v98 needs two `__builtin_expect` calls routed through the
-project's own `SH_LIKELY` macro and `winmm` linked for the sampling profiler; v99 needs
-none. The script smoke-tests each build (compile `print("ok")`, run it) before reporting
-success, because a VM binary that exists but rejects its own compiler's output is worse than
-no binary.
-
-### What this changes about testing
-
-`hvm` is a subprocess, so a VM check is an ordinary integration test, not an FFI project.
-This is now built, as `crates/hbc-decomp/tests/vm_verify.rs`:
-
-1. Fixtures are committed `.hbc` files (~700 bytes each), compiled from
-   `tests/fixtures/*.js` by `build_hermes_vm.ps1 -Fixtures`. Two programs:
-   `plain` (no handlers anywhere) and `handlers` (a try/catch/finally exercised on **both**
-   paths, so a stale handler table changes the output rather than hiding).
-2. Each write op runs, then its output runs under the matching `hvm`, asserting **stdout and
-   exit code** — not "it reparses".
-3. Gated on `HERMES_VM_V<N>`; with none set the tests still assert everything that does not
-   need a VM and print a skip note for the rest.
-
-Point 2 is the part that matters, and it was checked the only way worth checking: **the three
-original defects were reintroduced one at a time and the suite failed each time**, with
-diagnostics that name the cause ("fixture should have at least one function with a handler
-table, found none — the header layout is being misread"). A test that has never been seen to
-fail is a hypothesis.
-
-Two design notes worth keeping:
-
-- **Assert the fixture's own shape first.** `size_change_on_real_handler_table_is_refused`
-  asserts *some* function has handlers before it iterates. Without that line, a layout drift
-  that hides every handler makes the loop body run zero times and the test pass green — which
-  is exactly the failure it exists to catch.
-- **"The stub ran" is not "the output is correct."** On v99 the injected `log` prologue
-  printed its function name *and* corrupted the handler table in the same edit. Assert program
-  behaviour, not that the injected code executed.
-
-Still **R21**, at 🟧, but narrower than it was. `HBC_REQUIRE_ORACLES` names the oracles a run
-requires, and an absent one then fails with the variable to set instead of printing `[skip]`;
-CI provisions the four source checkouts and runs `upstream_pin` under it. The VM half is still
-opt-in — a runner with no `hvm` is green on `vm_verify` unless `HBC_REQUIRE_ORACLES=vm` says it
-should not be.
-
----
-
-## The v99 delta — modern is not one layout
-
-The write path *used to* treat "modern" as a single layout for all of v97+
-(`FunctionHeaderLayout::Modern12`, `MODERN_FUNCTION_HEADER_MIN_VERSION = 97`). v99 falsifies
-that. This section is the concrete statement of R8.
-
-> **Fixed** — `crates/hbc-decomp/src/modern_layout.rs` is now the single source of truth for
-> this, and every reader and writer of a modern large header indexes through it. The section
-> is kept in full because the *shape* of the failure is the durable lesson, and because the
-> field tables below are what a future version's row must be derived against.
-
-### Where the layout lives now
-
-| Concern | Where |
-|---|---|
-| The descriptor itself | `ModernLayout` in `crates/hbc-decomp/src/modern_layout.rs` |
-| Reading a large header | `parse_large_header_modern` (`file/parser/function.rs`) |
-| Relocating one on resize | `resize_overflowed_function` (`write/patch/functions.rs`) |
-| Reserving stub registers | `reserve_modern_log_regs` (`write/patch/inject.rs`) |
-| Emitting one from scratch | `build_minimal_modern` (`write/serialize.rs`) |
-| Proving it against an engine | `crates/hbc-decomp/tests/vm_verify.rs` |
-
-Adding a version is one row in `ModernLayout::for_version` plus a fixture. Until that row
-exists the version is **refused**, which is the whole point.
-
-### What is unchanged from v98 to v99
-
-Reassuring, and worth stating so the fix stays small **[source]**:
-
-- **The file header is byte-identical.** Same 23 `u32` fields in the same order, so
-  `debug_info_offset` is at **108** on both, `overflow_string_count` at 56, `string_storage_size`
-  at 60, `file_length` at 32. Every string-path offset the write path uses is still right.
-- **`SmallFuncHeader` is still exactly 12 bytes**, same bitfields: `Offset:25, ParamCount:5,
-  LoopDepth:2 | BytecodeSizeInBytes:14, FunctionName:8, NumberRegCount:5, NonPtrRegCount:5 |
-  FrameSize:u8 | ReadCacheSize:u8 | WriteCacheSize:7+PrivateNameCacheSize:1 | flags:u8`. So
-  `reserve_modern_log_regs`'s small-header offsets (frame `+8`, cache `+9`, `inject.rs:61`)
-  are still correct, and so is `resize_modern_small`'s 25-bit body-offset field.
-- **Q2 is confirmed verbatim.** `SmallFuncHeader(uint32_t largeHeaderOffset)` does
-  `setOffset(x & 0xffffff); setFunctionName((x >> 24) & 0xff)` and reads it back as
-  `(getFunctionName() << 24) | getOffset()` — the 24-bit packed pointer. The 25-bit field is
-  the separate non-overflowed body offset. Two fields, both masks correct, exactly as Q2 said.
-- **`AsyncBreakCheck` still exists** (`BytecodeList.def:687`), so Q8's padding path is live.
-- **The handler table format is unchanged**: `ExceptionHandlerTableHeader { u32 count }` then
-  `count × HBCExceptionHandlerInfo { u32 start; u32 end; u32 target; }`, and
-  `INFO_ALIGNMENT = 4`.
-- **The first 8 `u32`s of the large header are unchanged**, which is why `frame +28` and
-  `read-cache +32` (R11) still land on the right bytes.
-
-### What changed: one byte
-
-`FUNC_HEADER_FIELDS` lost `NumCacheNewObject` in `7193d4485` "Remove CacheNewObject".
-`FunctionHeader` (the large header) is `LLVM_PACKED`, so its size is just the sum of its
-api-typed fields:
-
-| | u32 fields | u8 fields | `sizeof(FunctionHeader)` |
-|---|---|---|---|
-| **v98** (`origin/250829098.0.0-stable`) | 8 | 5 — Read, Write, **NumCacheNewObject**, PrivateName, flags | **37** |
-| **v99** (`origin/260318099.0.0-stable`, `static_h` HEAD) | 8 | 4 — Read, Write, PrivateName, flags | **36** |
-
-`parse_large_header_modern` (`file/parser/function.rs:181`) hardcodes the v98 shape — it reads
-a `num_cache_new_object` byte and computes `info_offset = align4(pos_after_37_bytes)`. Against
-v99 that means:
-
-- **`flags` is read one byte late**, so it is whatever follows the header (padding, or the
-  handler table's `count`, or the next function's large header).
-- **`info_offset` is 4 too high**: `align4(large + 37) = large + 40`, truth is `large + 36`.
-
-### Measured consequences (before the fix)
-
-Kept as the record of what the defect actually did, and as the specification for the
-regression tests that now cover it.
-
-**[measured]** on `hermesc`-built v99 fixtures against a build of
-`feat/write-path-hardening`. The rebuild matters: the binary sitting in `target/release/`
-predated the Q3/Q4 guard entirely, so an earlier run of these tests proved nothing about it.
-Check what you are running before concluding a guard does not fire.
-
-**1. The Q3/Q4 exception-handler guard is a coin flip.** It keys on
-`fh.flags() & FLAG_HAS_EXCEPTION_HANDLER` (`functions.rs:43`) — a byte that is now garbage.
-Both failure directions fire, in a three-function file:
-
-```
-true flags   read as   verdict
-  0x1a         0x04     handlers MISSED  (function `risky`, 4 real handlers)
-  0x12         0x4d     handlers INVENTED (function `plain`, zero handlers)
-  0x12         0x00     correct by luck
-```
-
-*False negative* — `inject-stub log` on a function with four live handlers is accepted,
-front-inserts a prologue, does not relocate the table, and the result is broken on the VM:
-
-```
-$ hvm t2.hbc            # baseline
-no-throw: 3
-throw: -1
-$ hermes-decomp inject-stub --kind log --function 1 -o t2log.hbc t2.hbc   # accepted (!)
-$ hvm t2log.hbc
-no-throw: 3
-Uncaught Error: risky                                    # catch no longer catches
-    at risky (t2.js:7:13)
-```
-
-That is precisely the corruption Q3's guard exists to prevent, shipping with the guard in place.
-
-*False positive* — in a file whose three functions have **no** handlers at all, two of them are
-refused any size-changing edit, with a confident and wrong error:
-
-```
-Error: Write("function 1 has an exception-handler table; size-changing edits are not
-supported (handler offsets are body-relative and would be left stale). See ... Q3.")
-```
-
-The same misread also surfaces in read-only output: `disasm --info` reports
-`flags=[strict,overflowed] exc_handlers=1` for a function that has neither. And because
-`parse_exception_handlers` (`parsing.rs:362`) gates on the same byte, `file.exception_handlers`
-comes back empty for functions that do have tables — so the decompiler, which reconstructs
-`try`/`catch` from that map, emits a bare `throw` with no catch. Out of scope for this doc, but
-the same root cause, and worth knowing before trusting v99 decompiler output.
-
-**2. `create --version 99` produces a file that loads but cannot run.** The 37-byte write puts
-the flags byte at `large+36`; v99 reads `large+35`, finds `0x00`, and `0x00` is not "no flags"
-— per `enum ProhibitInvoke { Call = 0, Construct = 1, None = 2 }` it means *plain calls are
-prohibited*:
-
-```
-$ hermes-decomp create --version 99 -o c99.hbc && hvm c99.hbc
-Uncaught TypeError: Class constructor invoked without new
-```
-
-Moving that one byte from offset 196 to 195 and refreshing the SHA1 footer makes the identical
-file run clean (exit 0) — which isolates the cause to the header size and nothing else.
-
-### The rule this yields
-
-**The version number does not identify the layout.** On `static_h`, `BYTECODE_VERSION` stayed
-at 98 across *four* distinct large-header shapes: `NumCacheNewObject` added 2025-03-19
-(`a0298ddc9`), `PrivateNameCacheSize` added 2025-03-31 (`e42564dc6`), `NumCacheNewObject`
-removed 2026-01-21 (`7193d4485`) — the bump to 99 came only on 2026-02-12. A file stamped
-"v98" can be any of them.
-
-This is the same disease the project's own CLAUDE.md warns about for patch anchors — *an
-incidental value that looks structural*. A version integer is a fine corroborator and a
-terrible layout selector. **Derive the layout from a descriptor keyed to a known-good Hermes
-commit, and hard-error on a version outside the allow-list** (see R8's Hardening).
-
-The repo already contains evidence of the drift, in its own resources: `Bytecode99.json`
-carries `"GitCommitHash": "913d31acd…"` (2026-03-05), which is *after* `7193d4485` removed
-`NumCacheNewObject`. **The opcode table and the header struct in this crate are pinned to
-different Hermes commits.** And the opcode table has since drifted too — `d4f5193f0` changed
-`NewFastArray` from `(Reg8, UInt16)` to `(Reg8, Reg8, UInt16)`, a 4→5 byte instruction, which
-desynchronizes decoding for the remainder of any body containing one. (Static-Hermes-only
-today, so not yet reachable from `hermesc` output — but it is the same failure shape.)
-Tracked as **R19, now fixed** — `tests/upstream_pin.rs` checks the descriptor and
-`Bytecode*.json` against one checkout, so they cannot silently come from different commits, and
-`tables_record_the_commit_they_came_from` additionally requires that checkout to be the commit
-each table records. The episode did recur, twice, and both times the check caught it: v99
-(`NewFastArray`) and v97 (`TypedLoadParent`/`TypedStoreParent` — where the disagreement turned
-out to be v97 naming two tables; see v97 is two opcode tables).
-
----
-
-## The v99 opcode drift — `===` read as `>=`
-
-A second, independent drift from the same root cause as R8: something derived from upstream
-was hand-carried instead, and nothing re-derived it. Found by `tests/upstream_pin.rs` on its
-first run.
-
-### What was wrong
-
-`resources/bytecode/Bytecode99.json` contained four numeric-jump pairs — `JGreaterN`,
-`JGreaterEqualN`, `JNotGreaterN`, `JNotGreaterEqualN` — that upstream had deleted in
-`d2cd42a34` "Delete unnecessary numeric jumps". They were already gone at `913d31acd`, the
-commit the file's own `GitCommitHash` names, so the table was never generated from the commit
-it claims.
-
-**Opcode number is position in `BytecodeList.def`.** Eight phantom entries therefore pushed
-every later opcode eight positions up:
-
-| Opcode | Upstream v99 | Our table said |
-|---|---|---|
-| 208–209 | `JEqual` / `JEqualLong` | 216–217 |
-| 210–211 | `JNotEqual` / `…Long` | 218–219 |
-| 212–213 | `JStrictEqual` / `…Long` | 220–221 |
-| 214–215 | `JStrictNotEqual` / `…Long` | 222–223 |
-| 216–219 | `JmpBuiltinIs(-Not)` / `…Long` | 224–227 |
-
-So on v99, **every `===` and `==` in a conditional decoded as a numeric comparison**. This
-source:
-
-```js
-function pick(a, b) {
-  if (a === b) { return "same"; }
-  if (a == 1)  { return "one"; }
-  return "other";
-}
-```
-
-disassembled as `JGreaterEqualN` and `JGreaterN` — i.e. it read as `a >= b` and `a > 1`.
-
-### Why nothing caught it
-
-The substituted opcodes have **identical operand shapes** (`Addr8, Reg8, Reg8`), so nothing
-desynchronised, nothing errored, and every downstream consumer saw a well-formed instruction
-stream. A decompiler would confidently emit `if (a >= b)`. This is the worst failure mode
-available to a disassembler: not a crash, not garbage, but a fluent lie.
-
-It also explains why fixtures could not find it. The earlier v99 work disassembled `risky`
-and `plain` and matched `hbcdump` exactly — because neither used `===`. Opcode-numbering
-errors are invisible until you execute the specific opcode that moved.
-
-`NewFastArray` had drifted the same way (`d4f5193f0` gave it a third operand), and *that* one
-would have desynchronised decoding for the rest of any body containing it. It is
-Static-Hermes-only, so no `hermesc` output reaches it — a latent version of the same bug.
-
-### What fixed it, and what did not
-
-`Bytecode99.json` was regenerated from `BytecodeList.def` at the current upstream commit,
-preserving the two things that are ours rather than upstream's:
-
-- the trailing `S` on string-id operands (`UInt16S`), which is the same width as the unmarked
-  type and marks which operand holds a string-table id — `patch-operand` uses it;
-- `IsJump`, which is **not** derivable: v96's `SwitchImm` has an `Addr32` operand and is
-  deliberately not flagged as a jump, so "has an Addr operand" is wrong as a rule even though
-  it happens to hold for every entry of the v99 table.
-
-The emitter was required to reproduce the untouched file byte for byte before being trusted
-with modified data. That check is worth keeping as a habit: a generator that has never been
-shown to reproduce its input is not a generator, it is a reformatter.
-
-**A general regenerator was attempted and abandoned**, after it destroyed `Bytecode96.json`
-twice. The three tables are heterogeneous artifacts from different eras — v96 is tab-indented
-and carries a populated `AbstractDefinitions` plus a per-entry `AbstractDefinition` field, v98
-has no `GitCommitHash` at all, v99 has an empty `AbstractDefinitions` — and a regenerator that
-imposes one shape silently drops real data. Only v99 was wrong; v96 and v98 pass the pin check
-unchanged. That abandoned attempt is why `scripts/gen_bytecode_table.py` preserves each file's
-existing shape instead of imposing one, and why it is held to reproducing all four committed
-tables byte for byte before it is allowed to write (R19).
+  → the full derivation — why the version integer 97 names *two* opcode tables and which one
+  the pin picks — is in `reference/VERSION_LAYOUTS.md` § v97 is two opcode tables.
 
 ---
 
 ## High-risk areas by category
 
-**What the git history confirms empirically (see Git history findings).** There are now **two**
+**What the git history confirms empirically (see `reference/HARNESSES_AND_HISTORY.md` § Git history findings).** There are now **two**
 bug classes with a track record on this write path.
 
 **Class 1 — missing input validation before a raw byte write.** Four instances in a single
@@ -882,7 +484,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R2 | Overflow entry encode/decode (I8) | string | M×H | 🟩 | create/retarget refuse overflow; **now exercised against 1,449 real overflowed entries** by `tests/corpus.rs`, which re-implements the `len == 0xff` sentinel independently and requires it to agree with the header count | One `is_overflow_entry`/`encode_overflow_entry` keyed on `len == 0xff`, used by every string path; delete the dead `off == 0x800000` branches (`strings.rs:44`, `:124`). Downgraded from 🟧 because the *detection* rule is now verified against production data; **encoding** an overflow entry is still unbuilt and untested (`create` refuses it). |
 | R3 | Legacy `debug_info_offset` position mis-gated | string/create | L×H | 🟧 | `legacy_debug_info_offset_pos` centralizes it | Round-trip assert after create/resize: reparse and check `debug_info_offset` + gated section sizes match intent (shared with R14). |
 | R4 | `string_kinds` / id-hash desync (I9/I12) | string | L×H | 🟩 | append-only path handled; Q7; model can no longer drift from the bytes (R5) | Assert identifier hashes against `hbcdump`'s printed values (`i3[…] #CE5FC8AC: risky`) rather than against our own Jenkins implementation — the corpus harness has the plumbing for it. |
-| R5 | Structured model ↔ bytes drift (I1) | all | M×M | ⬜ **fixed** | `commit_image` re-derives the model by reparsing, so the two cannot disagree. The debug assertion that preceded it found *every* op partly stale on its first run — see Git history findings F8 | — (fixed). The remaining hand-sync code inside the ops is now redundant rather than load-bearing; harmless, but do not add more. |
+| R5 | Structured model ↔ bytes drift (I1) | all | M×M | ⬜ **fixed** | `commit_image` re-derives the model by reparsing, so the two cannot disagree. The debug assertion that preceded it found *every* op partly stale on its first run — see `reference/HARNESSES_AND_HISTORY.md` § Git history findings F8 | — (fixed). The remaining hand-sync code inside the ops is now redundant rather than load-bearing; harmless, but do not add more. |
 | R6 | UTF-16-by-content / %4 padding (I7/I5) | string | L×M | 🟩 | content-driven + tested | — |
 | R7 | Non-%4 body delta misaligns FunctionInfo (I5) | fn/inject | L×H | ⬜ | Q8 hard-error | — (retired) |
 | R8 | Modern large-header magic offsets (v99+) | fn | L×H | ⬜ **fixed** | `ModernLayout` (`modern_layout.rs`) is a version-keyed descriptor; `parse_large_header_modern`, `resize_overflowed_function`, `reserve_modern_log_regs` and `build_minimal_modern` all index through it. Unknown modern versions hard-error instead of extrapolating. Both arms (v98=37B, v99=36B) VM-verified | — (fixed; the standing task is to add a new version's row to `ModernLayout::for_version` when one appears, which R19 makes checkable) |
@@ -901,10 +503,10 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` (v96/v98/v99) and asserts stdout + exit code; `tests/corpus.rs` sweeps a production bundle; `tests/upstream_pin.rs` re-derives the format from upstream. Verified to fail on every defect they were written for. **The gate is now closeable, and partly closed**: `HBC_REQUIRE_ORACLES` (`tests/common/mod.rs`) promotes any absent oracle from a printed `[skip]` to a failure naming the variable to set, and a set-but-wrong path is an error in every mode; `.github/workflows/test.yml` runs the suite at all (CI previously only built binaries) and re-runs `upstream_pin` with all four checkouts provisioned by `scripts/fetch_pinned_hermes.py` under `HBC_REQUIRE_ORACLES=src` | Residual 🟧 for what is still opt-in — `vm_verify` and `corpus`. Their oracles are a per-version Hermes build and a third-party bundle, so neither fits cheaply on a public runner, and a green CI run still does not mean "the output executed on a real engine". The standing work is a runner that has the builds — self-hosted, or a cached per-version build job — setting `HBC_REQUIRE_ORACLES=vm`. Note what the CI job does *not* buy: the pins are fixed commits, so it catches our encoded format drifting from the commit it claims, not upstream moving. |
 | R22 | An unoptimized build of the CLI overflows its stack | cli | H×M | ⬜ **fixed** | `run` is one large match over every subcommand and a debug build gives each arm's locals their own slot in one frame, exceeding Windows' 1 MiB main-thread stack. Work now runs on a 64 MiB-stack thread (F9) | — (fixed). The underlying shape is unchanged: the match still holds every arm's locals at once, so splitting arms into functions is the real fix if the frame grows again. Note the release build was always fine, which is why this survived — *test what CI builds*. |
 | R23 | An op's output is only ever checked against our own model | all | M×H | 🟩 | Three independent oracles now exist: a real VM (does it run), upstream headers and `BytecodeList.def` (does our format model match theirs), and `hbcdump` (does a second implementation read the same instructions) | Keep reaching for an external oracle when adding a check. The three findings this pass — stale model, opcode drift, debug stack overflow — were each invisible to a test written against our own assumptions, and each fell out immediately once something else was asked. |
-| R24 | A size-changing edit silently invalidates a function's debug info | fn/inject | M×M | ⬜ **fixed** | **Neither silent nor invalid any more: an insertion is relocated, a wholesale replacement is refused.** `inject-stub` shifts the affected addresses (`write/patch/debug_reloc.rs`, P2) — one SLEB128 delta, because every later entry is relative to it — and re-points the debug region when that changes length. `asm`/`patch-function` still refuse, because a replaced body has no old-address-to-new-address mapping to follow; that is a capability gap, not a correctness one. Previously: **guarded** (P0 of `UNMODELED_REGIONS_PLAN.md`, `tests/debug_info_guard.rs`): `patch_function_body` refuses a size-changing edit to a function with `FLAG_HAS_DEBUG_INFO` when the file actually has a debug section, with `--allow-stale-debug-info` / `PatchOptions::allow_stale_debug_info` as the explicit opt-out. Keyed on the section as well as the flag because `create` sets the flag on an image with no debug info at all. Refusing by default is free on real targets: **0 of the Equinox bundle's 62,909 functions carry the flag** [measured]. Previously: nothing. Location streams store bytecode addresses *within* a function as SLEB128 deltas; a resize shifts `debug_info_offset` (the section) and rewrites nothing inside it, so every location past the edit point maps to the wrong instruction. No error, no warning | — (fixed). Two residuals worth naming rather than hiding: a wholesale body replacement still cannot keep its line table, by nature rather than by omission; and both the guard and the relocation key on `FLAG_HAS_DEBUG_INFO`, so a file whose functions carry debug info the flag does not admit to would slip past — unmeasured, and unlikely, since the flag is what upstream's own serializer writes the region from |
+| R24 | A size-changing edit silently invalidates a function's debug info | fn/inject | M×M | ⬜ **fixed** | **Neither silent nor invalid any more: an insertion is relocated, a wholesale replacement is refused.** `inject-stub` shifts the affected addresses (`write/patch/debug_reloc.rs`, P2) — one SLEB128 delta, because every later entry is relative to it — and re-points the debug region when that changes length. `asm`/`patch-function` still refuse, because a replaced body has no old-address-to-new-address mapping to follow; that is a capability gap, not a correctness one. Previously: **guarded** (P0 of `../01_read/unmodeled_regions/PLAN.md`, `tests/debug_info_guard.rs`): `patch_function_body` refuses a size-changing edit to a function with `FLAG_HAS_DEBUG_INFO` when the file actually has a debug section, with `--allow-stale-debug-info` / `PatchOptions::allow_stale_debug_info` as the explicit opt-out. Keyed on the section as well as the flag because `create` sets the flag on an image with no debug info at all. Refusing by default is free on real targets: **0 of the Equinox bundle's 62,909 functions carry the flag** [measured]. Previously: nothing. Location streams store bytecode addresses *within* a function as SLEB128 deltas; a resize shifts `debug_info_offset` (the section) and rewrites nothing inside it, so every location past the edit point maps to the wrong instruction. No error, no warning | — (fixed). Two residuals worth naming rather than hiding: a wholesale body replacement still cannot keep its line table, by nature rather than by omission; and both the guard and the relocation key on `FLAG_HAS_DEBUG_INFO`, so a file whose functions carry debug info the flag does not admit to would slip past — unmeasured, and unlikely, since the flag is what upstream's own serializer writes the region from |
 | R25 | The debug-info reader is hardcoded to the v96 header shape | all | M×M | ⬜ **fixed** | `DebugLayout::for_version` keys the header size (28 B at v96, 16 at v98+), whether the lexical sub-regions exist, and which of the two location-stream encodings applies; unmodelled versions yield no debug info rather than a mis-ruled read. `debug_info_shapes_match_upstream` derives all four quantities from each checkout and fails if any drifts — verified by breaking each in turn. Previously: `DebugInfo::parse` takes no version (`debug.rs:88`) and `parse_header` reads seven `u32`s unconditionally (`debug.rs:148`), but `DebugInfoHeader` is **28 B at v96, 20 B at v97, 16 B at v98/v99** — upstream deleted the scope-descriptor, textified-callee and string-table offsets. On a modern file it reads 12 bytes too many and computes `data_start` from the wrong base | — (fixed). The old claim that this was "never exercised because every fixture lacks debug info" was backwards: every fixture *has* debug info, so the wrong-sized read ran on every parse and was merely unasserted. Confirmed before the fix by compiling one source at three versions: 5 scope descriptors and an 8-entry debug string table at v96, zeros at v98/v99 |
-| R26 | Relocation after a splice is implemented three times by hand, and promised a fourth time by a stub that cannot work | string/fn | L×H | 🟧 | All three copies are currently correct, and checked by machine rather than by reading: `vm_verify` runs every op on a real engine, `corpus` sweeps the 62,909-function production bundle, and `commit_image` re-derives the model afterwards so none of them can leave it stale. The one asymmetry — `patch_function_bytes` re-encodes each legacy small header from the model where the string paths shift bits in place — was measured lossless on all 62,894 non-overflowed headers of the 11.39.0 bundle | The copies cannot diverge silently today because nothing compares them: a fix landing in one and not the others is invisible until a bundle is wrong. Collapse them into one primitive, with a differential that would catch it — specified as `RELOCATION_PLAN.md` P0–P2, roughly a day, and a prerequisite for `STRING_PACKING_PLAN.md` P1 |
-| R27 | The `options` bitfield is carried as an integer and never decoded, and the CJS module table's meaning depends on it | all | L×M | ⬜ **fixed** | **Decoded, and the CJS table is labelled by it.** `BytecodeOptions` (`format.rs`) is a version-keyed view over the byte — `static_builtins()`, `cjs_modules_statically_resolved()`, and `has_async()` returning `Option<bool>`, `None` from v98 because the bit *does not exist* there rather than because it is clear — plus `unknown_bits()`, which is what a v98 image built before upstream's BitField rewrite trips. The raw byte stays on the header as `options_raw` and the write path still round-trips it verbatim. `dump --kind cjs-modules` now keys its labels on bit 1 and says which of the two tables it is showing; `info` prints the decoded byte. The bit set is pinned against every configured checkout by `upstream_pin.rs::bytecode_options_bits_match_upstream`, which derives its expectations from `BytecodeOptions` rather than transcribing them, so an added, removed or reordered bit are three distinct failures. Acceptance in `tests/bytecode_options.rs` against two new fixtures — `asyncy.v{96,98,99}.hbc` (the same async source: `0b100` at v96, `0` above) and `cjsdir.v96.hbc` (two modules resolving to `index.js` and `helper.js`). The statically-resolved arm has no artifact and is asserted against a synthesised byte, which its test name says. **The original evidence:** nothing decoded `BytecodeHeader::options` (`format.rs:80`); grep it. Upstream it is a version-keyed bitfield — `staticBuiltins`, `cjsModulesStaticallyResolved`, `hasAsync` at v96, with `hasAsync` **removed** by v98 — so bit 2 means one thing on one supported version and nothing on another. The byte round-trips verbatim, so no written image is affected | Live consequence, small: `cjsModulesStaticallyResolved` selects between two tables of identical byte shape but different meaning — filename string ID → function ID when clear, module ID → function ID when set (`BytecodeDataProvider.cpp:300`) — and `inspect.rs:89` labelled the pair `(symbol_id, function_id)` unconditionally. Checked against the generator rather than the reader, the damage is narrower than it first looked: both forms store `{key, functionID}`, so the *second* field is right either way — it is the first that is a module index rather than a string id on a statically-resolved bundle, and the label invites resolving it as one. The parse was *not* affected: both forms are pair arrays sized by the same count. Fixed by P5 in `UNMODELED_REGIONS_PLAN.md`, in the hours it was costed at — and it did pin the bit set in `upstream_pin.rs`, because the v96 → v98 loss of `hasAsync` is R8's drift again, already happened, unnoticed |
+| R26 | Relocation after a splice is implemented three times by hand, and promised a fourth time by a stub that cannot work | string/fn | L×H | 🟧 | All three copies are currently correct, and checked by machine rather than by reading: `vm_verify` runs every op on a real engine, `corpus` sweeps the 62,909-function production bundle, and `commit_image` re-derives the model afterwards so none of them can leave it stale. The one asymmetry — `patch_function_bytes` re-encodes each legacy small header from the model where the string paths shift bits in place — was measured lossless on all 62,894 non-overflowed headers of the 11.39.0 bundle | The copies cannot diverge silently today because nothing compares them: a fix landing in one and not the others is invisible until a bundle is wrong. Collapse them into one primitive, with a differential that would catch it — specified as `relocation/PLAN.md` P0–P2, roughly a day, and a prerequisite for `string_packing/PLAN.md` P1 |
+| R27 | The `options` bitfield is carried as an integer and never decoded, and the CJS module table's meaning depends on it | all | L×M | ⬜ **fixed** | **Decoded, and the CJS table is labelled by it.** `BytecodeOptions` (`format.rs`) is a version-keyed view over the byte — `static_builtins()`, `cjs_modules_statically_resolved()`, and `has_async()` returning `Option<bool>`, `None` from v98 because the bit *does not exist* there rather than because it is clear — plus `unknown_bits()`, which is what a v98 image built before upstream's BitField rewrite trips. The raw byte stays on the header as `options_raw` and the write path still round-trips it verbatim. `dump --kind cjs-modules` now keys its labels on bit 1 and says which of the two tables it is showing; `info` prints the decoded byte. The bit set is pinned against every configured checkout by `upstream_pin.rs::bytecode_options_bits_match_upstream`, which derives its expectations from `BytecodeOptions` rather than transcribing them, so an added, removed or reordered bit are three distinct failures. Acceptance in `tests/bytecode_options.rs` against two new fixtures — `asyncy.v{96,98,99}.hbc` (the same async source: `0b100` at v96, `0` above) and `cjsdir.v96.hbc` (two modules resolving to `index.js` and `helper.js`). The statically-resolved arm has no artifact and is asserted against a synthesised byte, which its test name says. **The original evidence:** nothing decoded `BytecodeHeader::options` (`format.rs:80`); grep it. Upstream it is a version-keyed bitfield — `staticBuiltins`, `cjsModulesStaticallyResolved`, `hasAsync` at v96, with `hasAsync` **removed** by v98 — so bit 2 means one thing on one supported version and nothing on another. The byte round-trips verbatim, so no written image is affected | Live consequence, small: `cjsModulesStaticallyResolved` selects between two tables of identical byte shape but different meaning — filename string ID → function ID when clear, module ID → function ID when set (`BytecodeDataProvider.cpp:300`) — and `inspect.rs:89` labelled the pair `(symbol_id, function_id)` unconditionally. Checked against the generator rather than the reader, the damage is narrower than it first looked: both forms store `{key, functionID}`, so the *second* field is right either way — it is the first that is a module index rather than a string id on a statically-resolved bundle, and the label invites resolving it as one. The parse was *not* affected: both forms are pair arrays sized by the same count. Fixed by P5 in `../01_read/unmodeled_regions/PLAN.md`, in the hours it was costed at — and it did pin the bit set in `upstream_pin.rs`, because the v96 → v98 loss of `hasAsync` is R8's drift again, already happened, unnoticed |
 | R28 | Scope-descriptor names were resolved as string-table *indices*, not byte offsets | read | L×M | ⬜ **fixed** | Upstream's `appendString` writes a byte offset into the debug string table and `decodeString` seeks there for a LEB128 length; `parse_scope_descriptors` treated the value as an index into the decoded list. Offset 0 and index 0 coincide, so the first name of every scope resolved and the rest came back empty. Found by P1, on a scope with three captured variables that decoded as `["alpha", "", ""]` | — (fixed: `name_at_offset`). The failure mode is why it survived: an empty name reads as "the compiler did not record one", which is *also* true of most variables, so nothing about the output looked wrong. Pinned by `every_captured_name_resolves_not_just_the_first`, which needs three names — a one-name test passes both before and after |
 
 Grid (residual likelihood × impact; resolved items listed below it for the downgrade earned):
@@ -989,7 +591,7 @@ testing nothing.
   differs will be silently mis-patched. **This happened** — v99's large header is 36 bytes,
   not 37. The packed-pointer read and the 8×`u32` prefix survived; the trailing `u8` block and
   the derived `info_offset` did not. **Fixed:** these are no longer magic offsets; they come
-  from `ModernLayout` and an unknown version is refused. See The v99 delta.
+  from `ModernLayout` and an unknown version is refused. See `reference/VERSION_LAYOUTS.md` § The v99 delta.
 - **R9 · Exception handlers are guarded, not relocated (Q3/Q4).** `patch_function_body`
   **rejects any size-changing edit** on a function that
   declares an exception-handler table (`flags & FLAG_HAS_EXCEPTION_HANDLER`,
@@ -997,7 +599,7 @@ testing nothing.
   yet rewritten. Same-size edits are allowed. The logic was always right; for a while the
   **input** was not — `fh.flags()` for a modern overflowed function comes from
   `parse_large_header_modern`, which read that byte one position late at v99, so the guard
-  fired essentially at random (measured both ways — see The v99 delta). **Fixed** via
+  fired essentially at random (measured both ways — see `reference/VERSION_LAYOUTS.md` § The v99 delta). **Fixed** via
   `ModernLayout`, and pinned by two tests on real fixtures rather than synthetic flags. Two
   facts shaped the fix and still constrain anything built on it **[source]**:
   - `BytecodeSerializer::serializeFunctionInfo` emits a large header for **any** function with
@@ -1154,93 +756,11 @@ path (no `process::exit`, no `unwrap`/`panic` on user input).
 
 ---
 
-## Test harnesses
-
-What exists, what each one asserts against, and how to run it. The organising idea is that
-**every harness checks against something outside this crate.** The unit suite compares our
-output to our expectations, which is exactly why it could not see any of the defects found
-this pass.
-
-| Harness | Oracle | Env | Gated? |
-|---|---|---|---|
-| unit tests (`#[cfg(test)]`) | our own expectations | — | no |
-| `tests/vm_verify.rs` | **a real Hermes VM** — does the patched image run and print the right thing | `HERMES_VM_V96` / `_V98` / `_V99` | skips |
-| `tests/upstream_pin.rs` | **the upstream headers** — `FUNC_HEADER_FIELDS` and `BytecodeList.def` | `HERMES_SRC_V96` / `_V97` / `_V98` / `_V99` | skips |
-| `tests/corpus.rs` | **a production bundle**, plus `hbcdump` as a second disassembler | `HBC_CORPUS_BUNDLE`, `HBC_CORPUS_LIMIT`, `HERMES_HBCDUMP_V96` | skips |
-| `hbc-decomp-cli/tests/stdout_contract.rs` | **the process boundary** — real stdout, stderr, exit codes | — | no |
-| `commit_image` (`serialize.rs`) | **the bytes themselves** — the model is re-derived from them | — | no, always on |
-
-```powershell
-# One-time: build the VMs (and the fixtures and hbcdump they need).
-# Each lands in its own worktree beside the clone: C:\src\hermes-v96, -v98, -v99.
-96, 98, 99 | ForEach-Object {
-    ./scripts/build_hermes_vm.ps1 -Version $_ -HermesRepo C:\src\hermes-src -Fixtures
-}
-
-$env:HERMES_VM_V96    = 'C:\src\hermes-v96\build\bin\Release\hvm.exe'
-$env:HERMES_SRC_V96   = 'C:\src\hermes-v96'
-$env:HERMES_SRC_V97   = 'C:\src\hermes-v97'   # source only; v97 never shipped, so no VM
-$env:HERMES_HBCDUMP_V96 = 'C:\src\hermes-v96\build\bin\Release\hbcdump.exe'
-$env:HBC_CORPUS_BUNDLE = 'C:\apks\...\index.android.bundle.backup'
-$env:HBC_CORPUS_LIMIT = '0'      # sweep all 62,909 functions (~9s); default 2000
-$env:HBC_REQUIRE_ORACLES = 'all' # absent oracle => failure, not [skip]; all|src|vm|hbcdump|corpus
-cargo test
-```
-
-⚠️ **"Gated? skips" was the live weakness (R21), and is now declarable.** With no env vars
-set, those three suites still pass while asserting almost nothing — deliberate, because a
-checkout without a Hermes build has to stay testable. What changed is that a run can now say
-which oracles it refuses to do without: `HBC_REQUIRE_ORACLES=src,vm,hbcdump,corpus` (or `all`)
-makes each absent one a failure naming the variable to set, and a variable that is *set* but
-does not point at what it claims is an error in every mode. An unknown token in that list is
-itself a failure — a typo that quietly enforced nothing would be this same defect again, in
-the one place nobody would look.
-
-CI (`.github/workflows/test.yml`) runs the suite unconfigured, then provisions the four
-upstream checkouts with `scripts/fetch_pinned_hermes.py` — ~4 MB and a few seconds, because it
-is a blobless sparse fetch by the sha each table records — and re-runs `upstream_pin` under
-`HBC_REQUIRE_ORACLES=src`. `vm_verify` and `corpus` stay opt-in there.
-
-### What each is good at, and what it cannot see
-
-- **`vm_verify`** is the only thing that distinguishes "reparses" from "runs". Every defect
-  in the modern branch reparsed cleanly. It cannot tell you *why* something broke, and it
-  only covers what a small fixture can express.
-- **`upstream_pin`** is the only thing that catches upstream changing the format. It cannot
-  see a bug in our own handling of a format we model correctly. Note it fails *loudly and
-  specifically* — the message names the opcode and whether the operand count changed.
-- **`corpus`** is the only thing that exercises inputs we cannot construct: 1,449 overflowed
-  string entries, 4,786 UTF-16 strings, functions with real exception tables, and every
-  opcode the compiler actually emits. The bundle is third-party and not committed, so this
-  suite is the most likely to be silently skipped.
-- **`stdout_contract`** is the only thing that observes the tool the way a script does. It is
-  also the only harness that needs no external artifact, so it is the one that will still be
-  running in five years.
-- **`commit_image`** is not a test but a structural guarantee, which is stronger: I1 cannot
-  be violated because the model is no longer independently maintained.
-
-### Two design notes that are load-bearing
-
-Both came from harnesses that would otherwise have passed while testing nothing:
-
-1. **Assert the fixture's own shape before iterating over it.**
-   `size_change_on_real_handler_table_is_refused` asserts that *some* function has an
-   exception table before looping. Without that line, a layout drift that hides every
-   handler makes the loop body run zero times and the test pass green — the exact failure it
-   exists to catch.
-2. **Align by identity, never by position.** The hbcdump differential keys on the function id
-   parsed from hbcdump's header line, because hbcdump omits the outer stubs of generator
-   functions (it jumps 1137 → 1139 → 1141). Aligned positionally, it silently compares
-   different functions from the first generator onward and reports a flood of "mismatches"
-   that are really one desync.
-
----
-
 ## Test matrix gaps
 
 Per command, cases that are **absent** from the current tests (derived from the `#[cfg(test)]`
 modules). Everything listed below is unit-level; the integration harnesses that sit
-alongside it are described under Test harnesses. An earlier pass
+alongside it are described under `reference/HARNESSES_AND_HISTORY.md` § Test harnesses. An earlier pass
 added CI tests to `functions.rs` (8), `inject.rs` (5), `operands.rs` (7), `strings.rs` (25)
 that build a real image with `create_minimal` (rather than skipping on a missing fixture) —
 several formerly-missing cases are now **covered** and marked so below.
@@ -1248,7 +768,7 @@ several formerly-missing cases are now **covered** and marked so below.
 > ⚠️ **The gap this list did not have a row for — now largely closed.** Every test in
 > the `#[cfg(test)]` modules asserts that output *reparses*. Not one asserts that it
 > *runs*, that it matches an independent implementation, or that our format model
-> matches upstream's. Four harnesses now cover those (see Test harnesses), and between
+> matches upstream's. Four harnesses now cover those (see `reference/HARNESSES_AND_HISTORY.md` § Test harnesses), and between
 > them they found three defects the unit suite was structurally incapable of seeing.
 >
 > Read the per-command gaps below as **second-order**. The first-order question is no
@@ -1329,223 +849,6 @@ several formerly-missing cases are now **covered** and marked so below.
 
 ---
 
-## Legacy/modern branching audit
-
-"Modern" == `FunctionHeaderLayout::Modern12`, i.e. HBC **v97+** (12-byte function headers).
-`MODERN_FUNCTION_HEADER_MIN_VERSION = 97` (`header.rs:10`). `FLAG_OVERFLOWED = 0x20`,
-`FLAG_HAS_EXCEPTION_HANDLER = 0x08` (`format.rs:22`, `:16`).
-
-⚠️ **Two corrections to the framing itself, both from the v99 source.**
-
-1. **"Modern" is not one layout.** `Modern12` is accurate about the *small* header (12 bytes,
-   same bitfields v97→v99) and wrong about the *large* one, which changed size at v99. Every
-   row below that says "Yes" to modern-aware means "aware of the v98 modern layout". See
-   The v99 delta.
-2. **"every real function overflowed" is the wrong reason, and it matters.** Functions are not
-   overflowed because their fields don't fit — they are overflowed because
-   `serializeFunctionInfo` forces it for anything with exception handlers **or debug info**.
-   In a `hermesc`-built file with debug info that is indeed every function; strip debug info
-   and it is not. The load-bearing consequence for Q3/Q4 is narrower and always true:
-   *a modern function that has handlers is always overflowed*, so a handler-aware guard only
-   ever needs the large-header path.
-
-Full per-path fork status. "Tested on modern?" means a unit test actually parses/edits a
-Modern12 image. "v99 VM" is this pass's manual `hvm.exe` result — ✅ ran correctly,
-🔴 measured broken (none remain; kept in the key because the tests exist to bring it back if
-a layout drifts again), `—` blocked before it could run.
-
-| Path | Modern-aware? | Tested on modern? | VM | Fork mechanism / notes |
-|---|---|---|---|---|
-| `add-string` | **Yes** | **Yes** (v98) | ✅ | full modern branch (`strings.rs:544`); modern debug-off=108, **confirmed unchanged at v99** |
-| `patch-string` same-length | Layout-agnostic | No | ✅ | `locate_string_bytes` uses sections (`strings.rs:16`) |
-| `patch-string` resize | **Yes** | **No** | ✅ grow, shrink, ASCII→UTF-16 | modern debug-off=108, hsize=12, overflow relocate (`strings.rs:316`). Untested in CI but now **measured** on a real v99 engine |
-| `patch-string --old` (replace) | **Yes** (via resize) | **No** | ✅ | by-value lookup then resize/same-length (`strings.rs:860`) |
-| `retarget-string` | Layout-agnostic | No | ✅ | touches small table + id hash only (`strings.rs:215`); refuses overflow |
-| `patch-operand` | Layout-agnostic | No | ✅ | decodes at offset (`operands.rs:89`) |
-| `asm` / `patch-function` | **Yes** | **Yes** (v98) | ✅ identity | `resize_modern_small` + `resize_overflowed_function` (now `ModernLayout`-driven); tested (`modern_v98_overflowed_resize_reparses`). Reachability is gated by the Q3/Q4 check, which is now correct |
-| `asm-check` (`run_roundtrip_check`) | inherits `asm`/`emit-hasm` | No | ✅ `OK` | `write_cmd.rs:410`; no test |
-| `inject-stub` | **Yes** | **Yes** (v96 + v98 + v99) | ✅ | `reserve_modern_log_regs` was already correct at v99 (frame `+28`/cache `+32` never moved), now via `ModernLayout`; the failure had been upstream, in the handler guard that let it run |
-| `create` | **Yes** | **Yes** (v96 + v98 + v99) | ✅ runs | `create_minimal` dispatches to `build_minimal_modern` at v≥97; writes a `ModernLayout`-sized large header and is asserted to execute |
-| `emit-hasm` | read-only | v98 fixture exists | n/a | disassemble only. Cross-checked against `hbcdump` on v99: **instruction-for-instruction identical** |
-| `secrets` / `frida-hooks` | read-only | — | n/a | analysis; no layout fork on the write side |
-
-**The pattern that column showed is worth keeping.** Before the fix, everything string-shaped
-was ✅ and everything function-header-shaped was 🔴. That was not luck: the string paths key off
-the *file* header, which is byte-identical v98→v99, while the function paths key off the *large
-function* header, which is the one thing that changed. It is also why the fix was small — one
-descriptor, one root cause — and why the string half of the write path was in better shape than
-its 🟢s suggested. Expect the same split next time upstream reshapes something.
-
-**`warn_modern_write` coverage:** now emitted by **every** write command that opens a file —
-`asm`, `patch-operand`, `retarget-string`, `add-string`, `patch-string`, `inject-stub`, **and
-`create`** (`write_cmd.rs:403`, added this pass). `emit-hasm` (read-only) does not emit it.
-
-**Modern gaps / fragilities:**
-- ~~**Hardcoded v98 large-header field offsets**~~ — **R8, fired and fixed.** Modern resize
-  used to rely on literal frame `+28`, cache `+32`, size/body offsets and the packed pointer,
-  with no abstraction over the layout, so v99's different FunctionInfo shape was mis-encoded
-  with no error. All of it now goes through the version-keyed `ModernLayout`. Which offsets
-  survived the drift is recorded in The v99 delta (all of them in the unchanged 8×`u32`
-  prefix; only the trailing `u8` block moved) — worth reading before assuming the next change
-  will be equally kind.
-- **24 vs 25 bit body-offset field — resolved (Q2), not a bug, and re-confirmed at v99.** The
-  24-bit mask (`read_modern_large_pointer`, `header_write.rs`) reads the **overflowed** packed
-  large-header pointer (offset portion 24 bits); the 25-bit mask
-  (`shift_modern_small_header_offset`, `header_write.rs:113`; `resize_modern_small`,
-  `functions.rs:246`) shifts the **non-overflowed** body-offset field (25 bits). Different
-  fields; both correct. The v99 source states both verbatim (see Q2).
-- **VM verification: built, opt-in.** The old blocker (no C ABI, macOS-only helper) was never
-  real — `hvm` is a subprocess. `tests/vm_verify.rs` now runs every write op on **v96, v98 and
-  v99** engines, so the legacy paths that matter for Equinox are verified by machine rather
-  than by a one-time manual check. What remains: the tests are gated on `HERMES_VM_V<N>`, so a
-  runner without those binaries passes without asserting anything, unless it sets
-  `HBC_REQUIRE_ORACLES=vm`. See Reference VMs, R21.
-- **Handlers on modern.** The Q3/Q4 guard correctly keys on `FLAG_HAS_EXCEPTION_HANDLER` rather
-  than `info_offset != 0` (which would reject every overflowed modern function and break the
-  documented modern `inject-stub` path). That choice was always right; what was wrong was
-  *where the flag was read from* at v99. Now fixed: the flag comes from the large header at the
-  `ModernLayout` offset for that version, while `Overflowed` comes from the small header,
-  because neither header carries both. See Q4 and R9.
-
----
-
-## Git history findings
-
-**What the committed history looks like.** On `upstream/main` (SymbioticSec) the *entire*
-write path is a single commit — `50cdbf8` "Add HBC write path … (v0.2.0)", 14 files, ~3055
-lines — and it has **never been revised upstream**. Every bug-fix and test commit is on the
-local fork's `main`, and every one of them concerns the three commands added *after* the
-monolith: `add-string`, `retarget-string`, `patch-operand`. **No reverts exist anywhere.**
-
-**Churn is concentrated in exactly two files (as committed).** Post-authoring touch counts on
-`main`: `strings.rs` = 6, `operands.rs` = 3; **`functions.rs`, `inject.rs`, `create.rs`,
-`serialize.rs`, `header_write.rs`, `encode.rs`, `hasm/*`, `footer.rs` = 1 each** (the original
-commit, never touched since). The churned files are the newest and the only ones that received
-external (Copilot) review.
-
-> **Update (hardening pass, on `feat/write-path-hardening`).** That pass revised `functions.rs`,
-> `inject.rs`, `operands.rs`, `strings.rs`, `header_write.rs`, `serialize.rs` and
-> `write_cmd.rs`: it implemented the Q3/Q4 guard, Q5, Q6, Q8 and Q9, corrected the Q2 comment,
-> reconciled the create-modern docs (Q1), and added the **first independent tests** to
-> `functions.rs` and `inject.rs`. So F5's "never been through the impl→fix→test loop" no
-> longer holds for those two files — but `create.rs`, `serialize.rs` and `header_write.rs`
-> are still untested beyond what `create`/resize exercise indirectly, and **both of the v99
-> 🔴s land in exactly those files** (`serialize.rs`'s `build_minimal_modern`, and the parser
-> the guard trusts). F5's "unproven, not stable" reading held up.
-
-> **Update (v99 pass, docs-only).** This revision changed no code. It re-derived the format
-> facts from a compiled facebook/hermes at `BYTECODE_VERSION = 99` and ran the write path's
-> output on that engine. Everything it found is recorded above as R8/R9/R15/R19/R20/R21 and
-> finding F7; no fix has been made yet.
-
-### Findings
-
-- **F1 — `7fa1bfc` "Fix Copilot review findings from PR #3" (four bugs in one commit).**
-  Areas: `patch-operand` (`operands.rs`), `retarget-string` (`strings.rs`), CLI
-  (`write_cmd.rs`).
-  1. `patch_string_operand` wrote a string id without checking `new_string_id <
-     string_count` → could produce invalid bytecode (now `operands.rs:103`).
-  2. `patch_string_operand` `FunctionRelative` didn't bound-check `insn_offset <
-     bytecode_size` → could patch outside the function body (now `operands.rs:122`).
-  3. `retarget_string`'s overflow test had a dead branch `off == 0x800000` (unreachable
-     after the 23-bit mask); the real sentinel is `len == 0xff` (now `strings.rs:258`).
-  4. CLI `run_retarget_string` indexed `file.strings[fid]`/`[tid]` **before**
-     `retarget_string` validated the ids → panic on a bad `--from-id`/`--to-id` (now
-     reads after validation via `.get()`, `write_cmd.rs:245`).
-  **Implies:** the recurring real-world bug class on this write path is **missing input
-  validation before a raw write** (id-in-range, offset-in-bounds) and **trusting a masked
-  field as a sentinel** (I8). Corroborates I8/I11. Every new op must validate
-  `id < string_count` and `offset < body_size` up front, must never index `file.strings[x]`
-  before the library has validated `x`, and must key overflow on `len == 0xff` only.
-
-- **F2 — `fc2c4c2` "Add regression tests for Copilot-found bugs".** Added the three tests
-  that would have caught F1's #1–#3. The reason those tests were needed — no up-front
-  validation — is the pattern to watch.
-
-- **F3 — `316741f` "Fix add-string stdout: emit bare numeric id".** `add-string` originally
-  printed `"added string id {id}"` to **stdout**, defeating programmatic consumption; fixed
-  to emit the bare id on stdout, human text on stderr (`write_cmd.rs:307`). **Implies:** the
-  stdout=data / stderr=human rule was itself a *bug fix*, not a designed-in convention — so a
-  new command will not inherit it by default. New commands must consciously put only a machine
-  value on stdout.
-
-- **F4 — `1211883` → `4bfd1d5` "Add missing tests from implementation plan audit"
-  (14 min apart).** The first `add-string` implementation shipped without three tests the plan
-  specified: modern-v98 reparse, downstream-offset integrity, and the overflow-entry path.
-  **Implies:** even a *planned* command under-delivered coverage on precisely the hard edges —
-  modern relocation, offset shifting, overflow.
-
-- **F5 — the "impl → fix-within-minutes → add-regression-tests" arc.** `strings.rs`: impl
-  `1211883` → tests `4bfd1d5` → retarget `3b9b673` → fix `7fa1bfc` → tests `fc2c4c2`.
-  `operands.rs`: impl `166c19b` → fix `7fa1bfc` → tests `fc2c4c2`. **Implies:** each new
-  command shipped with validation holes that only review caught. The never-reviewed monolith
-  files had not been through this loop — the current pass has now put `functions.rs` and
-  `inject.rs` through the *test* half (guards + CI tests), but `create.rs`, `serialize.rs`,
-  and `header_write.rs` remain **unproven**, not *stable*. The highest-severity items in
-  High-risk areas (exception-handler relocation, modern large-header magic offsets,
-  create-variant field gating) still live in that never-independently-tested code.
-
-- **F6 — `50cdbf8`'s own commit message resolves Q1.** It states, verbatim, "Create a
-  minimal file from scratch, legacy layout for v96 and lower and **modern layout for v97 and
-  newer**," and claims the write path is "verified on real Hermes VMs for HBC 74, 76, 83, 84,
-  89, 96 and 98." **Implies:** modern `create` is the author's *intended* behavior — the code
-  is authoritative. The prose has now been reconciled (Q1). Caveat: "verified on real VMs" was
-  a one-time manual check; **no CI test runs a VM**, so it is not a standing guarantee,
-  especially for modern output. **That caveat has now cashed out**: the claim was true for the
-  versions listed, and v99 — which did not exist when it was written — is measured broken. A
-  one-time verification is a statement about a moment, not a property of the code.
-
-- **F7 — the v99 pass (this revision), and what it says about the failure model.** Three
-  defects, one root cause, none of them a coding error: the modern large header changed size
-  upstream and nothing in this crate is positioned to notice. Note what *did* hold up —
-  string handling, the packed pointer, the register-reservation offsets, the 25-bit field,
-  `AsyncBreakCheck`, the overflow sentinel, the handler-table format. The parts derived from a
-  written-down invariant survived a version bump; the parts derived from a hardcoded byte count
-  did not. **Implies:** add a third entry to the empirical bug class alongside F1's "missing
-  input validation" — **a layout constant that is not keyed to the version it was read from.**
-  It fails differently from F1's class: F1's bugs produced invalid bytecode on bad *input*,
-  whereas this one produces invalid bytecode on perfectly good input, on a version nobody
-  tested. Review cannot catch it (the code is self-consistent and the comments are accurate);
-  only running the output against the engine can.
-
-- **Adjacent corroboration (read path, not write).** `bf32a5d` "Fix xref on Modern (HBC98)
-  layout…", plus `203671b`/`5ba55ca`/`102cc61` (v96 debug-capacity overflow, parser integer
-  overflow/underflow panics, malformed-bytecode crashes) show that **Modern-layout handling
-  and offset arithmetic are recurring bug loci across the whole codebase.** The write path's
-  modern branch and its offset-shifting math are unlikely to be exceptions.
-
----
-
-- **F8 — the model was stale in every write op, and no test could see it.** A debug assertion
-  at the single point where an op commits its result failed immediately, on four separate
-  tests, for two distinct causes: `patch_function_bytes` rewrote every function's header
-  *bytes* and never touched `file.function_headers` at all; `patch_string_replace` on a
-  growing string shifted every function offset in the bytes and none in the model.
-  **Implies:** a hand-maintained parallel representation does not stay correct, and its
-  drift is invisible to any test that only round-trips the bytes. The fix that lasts is to
-  delete the parallel representation, not to synchronise it harder — which is why
-  `commit_image` re-derives (I1). Note the assertion was written expecting to find nothing;
-  it is worth writing checks you expect to pass.
-
-- **F9 — the debug CLI binary had always overflowed its stack, and that is probably why R17
-  stayed open.** Writing the first CLI integration test revealed that *any* invocation of an
-  unoptimized `hermes-decomp` — including `--help` — died with `thread 'main' has overflowed
-  its stack`. Verified against the branch point, so it long predates this work. `run` is one
-  large `match` over every subcommand, and an unoptimized build gives each arm's locals their
-  own slot in a single frame; the total exceeds Windows' 1 MiB main-thread stack.
-  **Implies two things.** First, *release-only correctness is a real category*: the optimized
-  build was always fine, so nothing surfaced it, while `cargo test` builds debug and so any
-  CLI harness was impossible — a missing test caused by a bug that only a test would reveal.
-  Second, when a gap in coverage persists across several passes with no clear reason, suspect
-  a mechanical blocker rather than lack of will.
-
-- **F10 — a table claiming a provenance it did not have.** `Bytecode99.json` records
-  `GitCommitHash: 913d31acd…`, and the opcodes it contains had already been deleted upstream
-  at that commit. The pin was decorative: written once, never checked, and wrong.
-  **Implies:** recorded provenance is worth nothing without something that verifies it. When
-  adding a pin, add the check in the same change, or the pin becomes a claim that ages
-  silently — see R19 and The v99 opcode drift.
-
 ## Open questions
 
 Decisions a future impl agent must not guess at.
@@ -1584,7 +887,7 @@ Decisions a future impl agent must not guess at.
   **Status: the guard was inoperative on v99 and is now fixed.** The contract above was always
   correct — body-relative, 0-based, `end` exclusive, safe under string-region growth — and the
   v99 source confirms the table format unchanged. What had broken was the guard's *input*: see
-  Q4 and The v99 delta. R8 was a prerequisite for Q3 and **is now done**, so Phase 1 is
+  Q4 and `reference/VERSION_LAYOUTS.md` § The v99 delta. R8 was a prerequisite for Q3 and **is now done**, so Phase 1 is
   unblocked: the table can be located correctly on every supported layout, which is what
   relocation needs.
 - **Q4 — ✅/⚪ `HasmFunction.exception_handlers`: unimplemented feature, not a drop. Guard
@@ -1604,8 +907,9 @@ Decisions a future impl agent must not guess at.
   flag* was always right. The defect was *where the flag is read*: for a modern overflowed
   function `fh.flags()` comes from `parse_large_header_modern`, which was pinned to the 37-byte
   v98 large header, so at v99 it read the byte one past `flags`. Measured: a function with four
-  live handlers was accepted and corrupted; two functions with none were refused. See The v99
-  delta for the numbers. Three constraints shaped the fix, all **[source]**-confirmed at v99:
+  live handlers was accepted and corrupted; two functions with none were refused. See
+  `reference/VERSION_LAYOUTS.md` § The v99 delta for the numbers. Three constraints shaped the
+  fix, all **[source]**-confirmed at v99:
   1. Read `flags` from the **large** header at the offset for *that version* (R8's descriptor).
   2. Never fall back to the small header. `SmallFuncHeader(uint32_t largeHeaderOffset)`
      `memset`s and sets only `Overflowed`, so an overflowed function's small-header
@@ -1831,7 +1135,7 @@ tail; this adds the entry *value* shift).
 - **A VM run, not just a reparse.** `hvm.exe` on a `hermesc`-built fixture whose catch block
   is actually taken, asserting stdout and exit code — this is the only assertion that would
   have caught the v99 failure, and it is now a subprocess call rather than an external
-  toolchain (see Reference VM). Run it for the modern cases; the legacy cases need a
+  toolchain (see `reference/VERSION_LAYOUTS.md`). Run it for the modern cases; the legacy cases need a
   separately built older `hvm` (R21).
 - Update/remove `size_change_on_function_with_handlers_is_rejected` (functions.rs tests) as
   the guard is lifted per phase.

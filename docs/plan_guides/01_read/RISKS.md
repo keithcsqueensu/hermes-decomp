@@ -1,6 +1,16 @@
-# Read path — hardening review (what is solid, what is silent, what is missing)
+# Read — risk register (what is solid, what is silent, what is missing)
 
-> **Status: all 14 findings fixed.** This document is kept as written — the
+> **Spine note.** This began as one document, `READ_PATH_GUIDE.md`, a hardening review of the
+> whole read side. Under the arch/plan spine it is now the **read stage's** risk register, and
+> five of its fourteen findings moved to the stage where their hazard actually lives:
+> **F9** → `../02_ir/RISKS.md`, **F8** and **F13** → `../05_pipeline/RISKS.md`, **F3** and
+> **F4** → `../07_frontends/RISKS.md`. The framing below (the headline, the shape-of-fix, the
+> order the whole pass was applied, the harness appendix) is kept here because it is the record
+> of that one pass; the sibling registers point back to it. The master finding index is in
+> `../README.md`.
+
+> **Status: all 14 findings fixed** (across this register and its four siblings). This document
+> is kept as written — the
 > *analysis* is the durable part, and the measurements are what the fixes are
 > justified by. Each finding now carries a **Fixed** note saying what changed and
 > which test holds it. The two regression harnesses are committed:
@@ -11,19 +21,19 @@
 > size as before (41,447,553 bytes) with zero depth markers and zero unresolved
 > string placeholders.
 
-Companion to `WRITE_PATH_GUIDE.md`, for the **read** side: everything from
-`BytecodeFile::parse_auto` through disassembly, IR, analysis and the two front ends
-(`hbc-decomp-cli`, `hbc-decomp-mcp`). The write guide is a standing reference built from
-its own scars; this one starts the same register for reading.
+Scope: `BytecodeFile::parse_auto` and everything it produces — parsing, decoding, the string
+and section tables, and the diagnostics that surface (or fail to surface) a bad read. The write
+path is out of scope except where reading feeds it — and one finding below (**F5**) is exactly
+that case. The sibling stage registers (ir, pipeline, frontends, write) carry the rest of the
+pass; `../06_write/RISKS.md` is the write path's own register.
 
-Scope: parsing, decoding, analysis, and the CLI/MCP surfaces that expose them. The write
-path is out of scope except where reading feeds it — and one finding below (**F5**) is
-exactly that case.
-
-> **Ownership.** *Owns* read-path robustness: F1–F14, what degrades silently, and the two
-> regression harnesses. *Delegates* the debug section's format and interpretation to
-> `UNMODELED_REGIONS_PLAN.md` (F10 is the read-side symptom; the formats are there), and the
-> decompiler's closure/env-slot naming to `CLOSURE_MODEL_PLAN.md`.
+> **Ownership.** *Owns* read-path robustness — the read-stage findings (F1, F2, F5, F6, F7,
+> F10, F11, F12, F14), what degrades silently, and the two regression harnesses
+> (`tests/read_robustness.rs`, `tests/read_diagnostics.rs`). *Delegates* the debug section's
+> format and interpretation to `unmodeled_regions/PLAN.md` (F10 is the read-side symptom; the
+> formats are there), the decompiler's closure/env-slot naming to
+> `../03_analysis/closure_model/PLAN.md`, and the five findings named in the spine note above to
+> their sibling registers. The read stage's *description* is `../../arch_guides/01_READ_LAYER.md`.
 
 Everything marked **[measured]** was reproduced in this pass against the committed fixtures
 or the shipped Equinox v96 bundle (`com.equinoxfitness.equinox_11.39.0`, 16,837,408 bytes,
@@ -68,17 +78,17 @@ and let the caller see it", with a test per case asserting the record is made.
 |---|---|---|---|---|
 | **F1** | `parse_auto` returns the wrong layout, silently, on ~2% of corrupt modern files | High | [measured] | ✅ |
 | **F2** | Opcode-table substitution is invisible on 2 of 3 entry points | High | code | ✅ |
-| **F3** | MCP: no output bound anywhere — `decompile_all` returns 41 MB | High | [measured] | ✅ |
-| **F4** | MCP: one panic poisons the mutex and bricks the server for its lifetime | High | code | ✅ |
+| **F3** | MCP: no output bound anywhere — `decompile_all` returns 41 MB | High | [measured] | → [07_frontends](../07_frontends/RISKS.md) |
+| **F4** | MCP: one panic poisons the mutex and bricks the server for its lifetime | High | code | → [07_frontends](../07_frontends/RISKS.md) |
 | **F5** | Legacy large headers never reinstate `FLAG_OVERFLOWED` — 15 real functions misreported | Med | [measured] | ✅ |
 | **F6** | Nothing on the read path checks the SHA-1 footer or `file_length` | Med | [measured] | ✅ |
 | **F7** | `register_summary` overflows on file-supplied register counts (the one panic) | Med | [measured] | ✅ |
-| **F8** | Cache `options_key` is hand-synced to two fields, untested | Med | code | ✅ |
-| **F9** | Expression rendering recurses unbounded; ceiling is 5,000 on a 2 MiB stack | Med | [measured] | ✅ |
+| **F8** | Cache `options_key` is hand-synced to two fields, untested | Med | code | → [05_pipeline](../05_pipeline/RISKS.md) |
+| **F9** | Expression rendering recurses unbounded; ceiling is 5,000 on a 2 MiB stack | Med | [measured] | → [02_ir](../02_ir/RISKS.md) |
 | **F10** | Debug-info absence, unmodelled version, and parse failure are indistinguishable | Med | code | ✅ |
 | **F11** | In-band error placeholders (`<string:N>`, `<invalid utf8>`) are unmarked | Low | code | ✅ |
 | **F12** | The `bytecode` section entry runs to EOF, absorbing three other regions | Low | [measured] | ✅ |
-| **F13** | Cache temp file races; 134 MB written next to a 16 MB input | Low | [measured] | ✅ |
+| **F13** | Cache temp file races; 134 MB written next to a 16 MB input | Low | [measured] | → [05_pipeline](../05_pipeline/RISKS.md) |
 | **F14** | `bigint_at` returns raw hex, not a value, above 64 bits | Low | code | ✅ |
 
 Two worries were **retired** by measurement rather than confirmed — see *What is fine*.
@@ -193,72 +203,6 @@ syntactically perfect JavaScript with inverted comparisons.
 substitution when `used_version != version`. For `Decompiler::new`, either expose the used
 version or add a `Decompiler::new_strict`.
 
-## F3 — the MCP surface has no output bound
-
-> **Fixed.** Three layers. Every tool response goes through `text_result`, capped at
-> `MAX_RESPONSE_BYTES` (256 KiB) with an explicit tail naming the real size and telling
-> the caller to narrow the request — truncation is never silent. `dump` and
-> `xref_search` take `limit`/`offset` and state the window they returned.
-> `decompile_all` *refuses* above 2,000 functions rather than truncating, pointing at
-> `list_modules` + `decompile_module`: capping 41 MB at 256 KiB would return 0.6% of the
-> answer while looking like it worked. Verified end-to-end over stdio against the real
-> bundle — `dump kind=strings` came back capped with `this response was 5382496 bytes`,
-> and `decompile_all` refused with the pointer. Held by four `cap_text` tests including
-> the multibyte-boundary case.
-
-
-**[measured]** on the Equinox bundle:
-
-| tool | output |
-|---|---|
-| `decompile_all` | **41,447,553 bytes** (17 s) |
-| `dump --kind strings` | 5,839,550 bytes |
-| `dump --kind functions` | 3,717,753 bytes |
-| `callgraph` (no root) | 303,412 bytes (14 s — cost is in `analyze_module`, not the string) |
-
-Of the 21 tools in `tools_analyze.rs`, exactly **one** (`list_modules`) takes a `limit`, and
-one (`dead_code`) hardcodes `take(200)`. `decompile_all`, `dump`, `dump_table`, `xref_search`,
-`disassemble` and `callgraph` are all unbounded, and each returns a single
-`ContentBlock::text`.
-
-41 MB into an agent's context is not a degraded result, it is a failed call — and an expensive
-one. `render_call_graph` with `root: None` also builds the whole edge list into one `String`
-before anything can truncate it.
-
-**Fix.** `limit`/`offset` on every listing tool, a default cap (a few hundred KB) with an
-explicit `"… truncated, N of M shown, pass offset=N"` tail, and a hard refusal on
-`decompile_all` for bundles above some function count, pointing at `decompile_module`.
-
-## F4 — one panic bricks the MCP server permanently
-
-> **Fixed.** `HermesService::lock` recovers from poisoning via `into_inner()` (the
-> data behind the lock is a parsed file plus a memoised context — a panic mid-read
-> cannot leave it half-updated), and every tool body runs inside `catch_tool_panic`,
-> which turns a panic into one failed call carrying the panic message and a note that
-> the session survived. Held by `a_panic_does_not_brick_the_service`, which genuinely
-> poisons the mutex and then asserts a normal tool call still returns its normal
-> error.
-
-
-`server/mod.rs:29` — `loaded: Mutex<Option<LoadedFile>>`, and every tool goes through
-`with_file` / `with_file_mut`, which map a lock failure to an error. `std::sync::Mutex`
-**poisons** on a panic while held. So any panic inside any tool body — F7's overflow, an
-unforeseen index, a future regression — does not merely fail that call: it makes
-`self.loaded.lock()` return `Err` for the rest of the process, and every subsequent tool
-returns `lock: poisoned`. The server stays up, answers nothing, and gives no hint that a
-restart is the fix.
-
-There is no `catch_unwind` anywhere in either binary (the sole one in the tree is in the
-TUI's git-diff view, `tui/gitdiff.rs:249`).
-
-**Fix.** Recover from poisoning (`.unwrap_or_else(|e| e.into_inner())`) — the invariant being
-protected is "a parsed file", which a panic mid-read does not corrupt — and wrap tool bodies
-in `catch_unwind` so a panic becomes one failed call with a diagnosable message.
-
-A related note: `pipeline_ctx.as_ref().unwrap()` at `tools_analyze.rs:115, 228, 258, 560, 586`
-is locally sound (each is preceded by `ensure_pipeline()?`), but it is five unwraps standing
-on a call-order convention. A `let … else { return Err(…) }` costs nothing.
-
 ## F5 — legacy large headers never reinstate `FLAG_OVERFLOWED`
 
 > **Fixed.** One line in `parse_large_header_legacy`, mirroring the modern path.
@@ -366,94 +310,6 @@ clean.
 
 **Fix.** `saturating_add`. And keep the sweep — see the appendix.
 
-## F8 — the cache key is hand-synced
-
-> **Fixed.** `options_key` now hashes the whole `DecompileOptionsV2` (which gained
-> `Hash`), so a new field cannot desync the key from what `build_with_options` reads.
-> Held by `every_option_field_changes_the_cache_key`, which flips each field in turn
-> and asserts the key moves — and destructures the struct exhaustively, so adding a
-> field without adding it to the test stops compiling.
-
-
-`pipeline/cache.rs:66`:
-
-```rust
-fn options_key(options: &DecompileOptionsV2) -> u32 {
-    (options.assembly_mode as u32) | ((options.include_offsets as u32) << 1)
-}
-```
-
-This is correct **today**: `build_with_options` (`pipeline/context/mod.rs:60-61`) reads exactly
-those two fields and forces the rest to `optimized()`. Nothing enforces it. Add a seventh field
-to `DecompileOptionsV2`, consume it in `build_with_options`, and every cache hit silently
-returns a context built with the old value — with the file hash and binary fingerprint both
-matching, so the cache looks perfectly valid.
-
-The rest of the cache design is careful (SHA-256 of the bytes, a build.rs fingerprint that
-auto-invalidates on any rebuild, temp-file-then-rename). This one field is the exception, and
-it is the same "partly-stale model, hand-synced" shape that the write guide's `commit_image`
-harness found in **every** write op.
-
-**Fix.** Derive the key from the whole struct — `#[derive(Hash)]` plus a `DefaultHasher`, or
-serialize it. Over-invalidation costs one rebuild; under-invalidation costs a wrong answer
-that looks right.
-
-## F9 — recursion is bounded by stack size, not by a depth check
-
-> **Fixed.** New `ir::depth` module: a thread-local RAII `DepthGuard` with
-> `MAX_RENDER_DEPTH = 512`, applied at the three recursive renderers — `format_expr`
-> (every other formatter in that file routes through it), `Codegen::generate_expr`, and
-> `Codegen::generate_statements` for block nesting. Past the bound they emit
-> `/* hbc-decomp: nesting exceeds MAX_RENDER_DEPTH */` rather than descending:
-> greppable, syntactically inert, and not silent. 512 is ~6x the deepest expression
-> measured in a real bundle (79) and ~10x under the 2 MiB stack ceiling (~5,000).
-> `hermes-mcp`'s `main` now calls `configure_thread_pool()` at startup, so the 64 MB
-> pool is configured before anything can initialise Rayon lazily — closing the
-> cache-hit hole. Held by `deep_expression_renders_instead_of_overflowing_the_stack`,
-> which renders a 50,000-deep tree on a deliberately 2 MiB thread. The `Drop`-recursion
-> caveat is unchanged and documented in the module: a guard in a renderer cannot help
-> with it, which is the other half of why the stack matters.
-
-
-`lib.rs:38-52` configures a 64 MB Rayon stack with a comment saying the default 2 MB
-"overflows and aborts the process on large real-world bundles". That is the mitigation: a
-bigger stack, applied to one thread pool.
-
-**[measured]** — nesting `Expression::Binary` and calling `Display`, on a 2 MiB thread:
-
-```
-depth   1000: rendered ok (5002 chars)
-depth   5000: STATUS_STACK_OVERFLOW   (exit code 0xc00000fd)
-```
-
-≈400 bytes of stack per level. A stack overflow is an **abort**, not a panic: no
-`catch_unwind`, no error, the process dies — which for the MCP server means the client loses
-the session with no message.
-
-**[measured]** — the real headroom, over all 62,018 IR functions of the Equinox bundle:
-
-```
-max expression depth: 79 (function 61510)
-histogram <10 / <50 / <200 / <1000 / <5000 / >=5000:
-          61794 / 222 / 2 / 0 / 0 / 0
-```
-
-So: **not a live problem for real React Native bundles** (60× headroom), and trivially
-reachable on a crafted or generated one. This is an RE tool pointed at unknown APKs, so
-"crafted input" is the job description, not an edge case.
-
-Two related notes. `configure_thread_pool()` is called from `main.rs:48` (CLI) and from
-`build_with_options` (`context/mod.rs:56`) — but **not** from `hermes-mcp`'s `main`, and
-`build_cached` returns early on a cache hit *before* reaching it. Today nothing breaks,
-because the rayon work in `rendering.rs:102,157` is only reached via paths that also build the
-pipeline. It is an invariant with no assertion and no test, one refactor away from being false.
-And `Drop` of a deeply nested `Box<Expression>` chain is itself recursive, so a depth guard in
-`Display` alone is not sufficient.
-
-**Fix.** A depth counter in the expression/statement walkers that emits
-`/* expression too deeply nested */` past a limit; explicitly configure a large stack in
-`hermes-mcp`'s `main`, or spawn tool work onto a thread with one.
-
 ## F10 — every debug-info failure looks like "no debug info"
 
 > **Fixed.** `DebugInfo::parse_with_status` returns a `DebugInfoStatus`
@@ -481,7 +337,7 @@ Case 3 deserves emphasis: the crate advertises HBC 40–99, and `DebugLayout::fo
 below v96, reports "no debug info" — correctly *refusing to guess*, which is the right call
 and well-commented, but reported as absence rather than as a limitation.
 
-**Credit where due:** DI3 in `UNMODELED_REGIONS_PLAN.md` ("the header parser is version-blind")
+**Credit where due:** DI3 in `unmodeled_regions/PLAN.md` ("the header parser is version-blind")
 is **fixed** — `parse` now takes a version and `parse_header` branches on `DebugLayout`. That
 plan document is stale on this point and should be updated.
 
@@ -552,30 +408,8 @@ release build the overstatement is small; on a `-g3` build it is megabytes.
 repo does by hand. It should not report one section where there are four.
 
 **Fix.** Bound `bytecode` at `debug_info_offset` where that is set, and emit `function_info`,
-`debug_info` and `footer` as their own entries. `UNMODELED_REGIONS_PLAN.md` already has the
+`debug_info` and `footer` as their own entries. `unmodeled_regions/PLAN.md` already has the
 layouts.
-
-## F13 — cache hygiene
-
-> **Fixed** (the race). The temp file is now `...hdcache.<pid>.tmp`, so concurrent
-> processes cannot interleave into one another's write. The 134 MB size and the
-> unauthenticated-cache note are documentation items rather than defects — recorded
-> here rather than changed.
-
-
-- **Temp-file race.** `cache.rs:306` — `path.with_extension("hdcache.tmp")` is a fixed name.
-  Two processes analysing the same bundle write the same temp file concurrently; the rename is
-  atomic but the *content* is interleaved. It degrades to a cache miss (`try_load`'s
-  `rmp_serde…ok()?`), never to a wrong answer, but it leaves a corrupt file in place until
-  something rewrites it. A PID/random suffix fixes it.
-- **Size.** **[measured]** the `.hdcache` for the 16,837,408-byte Equinox bundle is
-  **134,208,814 bytes** — 8× the input, written silently next to it, with no eviction and no
-  mention in the docs. Worth stating in `USAGE.md` at minimum.
-- **Trust.** The cache is unauthenticated MessagePack whose header check requires only the
-  file hash and the build fingerprint — both derivable by anyone who can write next to the
-  input. It deserializes into plain data (no code), so the ceiling is falsified analysis
-  output, not execution. Low risk for a local tool; worth one sentence in the doc rather than
-  a fix.
 
 ## F14 — `bigint_at` above 64 bits is not a value
 
@@ -657,9 +491,9 @@ is additive rather than a change to any existing signature.
 ## Appendix — harnesses
 
 A1 and A2 are now committed as `tests/read_robustness.rs` and
-`tests/read_diagnostics.rs`; A3 lives in `src/ir/depth.rs`'s test module. The sketches
-below are kept for the reasoning behind each — what it is for, and how to run it at a
-scale beyond the committed default.
+`tests/read_diagnostics.rs`; A3 lives in `src/ir/depth.rs`'s test module and its sketch moved
+with F9 to `../02_ir/RISKS.md`. The two sketches below are kept for the reasoning behind each —
+what it is for, and how to run it at a scale beyond the committed default.
 
 ### A1 — corruption sweep (found F7; established the 260k-mutant baseline)
 
@@ -711,13 +545,6 @@ an accident, and it is the harness that catches the next F7 before a user does.
 For each fixture, flip one bit anywhere **except** bytes 0..12 (magic and version, so the
 declared version stays fixed), then classify `(right_layout_parses, wrong_layout_parses)`.
 `WRONG_ONLY` is the count where `parse_auto` returns a layout the version contradicts.
-
-### A3 — expression depth ceiling (F9)
-
-Nest `Expression::Binary` n deep, render it with `Display` on a thread created with
-`.stack_size(2 * 1024 * 1024)`, and walk n upward until the process dies. Pair it with a pass
-over `PipelineContext::all_ir` on a real bundle to measure actual headroom — the ceiling alone
-is alarming; the ceiling next to "max observed 79" is a decision.
 
 ### Reproducing the measurements
 
