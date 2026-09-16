@@ -322,6 +322,8 @@ mod tests {
             simplify: _,
             recover_structures: _,
             assembly_mode: _,
+            deep: _,
+            stable: _,
         } = base.clone();
 
         let variants = [
@@ -331,6 +333,8 @@ mod tests {
             DecompileOptionsV2 { simplify: !base.simplify, ..base.clone() },
             DecompileOptionsV2 { recover_structures: !base.recover_structures, ..base.clone() },
             DecompileOptionsV2 { assembly_mode: !base.assembly_mode, ..base.clone() },
+            DecompileOptionsV2 { deep: !base.deep, ..base.clone() },
+            DecompileOptionsV2 { stable: !base.stable, ..base.clone() },
         ];
         for (i, v) in variants.iter().enumerate() {
             assert_ne!(

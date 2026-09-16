@@ -40,13 +40,33 @@ fn main() {
     }
 }
 
+fn init_logging(spec: Option<&str>) {
+    let mut builder = env_logger::Builder::new();
+    // `--log <spec>` wins over RUST_LOG; otherwise fall back to the environment.
+    match spec {
+        Some(s) => {
+            builder.parse_filters(s);
+        }
+        None => {
+            builder.parse_env("RUST_LOG");
+        }
+    }
+    // Compact, target-tagged format so `--log modname=trace` output is easy to grep.
+    builder.format(|buf, record| {
+        use std::io::Write;
+        writeln!(buf, "[{:<5} {}] {}", record.level(), record.target(), record.args())
+    });
+    // Already-initialized is fine (e.g. tests); ignore the error.
+    let _ = builder.try_init();
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
+    let cli = Cli::parse();
+    init_logging(cli.log.as_deref());
     // Give Rayon workers a large stack up front: decompilation recurses deeply
     // and the default stack overflows on big bundles (e.g. `decompile
     // --resolve-closures` on a multi-MB Metro bundle).
     hbc_decomp::configure_thread_pool();
-    let cli = Cli::parse();
 
     commands::update_cmd::auto_check_on_startup();
 
@@ -173,6 +193,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             expand,
             expand_depth,
             resolve_closures,
+            deep,
+            stable,
             json,
             check_dead_code,
             assembly,
@@ -213,6 +235,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 simplify: !no_simplify,
                 recover_structures: !no_structure,
                 assembly_mode: assembly,
+                deep,
+                stable,
             };
 
             if check_dead_code {
@@ -284,6 +308,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let content = if assembly {
                 let file_path = input.display().to_string();
                 commands::decompile_cmd::format_assembly_output(&content, &file, &file_path, file_bytes.len())
+            } else {
+                content
+            };
+            // Stable mode drops the volatile `/* <id> */` module annotations. The
+            // Metro id shifts whenever a module is added or removed, so it makes every
+            // import line differ between two builds even when nothing there changed.
+            // The readable module name stays, which is what matters for a build diff.
+            let content = if stable {
+                helpers::strip_module_id_comments(&content)
             } else {
                 content
             };

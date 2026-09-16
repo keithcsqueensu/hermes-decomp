@@ -113,8 +113,15 @@ mod tests {
     #[test]
     fn deep_expression_renders_instead_of_overflowing_the_stack() {
         use crate::ir::{BinaryOp, Expression, Value};
+        // The guard bounds descent at MAX_RENDER_DEPTH levels; the probe thread
+        // only has to hold that many `format_expr` frames without overflowing
+        // first, so it can actually reach the guard and return the marker. In a
+        // release build a frame is ~400 B (512 levels ≈ 205 KiB, the 2 MiB figure
+        // in the module header), but an unoptimized `cargo test` build gives each
+        // `format_expr` frame its own un-reused slots and measures ~6–8 KiB, so
+        // 512 levels need ~3–4 MiB. Size for the debug case with margin.
         let handle = std::thread::Builder::new()
-            .stack_size(2 * 1024 * 1024) // the default worker stack this used to die on
+            .stack_size(8 * 1024 * 1024)
             .spawn(|| {
                 let mut e = Expression::Value(Value::Register(0));
                 for _ in 0..50_000 {
