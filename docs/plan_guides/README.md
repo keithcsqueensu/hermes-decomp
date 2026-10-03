@@ -38,14 +38,16 @@ plan_guides/
   05_pipeline/
     RISKS.md                  F8, F13 — the cache
   06_write/
-    RISKS.md                  invariants, design limits, risk register (R1–R28), open Qs, open work
+    RISKS.md                  invariants, design limits, risk register (R1–R28 bar the four
+                              CLI-surface rows R17/R18/R20/R22, now in 07_frontends), open Qs, open work
     reference/
       VERSION_LAYOUTS.md      reference VMs, the v99 delta, the v99 opcode drift, v97's two tables, the legacy/modern audit
       HARNESSES_AND_HISTORY.md  the test-harness catalogue and the git-history findings
     relocation/PLAN.md        the absolute-offset surface; splice-and-shift (R26)
     string_packing/PLAN.md    how string storage is laid out and could be repacked
   07_frontends/
-    RISKS.md                  F3, F4 — the MCP surface
+    RISKS.md                  F3, F4 — the MCP surface; R17/R18/R20/R22 + the stdout/stderr
+                              contract — the CLI output surface (relocated from 06_write)
 ```
 
 ## Two dissolved roots
@@ -65,14 +67,16 @@ everything else branched off them. Both are now dissolved onto the spine:
 
 The read hardening pass numbered its findings **F1–F14**; those numbers are shared across the
 read/ir/pipeline/frontends registers. The write path numbers its durable hazards **R1–R28**,
-its resolved design decisions **Q1–Q9**, and its invariants **I1–I13** — all in
-`06_write/RISKS.md`. Where each lives:
+its resolved design decisions **Q1–Q9**, and its invariants **I1–I13**. Most live in
+`06_write/RISKS.md`; the four CLI-surface risks **R17, R18, R20, R22** were relocated to
+`07_frontends/RISKS.md` (the CLI is a frontend — those risks are about how a write is *presented*,
+not how bytes are mutated), keeping their numbers. Where each lives:
 
 | ID | Stage register | ID | Stage register |
 |---|---|---|---|
 | F1, F2, F5, F6, F7, F10, F11, F12, F14 | `01_read/RISKS.md` | F9 | `02_ir/RISKS.md` |
 | F8, F13 | `05_pipeline/RISKS.md` | F3, F4 | `07_frontends/RISKS.md` |
-| R1–R28, Q1–Q9, I1–I13 | `06_write/RISKS.md` | | |
+| R1–R28 (bar R17/R18/R20/R22), Q1–Q9, I1–I13 | `06_write/RISKS.md` | R17, R18, R20, R22 | `07_frontends/RISKS.md` |
 
 ## The lineage — what was split from what
 

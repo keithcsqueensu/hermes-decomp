@@ -31,7 +31,12 @@ Scope: the read/decompile path is out of scope except where a write op depends o
 > relocation mechanics to `relocation/PLAN.md` (R26), region contents and emission to
 > `../01_read/unmodeled_regions/PLAN.md`, and string repacking to `string_packing/PLAN.md`. Those three
 > were split out of limitation bullets in this file; the bullets stay as **pointers**, and
-> must not grow back into summaries — see `README.md` § Splitting.
+> must not grow back into summaries — see `README.md` § Splitting. Also *delegates* the CLI
+> *output surface* — the stdout/stderr two-channel contract and the four CLI-surface risks
+> **R17**, **R18**, **R20** and **R22** — to `../07_frontends/RISKS.md`, because those are about
+> how a write is *presented*, not how bytes are mutated. Their `R#` numbers stay reserved here
+> and cross-references to them resolve globally, but their rows and the discipline section now
+> live there.
 
 
 
@@ -194,8 +199,8 @@ harness gate.
   any of it and is worth having regardless.
 - **Encoding an overflow string entry** → R2. Detection is verified against 1,449 real entries;
   *writing* one is still unimplemented, and `create` refuses it.
-- **CLI argument-resolution coverage** → R17. The stdout/stderr contract is now asserted; `--at`
-  vs `--function`+`--insn-offset` precedence and the value→id lookups are not.
+- **CLI argument-resolution coverage** → R17, relocated to `../07_frontends/RISKS.md` § CLI
+  output surface along with the stdout/stderr contract. Tracked there, not here.
 - **Remaining unit-test gaps** (identifier-resize hash refresh, HASM error paths + handler
   round-trip) → Test matrix gaps.
 - **Hardening actions** (each lowers one risk's residual) → the register's `Hardening` column.
@@ -496,18 +501,21 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R14 | `create` section-order / header field gating | create | M×H | 🟧 | version-gated writer, no round-trip assert | Round-trip header assert (shared with R3) + CLI/integration harness (shared with R17) + a VM run (R21). |
 | R15 | Modern large-header field order in `create` | create | L×H | ⬜ **fixed** | `build_minimal_modern` writes fields at `ModernLayout` offsets and sets `PROHIBIT_NONE` at `large_flags_pos()`. `create_minimal_runs_on_vm` asserts the output **executes** on the matching engine for every fixture version | — (fixed with R8) |
 | R16 | `create` writes a zero `source_hash` | create | L×L | 🟩 | fine for minimal images | **Decision:** compute the real `source_hash` vs keep zero and document created files as "unsigned at source". Minor; only once `create` backs a real emitter. |
-| R17 | No CLI / integration coverage | all | M×M | 🟧 | `hbc-decomp-cli/tests/stdout_contract.rs` covers the stdout/stderr contract and the exit-code path across six commands, and needed the debug-stack fix (F9) to be possible at all | Extend beyond the stdout contract to argument resolution: `--at` vs `--function`+`--insn-offset` precedence, `--string` vs `--string-id`, `--from`/`--to` value→id lookup. Those are still untested. |
-| R18 | stderr has no formal log levels — ad-hoc `warning:`/`note:`/plain prefixes | cli | L×M | 🟩 | two-channel split is honored (data→stdout, diagnostics→stderr); ERROR is the `Result`/exit path; implicit severity via wording | Formalize the INFO/WARN prefixes (a tiny `eprintln`-wrapping helper, no external crate — keeps the pure-Rust ethos); keep ERROR on the `Result`/exit path, not a stderr line. **Decision:** local 2-line helper vs a `log`/`tracing` dep — recommend the local helper. See Stdout/stderr discipline. |
 | R19 | Bundled `Bytecode*.json` and the header-struct code are pinned to **different** Hermes commits, and neither pin is checked | all | M×H | ⬜ **fixed** | Three layers now. (1) `tests/upstream_pin.rs` re-derives both from a checkout and fails when either disagrees — it found the v99 drift, then v97's two tables. (2) `GitCommitHash` is parsed into `BytecodeFormat` and `tables_record_the_commit_they_came_from` requires the configured checkout to *be* that commit, so “wrong checkout” and “upstream moved” are now different failures with different messages. (3) `scripts/gen_bytecode_table.py` re-derives a table from a checkout | The presence and shape of `GitCommitHash` is asserted with **no env var set**, so an unconfigured run is no longer entirely silent. The content comparison is still gated on a checkout — that residue is R21, not R19. |
-| R20 | CLI points users at a verifier script that does not exist | cli | H×L | ⬜ | `warn_modern_write` now points at `scripts/build_hermes_vm.ps1` and `tests/vm_verify.rs`, both of which exist; docs/USAGE.md's "cannot be verified" section is rewritten around `hvm` | — (fixed). Note nothing *tests* stderr text, so this class can rot again; see R17/R18. |
 | R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` (v96/v98/v99) and asserts stdout + exit code; `tests/corpus.rs` sweeps a production bundle; `tests/upstream_pin.rs` re-derives the format from upstream. Verified to fail on every defect they were written for. **The gate is now closeable, and partly closed**: `HBC_REQUIRE_ORACLES` (`tests/common/mod.rs`) promotes any absent oracle from a printed `[skip]` to a failure naming the variable to set, and a set-but-wrong path is an error in every mode; `.github/workflows/test.yml` runs the suite at all (CI previously only built binaries) and re-runs `upstream_pin` with all four checkouts provisioned by `scripts/fetch_pinned_hermes.py` under `HBC_REQUIRE_ORACLES=src` | Residual 🟧 for what is still opt-in — `vm_verify` and `corpus`. Their oracles are a per-version Hermes build and a third-party bundle, so neither fits cheaply on a public runner, and a green CI run still does not mean "the output executed on a real engine". The standing work is a runner that has the builds — self-hosted, or a cached per-version build job — setting `HBC_REQUIRE_ORACLES=vm`. Note what the CI job does *not* buy: the pins are fixed commits, so it catches our encoded format drifting from the commit it claims, not upstream moving. |
-| R22 | An unoptimized build of the CLI overflows its stack | cli | H×M | ⬜ **fixed** | `run` is one large match over every subcommand and a debug build gives each arm's locals their own slot in one frame, exceeding Windows' 1 MiB main-thread stack. Work now runs on a 64 MiB-stack thread (F9) | — (fixed). The underlying shape is unchanged: the match still holds every arm's locals at once, so splitting arms into functions is the real fix if the frame grows again. Note the release build was always fine, which is why this survived — *test what CI builds*. |
 | R23 | An op's output is only ever checked against our own model | all | M×H | 🟩 | Three independent oracles now exist: a real VM (does it run), upstream headers and `BytecodeList.def` (does our format model match theirs), and `hbcdump` (does a second implementation read the same instructions) | Keep reaching for an external oracle when adding a check. The three findings this pass — stale model, opcode drift, debug stack overflow — were each invisible to a test written against our own assumptions, and each fell out immediately once something else was asked. |
 | R24 | A size-changing edit silently invalidates a function's debug info | fn/inject | M×M | ⬜ **fixed** | **Neither silent nor invalid any more: an insertion is relocated, a wholesale replacement is refused.** `inject-stub` shifts the affected addresses (`write/patch/debug_reloc.rs`, P2) — one SLEB128 delta, because every later entry is relative to it — and re-points the debug region when that changes length. `asm`/`patch-function` still refuse, because a replaced body has no old-address-to-new-address mapping to follow; that is a capability gap, not a correctness one. Previously: **guarded** (P0 of `../01_read/unmodeled_regions/PLAN.md`, `tests/debug_info_guard.rs`): `patch_function_body` refuses a size-changing edit to a function with `FLAG_HAS_DEBUG_INFO` when the file actually has a debug section, with `--allow-stale-debug-info` / `PatchOptions::allow_stale_debug_info` as the explicit opt-out. Keyed on the section as well as the flag because `create` sets the flag on an image with no debug info at all. Refusing by default is free on real targets: **0 of the Equinox bundle's 62,909 functions carry the flag** [measured]. Previously: nothing. Location streams store bytecode addresses *within* a function as SLEB128 deltas; a resize shifts `debug_info_offset` (the section) and rewrites nothing inside it, so every location past the edit point maps to the wrong instruction. No error, no warning | — (fixed). Two residuals worth naming rather than hiding: a wholesale body replacement still cannot keep its line table, by nature rather than by omission; and both the guard and the relocation key on `FLAG_HAS_DEBUG_INFO`, so a file whose functions carry debug info the flag does not admit to would slip past — unmeasured, and unlikely, since the flag is what upstream's own serializer writes the region from |
 | R25 | The debug-info reader is hardcoded to the v96 header shape | all | M×M | ⬜ **fixed** | `DebugLayout::for_version` keys the header size (28 B at v96, 16 at v98+), whether the lexical sub-regions exist, and which of the two location-stream encodings applies; unmodelled versions yield no debug info rather than a mis-ruled read. `debug_info_shapes_match_upstream` derives all four quantities from each checkout and fails if any drifts — verified by breaking each in turn. Previously: `DebugInfo::parse` takes no version (`debug.rs:88`) and `parse_header` reads seven `u32`s unconditionally (`debug.rs:148`), but `DebugInfoHeader` is **28 B at v96, 20 B at v97, 16 B at v98/v99** — upstream deleted the scope-descriptor, textified-callee and string-table offsets. On a modern file it reads 12 bytes too many and computes `data_start` from the wrong base | — (fixed). The old claim that this was "never exercised because every fixture lacks debug info" was backwards: every fixture *has* debug info, so the wrong-sized read ran on every parse and was merely unasserted. Confirmed before the fix by compiling one source at three versions: 5 scope descriptors and an 8-entry debug string table at v96, zeros at v98/v99 |
 | R26 | Relocation after a splice is implemented three times by hand, and promised a fourth time by a stub that cannot work | string/fn | L×H | 🟧 | All three copies are currently correct, and checked by machine rather than by reading: `vm_verify` runs every op on a real engine, `corpus` sweeps the 62,909-function production bundle, and `commit_image` re-derives the model afterwards so none of them can leave it stale. The one asymmetry — `patch_function_bytes` re-encodes each legacy small header from the model where the string paths shift bits in place — was measured lossless on all 62,894 non-overflowed headers of the 11.39.0 bundle | The copies cannot diverge silently today because nothing compares them: a fix landing in one and not the others is invisible until a bundle is wrong. Collapse them into one primitive, with a differential that would catch it — specified as `relocation/PLAN.md` P0–P2, roughly a day, and a prerequisite for `string_packing/PLAN.md` P1 |
 | R27 | The `options` bitfield is carried as an integer and never decoded, and the CJS module table's meaning depends on it | all | L×M | ⬜ **fixed** | **Decoded, and the CJS table is labelled by it.** `BytecodeOptions` (`format.rs`) is a version-keyed view over the byte — `static_builtins()`, `cjs_modules_statically_resolved()`, and `has_async()` returning `Option<bool>`, `None` from v98 because the bit *does not exist* there rather than because it is clear — plus `unknown_bits()`, which is what a v98 image built before upstream's BitField rewrite trips. The raw byte stays on the header as `options_raw` and the write path still round-trips it verbatim. `dump --kind cjs-modules` now keys its labels on bit 1 and says which of the two tables it is showing; `info` prints the decoded byte. The bit set is pinned against every configured checkout by `upstream_pin.rs::bytecode_options_bits_match_upstream`, which derives its expectations from `BytecodeOptions` rather than transcribing them, so an added, removed or reordered bit are three distinct failures. Acceptance in `tests/bytecode_options.rs` against two new fixtures — `asyncy.v{96,98,99}.hbc` (the same async source: `0b100` at v96, `0` above) and `cjsdir.v96.hbc` (two modules resolving to `index.js` and `helper.js`). The statically-resolved arm has no artifact and is asserted against a synthesised byte, which its test name says. **The original evidence:** nothing decoded `BytecodeHeader::options` (`format.rs:80`); grep it. Upstream it is a version-keyed bitfield — `staticBuiltins`, `cjsModulesStaticallyResolved`, `hasAsync` at v96, with `hasAsync` **removed** by v98 — so bit 2 means one thing on one supported version and nothing on another. The byte round-trips verbatim, so no written image is affected | Live consequence, small: `cjsModulesStaticallyResolved` selects between two tables of identical byte shape but different meaning — filename string ID → function ID when clear, module ID → function ID when set (`BytecodeDataProvider.cpp:300`) — and `inspect.rs:89` labelled the pair `(symbol_id, function_id)` unconditionally. Checked against the generator rather than the reader, the damage is narrower than it first looked: both forms store `{key, functionID}`, so the *second* field is right either way — it is the first that is a module index rather than a string id on a statically-resolved bundle, and the label invites resolving it as one. The parse was *not* affected: both forms are pair arrays sized by the same count. Fixed by P5 in `../01_read/unmodeled_regions/PLAN.md`, in the hours it was costed at — and it did pin the bit set in `upstream_pin.rs`, because the v96 → v98 loss of `hasAsync` is R8's drift again, already happened, unnoticed |
 | R28 | Scope-descriptor names were resolved as string-table *indices*, not byte offsets | read | L×M | ⬜ **fixed** | Upstream's `appendString` writes a byte offset into the debug string table and `decodeString` seeks there for a LEB128 length; `parse_scope_descriptors` treated the value as an index into the decoded list. Offset 0 and index 0 coincide, so the first name of every scope resolved and the rest came back empty. Found by P1, on a scope with three captured variables that decoded as `["alpha", "", ""]` | — (fixed: `name_at_offset`). The failure mode is why it survived: an empty name reads as "the compiler did not record one", which is *also* true of most variables, so nothing about the output looked wrong. Pinned by `every_captured_name_resolves_not_just_the_first`, which needs three names — a one-name test passes both before and after |
+
+**Four rows are hosted elsewhere.** The CLI-surface risks **R17** (no CLI/integration coverage),
+**R18** (no formal log levels), **R20** (dead script reference) and **R22** (debug-build stack
+overflow) were relocated to `../07_frontends/RISKS.md` § CLI output surface — the CLI is a
+frontend, and these are about how a write is *presented*, not how it is made. Their numbers stay
+reserved here (never reused) and cross-references to them below resolve globally; the grid does
+not plot them.
 
 Grid (residual likelihood × impact; resolved items listed below it for the downgrade earned):
 
@@ -516,13 +524,14 @@ Grid (residual likelihood × impact; resolved items listed below it for the down
              Low             Medium            High
   High        ·               ·                ·
 L
-I Med         ·               R17              R14  R19  R21
+I Med         ·               ·                R14  R19  R21
 K
-E Low       R13 R16           R6 R18 R27       R3 R10 R12 R26
+E Low       R13 R16           R6 R27           R3 R10 R12 R26
 L
   Fixed (each was a live defect, not a hypothetical):
-      R1 ⬜ · R5 ⬜ · R8 ⬜ · R9 ⬜ · R11 ⬜ · R15 ⬜ · R20 ⬜ · R22 ⬜ · R24 ⬜ · R25 ⬜ · R28 ⬜
+      R1 ⬜ · R5 ⬜ · R8 ⬜ · R9 ⬜ · R11 ⬜ · R15 ⬜ · R24 ⬜ · R25 ⬜ · R28 ⬜
   Resolved earlier or downgraded by evidence: R4 🟩 · R7 ⬜ · R2 🟩 · R23 🟩
+  CLI-surface risks live in ../07_frontends/RISKS.md: R17, R18 (open) · R20, R22 (fixed).
 ```
 
 Reading it: **nothing sits at high/high, and the 🟥 column is empty.** R21 came down when the
@@ -670,89 +679,13 @@ testing nothing.
 
 ## Stdout/stderr discipline
 
-**The two-channel model — the split *is* the contract:**
-
-- **stdout = the requested output data**, and nothing else — the machine-consumable result the
-  invocation was *for*. Only data-producing commands write here: `secrets` (report), `emit-hasm`
-  without `-o` (HASM text), `add-string` (the bare new id). A command that only transforms a
-  file into `-o` writes **nothing** to stdout. This is load-bearing for scripting:
-  `id=$(hbc-decomp add-string …)` must capture the id and *only* the id. `add-string` originally
-  broke it (human text on stdout) — a bug fixed in `316741f` (finding F3), which is why the rule
-  is stated rather than assumed.
-- **stderr = the diagnostics / log channel** — human status, progress, notes and warnings:
-  everything *about* the run rather than the run's output. Redirecting or discarding stderr must
-  never change the captured data.
-
-**On severity levels (your INFO/WARN/ERROR model — agreed in spirit, but implicit today):**
-stderr *is* the log channel, but the levels are not formalized:
-
-- **WARN** — lines prefixed `warning:` (cross-kind retarget, `*ById` non-identifier) or `note:`
-  (duplicate string).
-- **INFO** — plain status lines (`Patched string → …`, `Created minimal HBC …`, `Injected
-  stub …`, the modern-write note). No prefix; the level is only inferable from wording.
-- **ERROR** — **not a stderr log line at all.** Errors bubble as `Result` to `main`, which
-  Debug-prints and sets a non-zero exit code (see Exit codes). So "ERROR level" lives in the
-  exit path, not the log.
-
-There is **no `log`/`tracing` crate**; the prefixes are ad-hoc. So the durable contract is the
-stdout/stderr *split*, not the levels — formalizing the INFO/WARN prefixes is tracked as **R18**
-(low residual). Do **not** teach a consumer to parse stderr by level; parse stdout for data and
-read the exit code for success/failure.
-
-Per-command reality:
-
-| Command | stdout | stderr |
-|---|---|---|
-| `add-string` | **bare new id** (`println!`, `write_cmd.rs:307`) | "Added string …" + dup note (if any) |
-| `secrets` | JSON or text report (data) | — |
-| `emit-hasm` (no `-o`) | HASM text (data) | — |
-| `emit-hasm` (`-o`) | — | (nothing; writes file silently — see below) |
-| `create` | — | "Created minimal HBC …" + modern note |
-| `asm` / `patch-function` | — | "Assembled function …" |
-| `patch-string` | — | "Patched string → …" |
-| `retarget-string` | — | "Retargeted …" + cross-kind warning (if any) |
-| `patch-operand` | — | operand-change status + `*ById` warning (if any) |
-| `inject-stub` | — | "Injected stub …" |
-| `frida-hooks` | — | "Wrote Frida hooks …" + export list |
-
-**Status ownership is now entirely in the CLI layer (Q5 resolved).** Library patch
-functions no longer `eprintln!`: `patch_string_operand` *returns* `(bytes, status, warning)`
-and `run_patch_operand` prints them (`write_cmd.rs:200`, `:202`); the `retarget_string`
-cross-kind warning (`write_cmd.rs:264`) and the `add_string` duplicate note
-(`write_cmd.rs:301`) are recomputed and printed by their CLI handlers. Programmatic callers
-of the library functions get no unsolicited stderr.
-
-**A wrong INFO line, not just a missing one (R20 — fixed):** the modern-write note printed by
-every write command used to tell the user to build
-`scripts/build/build_hermes_v98_toolchain.sh`, a file that has never existed in this repo. It
-was the most frequently emitted sentence the tool produces and it sent people nowhere. It now
-names `scripts/build_hermes_vm.ps1` and `tests/vm_verify.rs`, and states the real constraint
-(only v98 and v99 modern layouts are known; anything else is refused). docs/USAGE.md's
-"cannot be verified" section is rewritten to match. The discipline point survives the fix:
-**stderr text ages exactly like prose docs, and nothing tests it** — the same reason F3's
-stdout bug survived. If the stdout/stderr contract ever gets a test (R17), the note's
-existence claims are worth asserting too.
-
-**Remaining inconsistency (an INFO-line gap, part of R18):** `emit-hasm -o` prints no
-confirmation, while every other `-o` writer emits an INFO status. The shared `write_output`
-helper *does* print "Wrote … (N lines, KiB)" — but `run_emit_hasm` uses a bare `std::fs::write`
-(`write_cmd.rs:143`) and bypasses it. Fix alongside R18's prefix formalization.
-
-**Guidance for new commands:** a command that yields a machine value (a new id, an offset)
-puts *only* that value on stdout, like `add-string`; a command that only transforms a file into
-`-o` keeps stdout empty and reports on stderr.
-
-**This is now asserted, not just documented** (R17). `hbc-decomp-cli/tests/stdout_contract.rs`
-checks that `add-string` puts a bare parseable id on stdout, that file-transforming commands
-leave stdout empty, that `emit-hasm` without `-o` writes HASM to stdout, that discarding
-stderr does not change stdout, and that failures keep stdout clean. It also asserts that the
-file paths named in the modern-write note exist in the repo — a dead reference is what R20
-was. Writing it required fixing a long-standing stack overflow in unoptimized CLI builds; see
-finding F9.
-
-**Exit codes** are uniform: handlers return `Result`, errors bubble to `main` which returns
-`Box<dyn Error>` → non-zero exit with the error Debug-printed. Keep new commands on this
-path (no `process::exit`, no `unwrap`/`panic` on user input).
+**Moved to `../07_frontends/RISKS.md` § Stdout/stderr discipline.** The two-channel contract
+(stdout = data, stderr = diagnostics), the per-command table, the severity-level model and the
+exit-code rule are a CLI *surface* concern, and the risks that track them (R17/R18/R20) moved with
+them. The one thing a write-path author still owes it: **a new write command must put *only* its
+machine value on stdout** (like `add-string`'s bare id) and report everything else on stderr, so a
+`id=$(hbc-decomp add-string …)` capture stays clean. Q5 (should library patch functions write to
+stderr — no) stays an Open question here, since it is a decision about the library, not the surface.
 
 ---
 
@@ -843,9 +776,10 @@ several formerly-missing cases are now **covered** and marked so below.
   comment/offset-prefix stripping; multi-function `parse_hasm`; and **exception-handler
   preservation** (`HasmFunction.exception_handlers` is never populated — see Q4).
 - **`asm-check` / `run_roundtrip_check`** (`write_cmd.rs:410`): no test.
-- **CLI handlers** (`write_cmd.rs`): no test of argument resolution (e.g. `--at` vs
+- **CLI handlers** (`write_cmd.rs`): argument-resolution coverage (`--at` vs
   `--function`+`--insn-offset` precedence, `--string` vs `--string-id`, `--from`/`--to`
-  value→id lookup) or of the stdout/stderr contract.
+  value→id lookup) and the stdout/stderr contract are tracked as **R17** in
+  `../07_frontends/RISKS.md` § CLI output surface — a CLI-surface gap, not a per-module one.
 
 ---
 
