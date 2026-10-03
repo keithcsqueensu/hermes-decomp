@@ -18,6 +18,40 @@ pub struct DecompileAllParams {
     #[serde(default)]
     #[schemars(description = "Deep naming mode (slower, more names recovered)")]
     pub deep: bool,
+    #[schemars(
+        description = "Metro module id ranges or list to include, like \"100-150,200\" (mirrors the CLI --modules flag)"
+    )]
+    pub modules: Option<String>,
+    #[schemars(
+        description = "Comma separated module name globs to include, like \"Login*,Auth*\" (case insensitive, * is a wildcard)"
+    )]
+    pub module_name: Option<String>,
+    #[schemars(
+        description = "Comma separated module name globs to exclude, like \"react*,lodash*\""
+    )]
+    pub exclude_module_name: Option<String>,
+    #[schemars(description = "Emit only the dependency subtree rooted at this Metro module id")]
+    pub from_module: Option<u32>,
+    #[schemars(
+        description = "Max depth of the from_module subtree, 0 is the root only (default: 3)"
+    )]
+    #[serde(default = "default_module_depth")]
+    pub module_depth: usize,
+    #[schemars(
+        description = "Maximum characters returned (default: 2000000). Longer output is cut at a line boundary and flagged as truncated"
+    )]
+    #[serde(default = "default_max_chars")]
+    pub max_chars: usize,
+}
+
+pub const DEFAULT_MAX_CHARS: usize = 2_000_000;
+
+fn default_max_chars() -> usize {
+    DEFAULT_MAX_CHARS
+}
+
+fn default_module_depth() -> usize {
+    3
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -66,6 +100,15 @@ pub struct XrefParams {
     #[schemars(description = "Type of query: 'string' or 'function' (default: 'string')")]
     #[serde(default = "default_string")]
     pub kind: String,
+    #[schemars(
+        description = "Maximum number of cross-references to return (default: all, capped                               by the response size limit)"
+    )]
+    pub limit: Option<usize>,
+    #[schemars(
+        description = "Index of the first cross-reference to return, for paging (default: 0)"
+    )]
+    #[serde(default)]
+    pub offset: usize,
 }
 
 fn default_string() -> String {
@@ -96,6 +139,13 @@ pub struct DumpParams {
     #[schemars(description = "What to dump: 'strings', 'functions', 'identifiers', or 'all'")]
     #[serde(default = "default_strings")]
     pub kind: String,
+    #[schemars(
+        description = "Maximum number of entries to return (default: all, capped by the                               response size limit)"
+    )]
+    pub limit: Option<usize>,
+    #[schemars(description = "Index of the first entry to return, for paging (default: 0)")]
+    #[serde(default)]
+    pub offset: usize,
 }
 
 fn default_strings() -> String {
@@ -113,7 +163,9 @@ pub struct DisasmParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SecretsParams {
-    #[schemars(description = "Show full secret values instead of redacting the middle (default: false)")]
+    #[schemars(
+        description = "Show full secret values instead of redacting the middle (default: false)"
+    )]
     #[serde(default)]
     pub show_full: bool,
 }
@@ -124,7 +176,9 @@ pub struct PatchStringParams {
     pub id: Option<u32>,
     #[schemars(description = "Existing string value to replace (use this or id)")]
     pub old_value: Option<String>,
-    #[schemars(description = "New string value, any length. Most patches rebuild the string table (so the output file grows) because packed Hermes storage is shared between entries; only an entry with exclusive storage and an identical byte length is patched in place")]
+    #[schemars(
+        description = "New string value, any length. Most patches rebuild the string table (so the output file grows) because packed Hermes storage is shared between entries; only an entry with exclusive storage and an identical byte length is patched in place"
+    )]
     pub new_value: String,
     #[schemars(description = "Path to write the patched .hbc")]
     pub output_path: String,
@@ -134,7 +188,9 @@ pub struct PatchStringParams {
 pub struct InjectStubParams {
     #[schemars(description = "Function id to inject into")]
     pub function_id: u32,
-    #[schemars(description = "Stub kind. 'nop' is a runtime no op, 'log' prints the function name on entry")]
+    #[schemars(
+        description = "Stub kind. 'nop' is a runtime no op, 'log' prints the function name on entry"
+    )]
     pub kind: String,
     #[schemars(description = "Path to write the patched .hbc")]
     pub output_path: String,
@@ -202,4 +258,3 @@ pub struct ModuleExportsParams {
     #[schemars(description = "Metro module ID")]
     pub module_id: u32,
 }
-

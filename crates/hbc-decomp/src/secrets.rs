@@ -194,7 +194,7 @@ mod tests {
                 cjs_module_count: 0,
                 function_source_count: None,
                 debug_info_offset: 0,
-                options: 0,
+                options_raw: 0,
                 layout: HeaderLayout::Legacy,
                 function_header_layout: FunctionHeaderLayout::Legacy16,
             },
@@ -223,8 +223,11 @@ mod tests {
             instruction_offset: 0,
             instructions: vec![],
             debug_info: None,
+            debug_info_status: crate::file::DebugInfoStatus::Absent,
             exception_handlers: Default::default(),
             sections: vec![],
+            diagnostics: vec![],
+            unresolved_string_ids: Default::default(),
             raw_bytes: None,
         }
     }

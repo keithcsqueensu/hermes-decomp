@@ -43,7 +43,21 @@ enum Transport {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Give the analysis thread pool a real stack before anything can touch it.
+    //
+    // The decompiler recurses over the CFG and the expression tree, and Rayon's
+    // default 2 MiB worker stack overflows on large bundles -- an abort, not a
+    // panic, so it takes the server down with no message to the client.
+    // `PipelineContext::build_with_options` calls this too, but `build_cached`
+    // returns before reaching it on a cache hit, so a second run on the same
+    // bundle would have raced to configure the pool. Do it once, here, where
+    // nothing has had the chance to initialise Rayon lazily yet.
+    hbc_decomp::configure_thread_pool();
+
     let args = Args::parse();
+    // Rayon workers need a large stack for deep recursion in the pipeline.
+    // The tool bodies themselves run on large-stack threads (see server/mod.rs).
+    hbc_decomp::configure_thread_pool();
 
     match args.transport {
         Transport::Stdio => {

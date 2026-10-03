@@ -78,6 +78,52 @@ pub fn finalize_raw_image(mut buf: Vec<u8>) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+// Finalize a mutated image, adopt it, and hand the bytes back.
+//
+// Every patch op ends the same way, so this is the one place the write path
+// commits a result -- which makes it the right place to enforce invariant I1
+// (the structured model and the bytes agree) rather than hoping each op
+// remembers to.
+//
+// **The model is refreshed from the finalized bytes, not hand-patched.** That is
+// the whole point. I1 used to be maintained by hand: each op edited raw bytes and
+// then separately updated some subset of `file.strings` / `file.header.*` /
+// `file.function_headers`. Every op got that subset wrong. Adding a
+// debug assertion here found, on its first run:
+//
+//   * `patch_function_bytes` rewrote every function's header bytes but left
+//     `file.function_headers` entirely untouched, so after any `asm` /
+//     `patch-function` / `inject-stub` the model reported the pre-edit body size
+//     and offsets.
+//   * `patch_string_replace` on a growing string shifted every function offset in
+//     the bytes and none in the model.
+//
+// Both are exactly R5, and neither was visible to tests that only assert the
+// bytes reparse. Reparsing here makes the model *derived*, so it cannot drift.
+//
+// It also retires **R1**, which was the highest-residual risk in the register:
+// chaining a second op on a `file` whose `sections` were stale after the first
+// resize silently computed offsets against the old layout and corrupted the
+// image. `sections` is part of what gets refreshed, so I2's written contract
+// ("re-parse before chaining") is now enforced by construction instead of by
+// remembering. The tests that carefully re-parsed between ops no longer have to.
+//
+// Cost is one parse per write op: ~40ms on the 5MB Equinox bundle, and nothing
+// measurable on the fixtures. Callers were already told to pay it (I2) -- this
+// just stops them having to remember.
+pub fn commit_image(file: &mut BytecodeFile, buf: Vec<u8>) -> Result<Vec<u8>> {
+    let out = finalize_raw_image(buf)?;
+    // Note this also promotes "the finalized image reparses" from something the
+    // individual op tests assert to something every write op checks, always.
+    let refreshed = BytecodeFile::parse_auto(&out).map_err(|e| {
+        Error::Write(format!(
+            "write produced an image that does not reparse: {e}. The edit reached              finalization, so this is a malformed layout rather than a rejected input."
+        ))
+    })?;
+    *file = refreshed;
+    Ok(out)
+}
+
 // ---- create-from-scratch helpers (legacy layout, non-overflow headers) ----
 
 // Build a minimal v96-style legacy HBC: one global function with the given body
@@ -87,9 +133,13 @@ pub fn build_minimal_legacy(
     strings: &[String],
     global_body: &[u8],
 ) -> Result<Vec<u8>> {
+    // Legacy layout only. `create` emits modern layout for v97 and newer, which
+    // `build_minimal_modern` handles; `create_minimal` dispatches there before
+    // reaching this builder, so hitting this guard means `build_minimal_legacy`
+    // was called directly with a modern version.
     if version >= 97 {
         return Err(Error::Write(
-            "create_minimal: modern headers (v>=97) not yet supported, use v96 or lower".into(),
+            "build_minimal_legacy: v97 and newer use modern layout (build_minimal_modern)".into(),
         ));
     }
 
@@ -287,28 +337,32 @@ pub fn build_minimal_modern(
     buf.extend_from_slice(global_body);
     align4(&mut buf);
 
-    // Out-of-line large header (FunctionInfo), 4 byte aligned. Field order matches
-    // the parser: offset, param, loop_depth, size, name, numReg, nonPtrReg, frame,
-    // then read/write/newObj/privateName caches and the flags byte.
+    // Out-of-line large header (FunctionInfo), 4 byte aligned. The u32 prefix is
+    // the same in every supported modern version; the u8 tail is NOT -- v98 has a
+    // NumCacheNewObject byte that v99 removed, so the header is 37 bytes on one
+    // and 36 on the other and the flags byte lands in a different place. Writing
+    // the v98 shape into a v99 file put `flags` one byte past where the engine
+    // reads it, which made every created v99 image throw at entry (ProhibitInvoke
+    // read as 0 = ProhibitCall). Hence the descriptor. See WRITE_PATH_GUIDE R15.
+    let layout = crate::modern_layout::ModernLayout::for_version(version)?;
     let large_header_pos = buf.len() as u32;
-    let large: [u32; 8] = [
-        instruction_offset,       // body offset
-        1,                        // param_count (this)
-        0,                        // loop_depth
-        global_body.len() as u32, // bytecode_size
-        0,                        // function_name string index "global"
-        0,                        // number_reg_count
-        1,                        // non_ptr_reg_count (r0 holds undefined)
-        1,                        // frame_size
-    ];
-    for v in large {
-        buf.extend_from_slice(&v.to_le_bytes());
-    }
-    // read/write/newObj/private caches = 0, then the flags byte. In Hermes the low
-    // two bits are ProhibitInvoke where 0 means ProhibitCall (must use `new`), so a
-    // plain callable global needs ProhibitNone, value 2.
-    const PROHIBIT_NONE: u8 = 0b10;
-    buf.extend_from_slice(&[0u8, 0, 0, 0, PROHIBIT_NONE]);
+    let mut large = vec![0u8; layout.large_size()];
+    let mut put_u32 = |at: usize, v: u32| large[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    use crate::modern_layout as ml;
+    put_u32(ml::MODERN_LARGE_OFFSET, instruction_offset);
+    put_u32(ml::MODERN_LARGE_PARAM_COUNT, 1); // `this`
+    put_u32(ml::MODERN_LARGE_LOOP_DEPTH, 0);
+    put_u32(ml::MODERN_LARGE_BYTECODE_SIZE, global_body.len() as u32);
+    put_u32(ml::MODERN_LARGE_FUNCTION_NAME, 0); // string index of "global"
+    put_u32(ml::MODERN_LARGE_NUMBER_REG_COUNT, 0);
+    put_u32(ml::MODERN_LARGE_NON_PTR_REG_COUNT, 1); // r0 holds undefined
+    put_u32(ml::MODERN_LARGE_FRAME_SIZE, 1);
+    // Cache-size bytes stay 0. The flags byte carries ProhibitInvoke in its low
+    // two bits, and that enum is `Call = 0, Construct = 1, None = 2` -- so a
+    // zeroed flags byte means "plain calls prohibited", not "no restrictions".
+    // A callable global must set ProhibitNone explicitly.
+    large[layout.large_flags_pos()] = crate::format::PROHIBIT_NONE;
+    buf.extend_from_slice(&large);
     align4(&mut buf);
 
     // Small header points at the large header. large_ptr = (name << 24) | (ptr &
@@ -339,7 +393,7 @@ pub fn build_minimal_modern(
 }
 
 fn align4(buf: &mut Vec<u8>) {
-    while buf.len() % 4 != 0 {
+    while !buf.len().is_multiple_of(4) {
         buf.push(0);
     }
 }
@@ -362,6 +416,8 @@ pub fn section_offset(file: &BytecodeFile, name: &str) -> Option<u32> {
 }
 
 // Check whether any function header is overflowed (large header out-of-line).
+// For Modern headers the overflow bit is reinstated by the parser (the on-disk
+// large header does not carry it); see parse_large_header_modern.
 pub fn has_overflowed_functions(file: &BytecodeFile) -> bool {
     file.function_headers.iter().any(|h| match h {
         crate::format::FunctionHeader::Legacy(l) => l.flags & FLAG_OVERFLOWED != 0,
@@ -386,7 +442,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../examples/react-native/v96/expressions/generator/bytecode.hbc"
         );
-        if !std::path::Path::new(path).exists() {
+        if !crate::write::corpus_fixture_present(path) {
             return;
         }
         let bytes = std::fs::read(path).unwrap();

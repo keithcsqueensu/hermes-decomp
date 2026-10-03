@@ -30,12 +30,15 @@ use super::DecompileOptionsV2;
 // Bump when the *on-disk schema* changes (header fields, snapshot layout) in a
 // way that old entries must not be read. Pipeline *output* changes are covered
 // by `binary_fingerprint()`, no need to bump for every decompiler fix.
-pub const CACHE_VERSION: u32 = 3;
+pub const CACHE_VERSION: u32 = 5;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.
 pub fn default_cache_path(input: &Path) -> PathBuf {
-    let mut name = input.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    let mut name = input
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
     name.push(".hdcache");
     input.with_file_name(name)
 }
@@ -62,15 +65,27 @@ pub fn binary_fingerprint() -> [u8; 32] {
     hash_bytes(env!("DECOMP_BUILD_FINGERPRINT").as_bytes())
 }
 
-// Only these options actually change the built context (see build_with_options).
+// Key over *every* option field, not the two that currently matter.
+//
+// `build_with_options` reads only `assembly_mode` and `include_offsets` today,
+// and this used to encode exactly those two bits. That was correct and
+// unenforced: adding a field to `DecompileOptionsV2` and consuming it in
+// `build_with_options` would have made every cache hit silently return a context
+// built with the old value, with the file hash and the build fingerprint both
+// matching so the entry looked perfectly valid. That is the same hand-synced
+// partial model the write path's `commit_image` check found in every write op.
+//
+// Hashing the whole struct cannot desync. The cost is a spurious rebuild when an
+// option that does not affect the context changes; the cost of the alternative is
+// a wrong answer that looks right.
 fn options_key(options: &DecompileOptionsV2) -> u32 {
-    (options.assembly_mode as u32)
-        | ((options.include_offsets as u32) << 1)
-        | ((options.deep as u32) << 2)
-        | ((options.stable as u32) << 3)
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    options.hash(&mut h);
+    h.finish() as u32
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct CacheHeader {
     magic: [u8; 4],
     cache_version: u32,
@@ -105,6 +120,19 @@ struct PipelineSnapshot {
     worklet_sources: BTreeMap<String, String>,
 }
 
+// The same shape, borrowed. Serialising through it writes the cache without
+// cloning every field first, which on a large bundle doubled the peak memory
+// of the run for the few seconds the write took.
+#[derive(serde::Serialize)]
+struct PipelineSnapshotRef<'a> {
+    all_ir: &'a BTreeMap<u32, Vec<Statement>>,
+    registry: &'a MetroRegistry,
+    closure_ctx: &'a Option<ClosureContext>,
+    global_analysis: &'a GlobalAnalysis,
+    inline_bodies: &'a BTreeMap<u32, String>,
+    worklet_sources: &'a BTreeMap<String, String>,
+}
+
 impl PipelineContext {
     // Build the pipeline, using an on-disk cache at `cache_path` keyed by the
     // bytecode `bytes`. Any cache read/write failure (missing, corrupt, stale,
@@ -125,7 +153,14 @@ impl PipelineContext {
             options_key: options_key(options),
         };
 
-        if let Some(ctx) = try_load(cache_path, &header) {
+        // The decode recurses once per IR level and the main thread's stack is
+        // small; load on a thread with the pipeline's large stack.
+        let loaded = {
+            let path = cache_path.to_path_buf();
+            let want = header.clone();
+            crate::run_with_large_stack(move || try_load(&path, &want))
+        };
+        if let Some(ctx) = loaded {
             log::debug!("[cache] hit: {}", cache_path.display());
             super::progress::status(format!(
                 "cache hit: {} (skipping analysis)",
@@ -169,21 +204,26 @@ impl PipelineContext {
             inline_bodies: Arc::new(snap.inline_bodies),
             child_functions,
             ancestor_env_slots: BTreeMap::new(),
+            captured_by_descendants: BTreeMap::new(),
+            // A cached context was built without an artifact: the cache key does
+            // not carry one, so a run that wants confirmed names bypasses it.
+            cascade_names: BTreeMap::new(),
             worklet_sources: snap.worklet_sources,
         };
         // Also derived from closure_ctx; recompute rather than serialize.
         ctx.ancestor_env_slots = ctx.precompute_ancestor_env_slot_names();
+        ctx.captured_by_descendants = ctx.compute_captured_by_descendants();
         ctx
     }
 
-    fn to_snapshot(&self) -> PipelineSnapshot {
-        PipelineSnapshot {
-            all_ir: self.all_ir.clone(),
-            registry: self.registry.clone(),
-            closure_ctx: self.closure_ctx.clone(),
-            global_analysis: self.global_analysis.clone(),
-            inline_bodies: (*self.inline_bodies).clone(),
-            worklet_sources: self.worklet_sources.clone(),
+    fn snapshot_ref(&self) -> PipelineSnapshotRef<'_> {
+        PipelineSnapshotRef {
+            all_ir: &self.all_ir,
+            registry: &self.registry,
+            closure_ctx: &self.closure_ctx,
+            global_analysis: &self.global_analysis,
+            inline_bodies: &self.inline_bodies,
+            worklet_sources: &self.worklet_sources,
         }
     }
 }
@@ -191,18 +231,81 @@ impl PipelineContext {
 fn try_load(path: &Path, want: &CacheHeader) -> Option<PipelineContext> {
     let f = std::fs::File::open(path).ok()?;
     let mut reader = BufReader::new(f);
-    let got: CacheHeader = rmp_serde::decode::from_read(&mut reader).ok()?;
+    let got: CacheHeader = match rmp_serde::decode::from_read(&mut reader) {
+        Ok(h) => h,
+        Err(e) => {
+            log::debug!("[cache] unreadable header: {e}");
+            return None;
+        }
+    };
     if !got.matches(want) {
+        log::debug!(
+            "[cache] stale: version {}/{} file {} binary {} options {}/{}",
+            got.cache_version,
+            want.cache_version,
+            got.file_hash == want.file_hash,
+            got.binary_hash == want.binary_hash,
+            got.options_key,
+            want.options_key
+        );
         return None;
     }
-    let snap: PipelineSnapshot = rmp_serde::decode::from_read(&mut reader).ok()?;
+    let t = std::time::Instant::now();
+    // The IR nests as deep as the source expressions do (a long `a + b + …`
+    // chain is one node per term), far past the decoder's default limit of
+    // 1024 levels, which refused every whole-bundle cache as "depth limit
+    // exceeded" and silently rebuilt. The encoder has no such limit, so raise
+    // the decoder's to its maximum; the caller already runs on a large stack.
+    let mut de = rmp_serde::Deserializer::new(&mut reader);
+    de.set_max_depth(usize::MAX);
+    let snap: PipelineSnapshot = match serde::Deserialize::deserialize(&mut de) {
+        Ok(s) => s,
+        Err(e) => {
+            log::debug!("[cache] unreadable snapshot: {e}");
+            return None;
+        }
+    };
+    log::debug!("[cache] snapshot decoded in {:.2?}", t.elapsed());
     Some(PipelineContext::from_snapshot(snap))
+}
+
+fn try_save(path: &Path, header: &CacheHeader, ctx: &PipelineContext) -> std::io::Result<()> {
+    // Write to a temp file then rename, so a concurrent reader never sees a
+    // half-written cache.
+    //
+    // The temp name carries the pid: it used to be a fixed `.hdcache.tmp`, so two
+    // processes analysing the same bundle wrote the same file concurrently and
+    // interleaved their bytes. The rename stayed atomic, so the result was a
+    // corrupt cache that `try_load` rejects -- never a wrong answer, but a
+    // permanent miss until something happened to rewrite it.
+    let tmp = path.with_extension(format!("hdcache.{}.tmp", std::process::id()));
+    {
+        let f = std::fs::File::create(&tmp)?;
+        let mut writer = BufWriter::new(f);
+        let map_err = |e: rmp_serde::encode::Error| std::io::Error::other(e.to_string());
+        rmp_serde::encode::write(&mut writer, header).map_err(map_err)?;
+        rmp_serde::encode::write(&mut writer, &ctx.snapshot_ref()).map_err(map_err)?;
+        use std::io::Write;
+        writer.flush()?;
+    }
+    std::fs::rename(&tmp, path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::analysis::metro::registry::{FactoryRoles, MetroModule};
+
+    #[test]
+    fn closure_context_with_block_scopes_roundtrips() {
+        let mut ctx = crate::analysis::closure::ClosureContext::default();
+        let scope = ctx.block_scope(7, 130);
+        assert!(ctx.is_block_scope(scope));
+        let bytes = rmp_serde::encode::to_vec(&ctx).expect("encode");
+        let back: crate::analysis::closure::ClosureContext =
+            rmp_serde::decode::from_slice(&bytes).expect("decode");
+        assert_eq!(back.slot_owner(7, 130), Some(scope));
+    }
 
     #[test]
     fn cache_path_appends_extension() {
@@ -223,6 +326,7 @@ mod tests {
                 dependencies: vec![1, 2],
                 exports: std::collections::HashMap::from([("default".to_string(), 42)]),
                 roles: FactoryRoles::from_param_count(7),
+                name_from_default_export: false,
             },
         );
         let mut all_ir = BTreeMap::new();
@@ -236,11 +340,15 @@ mod tests {
             inline_bodies: Arc::new(BTreeMap::from([(42u32, "body".to_string())])),
             child_functions: BTreeMap::new(),
             ancestor_env_slots: BTreeMap::new(),
+            captured_by_descendants: BTreeMap::new(),
+            // A cached context was built without an artifact: the cache key does
+            // not carry one, so a run that wants confirmed names bypasses it.
+            cascade_names: BTreeMap::new(),
             worklet_sources: BTreeMap::new(),
         };
 
         // Serialize the snapshot and read it back.
-        let bytes = rmp_serde::to_vec(&ctx.to_snapshot()).expect("serialize");
+        let bytes = rmp_serde::to_vec(&ctx.snapshot_ref()).expect("serialize");
         let snap: PipelineSnapshot = rmp_serde::from_slice(&bytes).expect("deserialize");
         let restored = PipelineContext::from_snapshot(snap);
 
@@ -250,7 +358,10 @@ mod tests {
         assert_eq!(m.roles.module_idx, 4); // modern 7-param layout survived
         assert_eq!(m.exports.get("default"), Some(&42));
         assert!(restored.all_ir.contains_key(&42));
-        assert_eq!(restored.inline_bodies.get(&42).map(String::as_str), Some("body"));
+        assert_eq!(
+            restored.inline_bodies.get(&42).map(String::as_str),
+            Some("body")
+        );
     }
 
     #[test]
@@ -290,6 +401,78 @@ mod tests {
         assert!(!want.matches(&other_opts));
     }
 
+    // F8: the key must move when *any* option moves, not just the two that
+    // `build_with_options` happens to read today. The old form encoded exactly
+    // those two bits, so adding a field and consuming it would have produced
+    // silently stale cache hits with the file hash and build fingerprint both
+    // matching.
+    #[test]
+    fn every_option_field_changes_the_cache_key() {
+        let base = DecompileOptionsV2::default();
+        let k = options_key(&base);
+        assert_eq!(k, options_key(&base), "the key must be deterministic");
+
+        // One mutator per field. If a field is added to DecompileOptionsV2 and not
+        // added here, the `exhaustive` destructure below stops compiling.
+        let DecompileOptionsV2 {
+            resolve_strings: _,
+            include_offsets: _,
+            propagate: _,
+            simplify: _,
+            recover_structures: _,
+            assembly_mode: _,
+            deep: _,
+            stable: _,
+            cascade: _,
+        } = base.clone();
+
+        let variants = [
+            DecompileOptionsV2 {
+                resolve_strings: !base.resolve_strings,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                include_offsets: !base.include_offsets,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                propagate: !base.propagate,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                simplify: !base.simplify,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                recover_structures: !base.recover_structures,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                assembly_mode: !base.assembly_mode,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                deep: !base.deep,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                stable: !base.stable,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                cascade: Some("proposal.json".into()),
+                ..base.clone()
+            },
+        ];
+        for (i, v) in variants.iter().enumerate() {
+            assert_ne!(
+                options_key(v),
+                k,
+                "field {i} does not affect the cache key, so a context built with                  one value would be served for the other"
+            );
+        }
+    }
+
     #[test]
     fn binary_fingerprint_is_stable_and_derived_from_build() {
         let a = binary_fingerprint();
@@ -301,20 +484,4 @@ mod tests {
         assert_ne!(a, [0u8; 32]);
         assert_ne!(a, [0xFF; 32]);
     }
-}
-
-fn try_save(path: &Path, header: &CacheHeader, ctx: &PipelineContext) -> std::io::Result<()> {
-    // Write to a temp file then rename, so a concurrent reader never sees a
-    // half-written cache.
-    let tmp = path.with_extension("hdcache.tmp");
-    {
-        let f = std::fs::File::create(&tmp)?;
-        let mut writer = BufWriter::new(f);
-        let map_err = |e: rmp_serde::encode::Error| std::io::Error::other(e.to_string());
-        rmp_serde::encode::write(&mut writer, header).map_err(map_err)?;
-        rmp_serde::encode::write(&mut writer, &ctx.to_snapshot()).map_err(map_err)?;
-        use std::io::Write;
-        writer.flush()?;
-    }
-    std::fs::rename(&tmp, path)
 }

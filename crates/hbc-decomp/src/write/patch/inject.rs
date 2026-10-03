@@ -6,10 +6,14 @@ use crate::file::{BytecodeFile, Instruction};
 use crate::format::FunctionHeader;
 use crate::opcode::BytecodeFormat;
 
+use crate::modern_layout::{
+    MODERN_LARGE_FRAME_SIZE, MODERN_SMALL_FLAGS_POS, MODERN_SMALL_HEADER_SIZE,
+};
 use crate::write::encode::encode_function_body;
 use crate::write::header_write::read_modern_large_pointer;
-use crate::write::serialize::section_offset;
+use crate::write::serialize::{commit_image, section_offset};
 
+use super::debug_reloc;
 use super::functions::patch_function_body;
 use super::PatchOptions;
 
@@ -34,6 +38,11 @@ fn reserve_modern_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<
         return Err(Error::Write("inject log: read cache full".into()));
     }
     let new_frame = log_frame_size(frame_now);
+    // Version-keyed large-header layout (WRITE_PATH_GUIDE R8/R11). The eight u32
+    // fields are the same in every supported modern version, so frame_size and
+    // read_cache_size happen not to have moved -- but go through the descriptor
+    // so that stays a checked fact rather than a lucky constant.
+    let layout = crate::modern_layout::ModernLayout::for_version(file.header.version)?;
     let fh_sec = section_offset(file, "function_headers")
         .ok_or_else(|| Error::Write("function_headers section missing".into()))?
         as usize;
@@ -45,16 +54,18 @@ fn reserve_modern_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<
     // The overflow bit lives in the small header (byte 11). For an overflowed
     // function the parsed struct flags come from the large header instead, which
     // does not carry the bit, so read it straight from the small header here.
-    let overflowed = raw[slot + 11] & crate::format::FLAG_OVERFLOWED != 0;
+    let overflowed = raw[slot + MODERN_SMALL_FLAGS_POS] & crate::format::FLAG_OVERFLOWED != 0;
     if overflowed {
-        // Large header layout: frame_size is the u32 at +28, read_cache_size the
-        // u8 at +32.
-        let lp = read_modern_large_pointer(&raw[slot..slot + 12])? as usize;
-        if lp + 33 > raw.len() {
-            return Err(Error::Write("inject log: large header out of range".into()));
+        let lp = read_modern_large_pointer(&raw[slot..slot + MODERN_SMALL_HEADER_SIZE])? as usize;
+        if lp + layout.large_size() > raw.len() {
+            return Err(Error::Write(format!(
+                "inject log: large header at {lp} (+{} bytes) is out of range",
+                layout.large_size()
+            )));
         }
-        raw[lp + 28..lp + 32].copy_from_slice(&new_frame.to_le_bytes());
-        raw[lp + 32] = (cache_now + 1) as u8;
+        let frame_pos = lp + MODERN_LARGE_FRAME_SIZE;
+        raw[frame_pos..frame_pos + 4].copy_from_slice(&new_frame.to_le_bytes());
+        raw[lp + layout.large_read_cache_size_pos()] = (cache_now + 1) as u8;
     } else {
         // Small 12-byte header: frame_size at bits 64..72, read_cache_size at bits
         // 72..80 (the ninth and tenth bytes).
@@ -119,9 +130,7 @@ fn build_log_entry(
         .iter()
         .position(|s| s.value == "print")
         .ok_or_else(|| {
-            Error::Write(
-                "inject log: no \"print\" string in the table to build a log call".into(),
-            )
+            Error::Write("inject log: no \"print\" string in the table to build a log call".into())
         })? as u32;
 
     // Read this function's name string id, then reserve the frame registers and a
@@ -185,7 +194,10 @@ fn build_log_entry(
     // r0=global, r1=print fn, r2=this(undefined), r3=message
     let mut seq = vec![
         mk(op_ggo, vec![reg(0)]),
-        mk(op_try, vec![reg(1), reg(0), u8v(cache_idx as u8), u16v(print_id as u16)]),
+        mk(
+            op_try,
+            vec![reg(1), reg(0), u8v(cache_idx as u8), u16v(print_id as u16)],
+        ),
         mk(op_lcu, vec![reg(2)]),
         mk(op_lcs, vec![reg(3), u16v(msg_id as u16)]),
         mk(op_call2, vec![reg(0), reg(1), reg(2), reg(3)]),
@@ -193,10 +205,18 @@ fn build_log_entry(
 
     // Keep the injected size a multiple of 4 so downstream functions shift by a
     // 4-aligned delta and their SwitchImm jump tables stay aligned. Pad with the
-    // 1-byte AsyncBreakCheck (a runtime no-op) when available.
-    if let Some(op_abc) = opc("AsyncBreakCheck") {
-        let injected_len = encode_function_body(format, &seq)?.len();
-        let pad = (4 - injected_len % 4) % 4;
+    // 1-byte AsyncBreakCheck (a runtime no-op). If padding is actually required but
+    // this version has no AsyncBreakCheck, fail loudly rather than silently emit a
+    // non-4-aligned prologue that misaligns every downstream large header (I5 / Q8).
+    let injected_len = encode_function_body(format, &seq)?.len();
+    if injected_len % 4 != 0 {
+        let op_abc = opc("AsyncBreakCheck").ok_or_else(|| {
+            Error::Write(format!(
+                "cannot 4-byte-align injected prologue ({injected_len} bytes) — this \
+                 bytecode version has no AsyncBreakCheck instruction to pad with"
+            ))
+        })?;
+        let pad = 4 - injected_len % 4;
         for _ in 0..pad {
             seq.push(mk(op_abc, vec![]));
         }
@@ -220,6 +240,13 @@ pub fn inject_stub(
     options: &PatchOptions,
 ) -> Result<Vec<u8>> {
     let mut body = file.decode_function_instructions(format, function_id)?;
+    let old_size: i64 = body.iter().map(|i| i.length as i64).sum();
+    // Where the new bytes go in. Both stubs insert at exactly one point, which is
+    // what makes the line table relocatable afterwards (R24 P2): every location at
+    // or past this offset moves by the size delta, and every location before it
+    // stays put. A wholesale body replacement has no such point, which is why
+    // `patch_function_body` still refuses those.
+    let mut insert_at: u32 = 0;
     match kind {
         InjectStubKind::NopPad => {
             // Find AsyncBreakCheck opcode by name if present; else no-op success with identity.
@@ -230,7 +257,7 @@ pub fn inject_stub(
                 .map(|d| d.opcode)
             {
                 // Insert before final Ret if present
-                let insert_at = body
+                let nop_at = body
                     .iter()
                     .rposition(|i| {
                         format
@@ -240,8 +267,9 @@ pub fn inject_stub(
                             .unwrap_or(false)
                     })
                     .unwrap_or(body.len());
+                insert_at = body.iter().take(nop_at).map(|i| i.length).sum();
                 body.insert(
-                    insert_at,
+                    nop_at,
                     Instruction {
                         offset: 0,
                         opcode: op,
@@ -252,11 +280,48 @@ pub fn inject_stub(
             }
         }
         InjectStubKind::LogEntry => {
+            // The prologue goes in at the front, so everything in the function
+            // moves by its length.
             build_log_entry(file, format, function_id, &mut body)?;
         }
     }
+
+    // The body edit itself. `allow_stale_debug_info` here is not "the line table
+    // does not matter" -- it is "this caller is about to fix it", two lines down.
+    // Going through the guarded path and then relocating would just refuse.
+    let body_options = PatchOptions {
+        allow_stale_debug_info: true,
+        ..options.clone()
+    };
     // Recompute offsets in the instruction list for encode (encode ignores insn.offset).
-    patch_function_body(file, format, function_id, &body, options)
+    let out = patch_function_body(file, format, function_id, &body, &body_options)?;
+
+    // `file` was refreshed by the commit inside `patch_function_body`, so its
+    // headers and debug_info_offset describe the image we are holding.
+    let new_size = file
+        .function_headers
+        .get(function_id as usize)
+        .map(|h| h.bytecode_size_in_bytes() as i64)
+        .unwrap_or(old_size);
+    let delta = new_size - old_size;
+
+    match debug_reloc::relocate_locations_for_insertion(
+        file,
+        out.clone(),
+        function_id,
+        insert_at,
+        delta,
+    ) {
+        Ok(relocated) => commit_image(file, relocated),
+        // The only failure is a version whose debug layout is not modelled. If the
+        // caller explicitly accepted a stale line table, honour that; otherwise the
+        // refusal is the point.
+        Err(e) if options.allow_stale_debug_info => {
+            let _ = e;
+            Ok(out)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]
@@ -270,15 +335,20 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../examples/react-native/v96/expressions/generator/bytecode.hbc"
         );
-        if !std::path::Path::new(path).exists() {
+        if !crate::write::corpus_fixture_present(path) {
             return;
         }
         let bytes = std::fs::read(path).unwrap();
         let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
         let format = BytecodeFormat::for_version(file.header.version).unwrap();
-        let out =
-            inject_stub(&mut file, &format, 0, InjectStubKind::NopPad, &PatchOptions::default())
-                .unwrap();
+        let out = inject_stub(
+            &mut file,
+            &format,
+            0,
+            InjectStubKind::NopPad,
+            &PatchOptions::default(),
+        )
+        .unwrap();
         assert!(verify_footer(&out));
         BytecodeFile::parse_auto(&out).expect("reparse after inject");
     }
@@ -293,7 +363,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../examples/react-native/v98/expressions/class_basic/bytecode.hbc"
         );
-        if !std::path::Path::new(path).exists() {
+        if !crate::write::corpus_fixture_present(path) {
             return;
         }
         let bytes = std::fs::read(path).unwrap();
@@ -318,5 +388,106 @@ mod tests {
                 "function count changed for {kind:?}"
             );
         }
+    }
+
+    // The two tests above are fixture-gated and skip in CI. The tests below build
+    // a real legacy image with `create_minimal`, exercising the legacy LogEntry
+    // branch and its precondition errors that WRITE_PATH_GUIDE flags as untested.
+    use crate::write::create::{create_minimal, CreateOptions};
+
+    fn make_legacy(strings: Vec<String>) -> (BytecodeFile, BytecodeFormat) {
+        let bytes = create_minimal(&CreateOptions {
+            version: 96,
+            strings,
+            ..Default::default()
+        })
+        .expect("create_minimal v96");
+        let file = BytecodeFile::parse_auto(&bytes).expect("parse created file");
+        let format = BytecodeFormat::for_version_or_latest(96).expect("format").0;
+        (file, format)
+    }
+
+    // Legacy LogEntry: a non-overflowed v96 function with a "print" string in the
+    // table takes the legacy frame/cache branch of build_log_entry, grows, and
+    // reparses.
+    #[test]
+    fn legacy_log_entry_grows_and_reparses() {
+        let (mut file, format) = make_legacy(vec!["global".into(), "print".into()]);
+        // Skip if this version lacks any opcode the log prologue needs.
+        let has = |n: &str| format.definitions.iter().any(|d| d.name == n);
+        if ![
+            "GetGlobalObject",
+            "TryGetById",
+            "LoadConstUndefined",
+            "LoadConstString",
+            "Call2",
+        ]
+        .iter()
+        .all(|n| has(n))
+        {
+            return;
+        }
+        assert!(matches!(
+            file.function_headers[0],
+            FunctionHeader::Legacy(_)
+        ));
+        let before = file.function_headers[0].bytecode_size_in_bytes();
+        let out = inject_stub(
+            &mut file,
+            &format,
+            0,
+            InjectStubKind::LogEntry,
+            &PatchOptions::default(),
+        )
+        .expect("legacy log entry inject");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).expect("reparse after legacy log inject");
+        assert!(
+            re.function_headers[0].bytecode_size_in_bytes() > before,
+            "the injected prologue must grow the body"
+        );
+    }
+
+    // LogEntry with no "print" string in the table must be rejected before any
+    // bytes are written.
+    #[test]
+    fn log_entry_without_print_string_errors() {
+        let (mut file, format) = make_legacy(vec!["global".into()]);
+        let err = inject_stub(
+            &mut file,
+            &format,
+            0,
+            InjectStubKind::LogEntry,
+            &PatchOptions::default(),
+        )
+        .expect_err("must fail without a print string");
+        assert!(
+            err.to_string().contains("print"),
+            "error should mention the missing print string, got: {err}"
+        );
+    }
+
+    // An overflowed legacy function is refused by build_log_entry. We set the
+    // overflow flag on the in-memory header to hit the guard deterministically
+    // without needing a real overflowed fixture.
+    #[test]
+    fn overflowed_legacy_log_entry_refused() {
+        let (mut file, format) = make_legacy(vec!["global".into(), "print".into()]);
+        match &mut file.function_headers[0] {
+            FunctionHeader::Legacy(leg) => leg.flags |= crate::format::FLAG_OVERFLOWED,
+            _ => panic!("expected a legacy function header"),
+        }
+        let err = inject_stub(
+            &mut file,
+            &format,
+            0,
+            InjectStubKind::LogEntry,
+            &PatchOptions::default(),
+        )
+        .expect_err("overflowed legacy must be refused");
+        assert!(
+            err.to_string().contains("overflow"),
+            "error should mention overflow, got: {err}"
+        );
     }
 }

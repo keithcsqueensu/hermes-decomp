@@ -1,0 +1,12 @@
+# The decompiler recurses deeply — the library already spawns its real work on
+# threads with a large stack (see `configure_thread_pool` in lib.rs, the CLI
+# worker in hbc-decomp-cli/src/main.rs, and ir/depth.rs). The test harness runs
+# each test on its own thread using the OS default stack, which on Windows (~1–2
+# MiB) is not enough for the deepest recursive tests once upstream's deep/stable
+# decompile paths are in play (e.g. `var_naming::tests::test_unique_names`).
+#
+# `RUST_MIN_STACK` sets the minimum stack for std-spawned threads, including the
+# harness's per-test threads, so `cargo test` matches the stack the binary gives
+# its own workers. It does not affect the main thread.
+[env]
+RUST_MIN_STACK = "16777216"

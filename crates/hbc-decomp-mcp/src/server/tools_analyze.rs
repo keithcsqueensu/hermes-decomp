@@ -4,13 +4,11 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::{tool, tool_router, ErrorData as McpError};
 
-use hbc_decomp::opcode::BytecodeFormat;
-use hbc_decomp::{
-    BytecodeFile, ClosureInfo, DecompileOptionsV2, DebugInfo, IRBuilder, IRBuilderOptions,
-};
+use hbc_decomp::{BytecodeFile, ClosureInfo, DecompileOptionsV2, IRBuilder, IRBuilderOptions};
 
+use super::bounds::{parse_globs, parse_id_ranges, truncate_at_line};
 use super::params::*;
-use super::{HermesService, LoadedFile};
+use super::{text_result, HermesService, LoadedFile};
 
 #[tool_router(router = analyze_router, vis = "pub(crate)")]
 impl HermesService {
@@ -21,22 +19,46 @@ impl HermesService {
         &self,
         Parameters(params): Parameters<LoadFileParams>,
     ) -> Result<CallToolResult, McpError> {
-        let bytes = std::fs::read(&params.path)
-            .map_err(|e| McpError::internal_error(format!("Failed to read file: {e}"), None))?;
-        let file = BytecodeFile::parse_auto(&bytes)
-            .map_err(|e| McpError::internal_error(format!("Failed to parse HBC: {e}"), None))?;
-        let (format, _) = BytecodeFormat::for_version_or_latest(file.header.version)
-            .map_err(|e| McpError::internal_error(format!("Unsupported version: {e}"), None))?;
+        // Parsing does not go through with_file, so it gets its own large stack.
+        let path = params.path.clone();
+        let (bytes, file, format) = hbc_decomp::run_with_large_stack(move || {
+            let bytes = std::fs::read(&path)
+                .map_err(|e| McpError::internal_error(format!("Failed to read file: {e}"), None))?;
+            let mut file = BytecodeFile::parse_auto(&bytes)
+                .map_err(|e| McpError::internal_error(format!("Failed to parse HBC: {e}"), None))?;
+            // `resolve_format` records a diagnostic when a *different* version's
+            // opcode table is substituted. This used to be `let (format, _)`, so an
+            // agent reading this response had no way to know its decode came from the
+            // wrong table -- which does not fail, it just yields correct-looking
+            // JavaScript with the wrong instructions in it.
+            let format = file
+                .resolve_format()
+                .map_err(|e| McpError::internal_error(format!("Unsupported version: {e}"), None))?;
+            Ok::<_, McpError>((bytes, file, format))
+        })?;
 
-        let info = format!(
-            "Loaded: {}\nVersion: {}\nFunctions: {}\nStrings: {}",
-            params.path, file.header.version, file.header.function_count, file.header.string_count,
+        let mut info = format!(
+            "Loaded: {}\nVersion: {}\nFunctions: {}\nStrings: {}\nDebug info: {}",
+            params.path,
+            file.header.version,
+            file.header.function_count,
+            file.header.string_count,
+            file.debug_info_status.describe(),
         );
+        // Integrity and degradation, up front. Silence here is what let a
+        // hand-patched bundle with a stale SHA-1 footer, or a file decoded at the
+        // wrong stride, read as a clean load.
+        let warnings = file.warnings();
+        if warnings.is_empty() {
+            info.push_str("\nIntegrity: OK (footer and file_length both match)");
+        } else {
+            info.push_str("\n\n!! This read is degraded:");
+            for w in &warnings {
+                info.push_str(&format!("\n  - {w}"));
+            }
+        }
 
-        let mut guard = self
-            .loaded
-            .lock()
-            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+        let mut guard = self.lock();
         *guard = Some(LoadedFile {
             file,
             format,
@@ -45,7 +67,7 @@ impl HermesService {
             pipeline_ctx: None,
             pipeline_deep: false,
         });
-        Ok(CallToolResult::success(vec![ContentBlock::text(info)]))
+        text_result(info)
     }
 
     #[tool(description = "Get file header info: version, function count, string count, file path.")]
@@ -59,7 +81,7 @@ impl HermesService {
                 file.header.function_count,
                 file.header.string_count,
             );
-            Ok(CallToolResult::success(vec![ContentBlock::text(info)]))
+            text_result(info)
         })
     }
 
@@ -80,11 +102,11 @@ impl HermesService {
                 assembly_mode: params.assembly,
                 deep: false,
                 stable: false,
+                cascade: None,
             };
             let code = if params.resolve_closures {
-                let closure_ctx =
-                    hbc_decomp::build_closure_context(&loaded.file, &loaded.format)
-                        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+                let closure_ctx = hbc_decomp::build_closure_context(&loaded.file, &loaded.format)
+                    .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
                 hbc_decomp::decompile_function_v2_with_context(
                     &loaded.file,
                     &loaded.format,
@@ -102,7 +124,7 @@ impl HermesService {
                 )
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?
             };
-            Ok(CallToolResult::success(vec![ContentBlock::text(code)]))
+            text_result(code)
         })
     }
 
@@ -117,29 +139,55 @@ impl HermesService {
             loaded.ensure_pipeline(params.deep)?;
             let pipeline = loaded.pipeline_ctx.as_ref().unwrap();
             let code = pipeline.generate_function_code(&loaded.file, params.function_id);
-            Ok(CallToolResult::success(vec![ContentBlock::text(code)]))
+            text_result(code)
         })
     }
 
     #[tool(
-        description = "Decompile all functions with full pipeline (IPA, closures, ESM). Groups output by Metro module. May take several seconds for large bundles."
+        description = "Decompile the bundle with the full pipeline (IPA, closures, ESM), grouped by Metro module. Filtered and bounded: select modules with modules (id ranges), module_name / exclude_module_name (globs) or from_module + module_depth (dependency subtree), and cap the output with max_chars (default 2000000). Output above the cap is cut at a line boundary and a second block reports truncated, total_chars and kept_chars. Without a filter, orphan functions are included."
     )]
     fn decompile_all(
         &self,
         Parameters(params): Parameters<DecompileAllParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.with_file(|loaded| {
+        self.with_file_mut(|loaded| {
+            // Warm the in-memory context (and its on-disk cache) so the filtered
+            // render below is served from the cache instead of re-analyzing.
+            loaded.ensure_pipeline(params.deep)?;
             let opts = DecompileOptionsV2 {
                 deep: params.deep,
                 ..DecompileOptionsV2::optimized()
             };
-            let code = hbc_decomp::decompile_all_v2_with_closures(
+            let filter = hbc_decomp::ModuleFilter {
+                id_ranges: parse_id_ranges(params.modules.as_deref()),
+                name_globs: parse_globs(params.module_name.as_deref()),
+                exclude_globs: parse_globs(params.exclude_module_name.as_deref()),
+                from: params.from_module,
+                depth: params.module_depth,
+            };
+            let cache_path = hbc_decomp::default_cache_path(std::path::Path::new(&loaded.path));
+            let code = hbc_decomp::decompile_filtered_v2_cached(
                 &loaded.file,
                 &loaded.format,
                 &opts,
+                Some(&filter),
+                &loaded.bytes,
+                &cache_path,
             )
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-            Ok(CallToolResult::success(vec![ContentBlock::text(code)]))
+
+            let bounded = truncate_at_line(code, params.max_chars);
+            let summary = serde_json::json!({
+                "truncated": bounded.truncated,
+                "total_chars": bounded.total_chars,
+                "kept_chars": bounded.kept_chars,
+                "max_chars": params.max_chars,
+                "filtered": !filter.is_empty(),
+            });
+            Ok(CallToolResult::success(vec![
+                ContentBlock::text(bounded.text),
+                ContentBlock::text(summary.to_string()),
+            ]))
         })
     }
 
@@ -161,7 +209,7 @@ impl HermesService {
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
             let json = serde_json::to_string_pretty(&ir)
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-            Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
+            text_result(json)
         })
     }
 
@@ -184,7 +232,7 @@ impl HermesService {
                 &options,
             )
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-            Ok(CallToolResult::success(vec![ContentBlock::text(asm)]))
+            text_result(asm)
         })
     }
 
@@ -206,14 +254,26 @@ impl HermesService {
                 hbc_decomp::analysis::find_string_xrefs(file, format, &params.query)
             };
 
+            // A hot string in a large bundle can have thousands of xrefs; take a
+            // window and state it, rather than returning however many there are.
+            let start = params.offset.min(results.len());
+            let end = params
+                .limit
+                .map(|l| start.saturating_add(l).min(results.len()))
+                .unwrap_or(results.len());
             let mut output = format!(
-                "Found {} cross-references for '{}':\n",
+                "Found {} cross-references for '{}' (showing {start}..{end}):\n",
                 results.len(),
                 params.query
             );
-            for xref in &results {
+            for xref in &results[start..end] {
+                // A corrupt or mis-parsed header table can carry a function id past
+                // the end of it; index defensively rather than panicking inside a
+                // long-lived server.
                 let name = file
-                    .string_at(file.function_headers[xref.function_id as usize].function_name())
+                    .function_headers
+                    .get(xref.function_id as usize)
+                    .and_then(|h| file.string_at(h.function_name()))
                     .map(|e| e.value.as_str())
                     .unwrap_or("<anonymous>");
                 output.push_str(&format!(
@@ -221,7 +281,7 @@ impl HermesService {
                     xref.function_id, name, xref.offset, xref.opcode
                 ));
             }
-            Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
+            text_result(output)
         })
     }
 
@@ -252,7 +312,7 @@ impl HermesService {
                     m.module_id, m.function_id, name_str, m.dependencies, export_count
                 ));
             }
-            Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
+            text_result(output)
         })
     }
 
@@ -266,7 +326,7 @@ impl HermesService {
             loaded.ensure_pipeline(false)?;
             let registry = &loaded.pipeline_ctx.as_ref().unwrap().registry;
             let tree = registry.get_dependency_tree(params.module_id, params.depth);
-            Ok(CallToolResult::success(vec![ContentBlock::text(tree.format(0))]))
+            text_result(tree.format(0))
         })
     }
 
@@ -277,71 +337,102 @@ impl HermesService {
         self.with_file(|loaded| {
             let file = &loaded.file;
             let mut output = String::new();
+
+            // Paging. `dump` walks whole tables -- 98,917 strings and 62,909
+            // function headers on a real bundle, 5.8 MB and 3.7 MB of text -- so
+            // it takes a window and says what the window was.
+            let window = |total: usize, out: &mut String, label: &str| -> (usize, usize) {
+                let start = params.offset.min(total);
+                let end = params
+                    .limit
+                    .map(|l| start.saturating_add(l).min(total))
+                    .unwrap_or(total);
+                out.push_str(&format!(
+                    "{label}: showing {}..{} of {total}
+",
+                    start, end
+                ));
+                (start, end)
+            };
+
+            let fn_line = |i: usize, out: &mut String| {
+                let fh = &file.function_headers[i];
+                let name = file
+                    .string_at(fh.function_name())
+                    .map(|e| e.value.clone())
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "Function {}: name=\"{}\" params={} regs={} size={}
+",
+                    i,
+                    name,
+                    fh.param_count(),
+                    fh.frame_size(),
+                    fh.bytecode_size_in_bytes()
+                ));
+            };
+
+            let string_line = |i: usize, out: &mut String| {
+                if let Some(s) = file.string_at(i as u32) {
+                    out.push_str(&format!(
+                        "{}: {}
+",
+                        i, s.value
+                    ));
+                }
+            };
+
             match params.kind.as_str() {
                 "functions" => {
-                    for (i, fh) in file.function_headers.iter().enumerate() {
-                        let name = file
-                            .string_at(fh.function_name())
-                            .map(|e| e.value.clone())
-                            .unwrap_or_default();
-                        output.push_str(&format!(
-                            "Function {}: name=\"{}\" params={} regs={} size={}\n",
-                            i,
-                            name,
-                            fh.param_count(),
-                            fh.frame_size(),
-                            fh.bytecode_size_in_bytes()
-                        ));
+                    let (a, b) = window(file.function_headers.len(), &mut output, "functions");
+                    for i in a..b {
+                        fn_line(i, &mut output);
                     }
                 }
                 "identifiers" => {
-                    // Dump identifier hash entries
-                    for (i, entry) in file.identifier_hashes.iter().enumerate() {
-                        output.push_str(&format!("Identifier {i}: hash=0x{entry:08x}\n"));
+                    let (a, b) = window(file.identifier_hashes.len(), &mut output, "identifiers");
+                    for i in a..b {
+                        output.push_str(&format!(
+                            "Identifier {i}: hash=0x{:08x}
+",
+                            file.identifier_hashes[i]
+                        ));
                     }
                     if file.identifier_hashes.is_empty() {
-                        output.push_str("No identifier hash table found.\n");
+                        output.push_str(
+                            "No identifier hash table found.
+",
+                        );
                     }
                 }
                 "all" => {
-                    output.push_str(&format!(
-                        "=== {} strings ===\n",
-                        file.header.string_count
-                    ));
-                    for i in 0..file.header.string_count {
-                        if let Some(s) = file.string_at(i) {
-                            output.push_str(&format!("{}: {}\n", i, s.value));
-                        }
+                    output.push_str(
+                        "=== strings ===
+",
+                    );
+                    let (a, b) = window(file.header.string_count as usize, &mut output, "strings");
+                    for i in a..b {
+                        string_line(i, &mut output);
                     }
-                    output.push_str(&format!(
-                        "\n=== {} functions ===\n",
-                        file.header.function_count
-                    ));
-                    for (i, fh) in file.function_headers.iter().enumerate() {
-                        let name = file
-                            .string_at(fh.function_name())
-                            .map(|e| e.value.clone())
-                            .unwrap_or_default();
-                        output.push_str(&format!(
-                            "Function {}: name=\"{}\" params={} regs={} size={}\n",
-                            i,
-                            name,
-                            fh.param_count(),
-                            fh.frame_size(),
-                            fh.bytecode_size_in_bytes()
-                        ));
+                    output.push_str(
+                        "
+=== functions ===
+",
+                    );
+                    let (a, b) = window(file.function_headers.len(), &mut output, "functions");
+                    for i in a..b {
+                        fn_line(i, &mut output);
                     }
                 }
                 _ => {
                     // Default: strings
-                    for i in 0..file.header.string_count {
-                        if let Some(s) = file.string_at(i) {
-                            output.push_str(&format!("{}: {}\n", i, s.value));
-                        }
+                    let (a, b) = window(file.header.string_count as usize, &mut output, "strings");
+                    for i in a..b {
+                        string_line(i, &mut output);
                     }
                 }
             }
-            Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
+            text_result(output)
         })
     }
 
@@ -353,9 +444,9 @@ impl HermesService {
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+        text_result(format!(
             "Supported Hermes bytecode versions: HBC 40-99.\nAvailable opcode tables: {list}"
-        ))]))
+        ))
     }
 
     // --- New tools ---
@@ -381,10 +472,10 @@ impl HermesService {
 
             let info = ClosureInfo::analyze(&stmts);
             if info.slots.is_empty() {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                return text_result(format!(
                     "Function {} has no closure variable slots.",
                     params.function_id
-                ))]));
+                ));
             }
 
             let mut output = format!(
@@ -408,7 +499,7 @@ impl HermesService {
                 };
                 output.push_str(&format!("  slot {slot}: {desc}\n"));
             }
-            Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
+            text_result(output)
         })
     }
 
@@ -449,7 +540,7 @@ impl HermesService {
                     output.push_str(&format!("  ... and {} more\n", dead_count - 200));
                 }
             }
-            Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
+            text_result(output)
         })
     }
 
@@ -461,15 +552,21 @@ impl HermesService {
         Parameters(params): Parameters<FunctionIdParams>,
     ) -> Result<CallToolResult, McpError> {
         self.with_file(|loaded| {
-            let offset = loaded.file.header.debug_info_offset;
-            if offset == 0 || offset == u32::MAX {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(
-                    "No debug info available in this bytecode file.",
-                )]));
+            // Say *which* kind of "no debug info" this is. The old form tested
+            // only `offset == 0 || offset == NO_OFFSET` and reported everything
+            // else as absence -- so "this file was built without -g", "this
+            // bytecode version has no modelled debug layout" (v97, and anything
+            // below v96) and "the section points past EOF" were one answer.
+            let status = loaded.file.debug_info_status;
+            if status != hbc_decomp::DebugInfoStatus::Present {
+                return text_result(format!("No debug info available: {}.", status.describe()));
             }
 
-            let debug = DebugInfo::parse(&loaded.bytes, offset)
-                .map_err(|e| McpError::internal_error(format!("Debug parse error: {e}"), None))?;
+            // The file's own parse, which carries the per-function DebugOffsets
+            // index the location streams are addressed through.
+            let debug = loaded.file.debug_info.clone().ok_or_else(|| {
+                McpError::internal_error("Debug parse error: no debug info", None)
+            })?;
 
             let mut output = String::new();
 
@@ -516,10 +613,11 @@ impl HermesService {
             }
 
             if output.is_empty() {
-                output.push_str("Debug info section exists but contains no data for this function.");
+                output
+                    .push_str("Debug info section exists but contains no data for this function.");
             }
 
-            Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
+            text_result(output)
         })
     }
 
@@ -550,7 +648,7 @@ impl HermesService {
                 .unwrap_or_else(|| format!("f{}", params.function_id));
 
             let dot = hbc_decomp::ir::generate_dot(&cfg, &function_name);
-            Ok(CallToolResult::success(vec![ContentBlock::text(dot)]))
+            text_result(dot)
         })
     }
 
@@ -569,14 +667,11 @@ impl HermesService {
                 .modules
                 .get(&params.module_id)
                 .ok_or_else(|| {
-                    McpError::invalid_params(
-                        format!("Module {} not found", params.module_id),
-                        None,
-                    )
+                    McpError::invalid_params(format!("Module {} not found", params.module_id), None)
                 })?;
             let function_id = module.function_id;
             let code = pipeline.generate_function_code(&loaded.file, function_id);
-            Ok(CallToolResult::success(vec![ContentBlock::text(code)]))
+            text_result(code)
         })
     }
 
@@ -595,10 +690,7 @@ impl HermesService {
                 .modules
                 .get(&params.module_id)
                 .ok_or_else(|| {
-                    McpError::invalid_params(
-                        format!("Module {} not found", params.module_id),
-                        None,
-                    )
+                    McpError::invalid_params(format!("Module {} not found", params.module_id), None)
                 })?;
 
             let name_str = module
@@ -608,10 +700,10 @@ impl HermesService {
                 .unwrap_or_default();
 
             if module.exports.is_empty() {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                return text_result(format!(
                     "Module {}{} has no detected exports.",
                     params.module_id, name_str
-                ))]));
+                ));
             }
 
             let mut output = format!(
@@ -634,7 +726,7 @@ impl HermesService {
                     "  export \"{name}\" -> function {func_id} ({func_name})\n"
                 ));
             }
-            Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
+            text_result(output)
         })
     }
 
@@ -662,7 +754,7 @@ impl HermesService {
             } else {
                 hbc_decomp::dump_table(&loaded.file, kind)
             };
-            Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+            text_result(text)
         })
     }
 
@@ -682,7 +774,7 @@ impl HermesService {
                 params.dot,
             )
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-            Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
+            text_result(output)
         })
     }
 
@@ -701,7 +793,7 @@ impl HermesService {
                         None,
                     )
                 })?;
-            Ok(CallToolResult::success(vec![ContentBlock::text(banner)]))
+            text_result(banner)
         })
     }
 }

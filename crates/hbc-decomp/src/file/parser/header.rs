@@ -7,7 +7,7 @@ pub const HEADER_SIZE: usize = 128;
 pub const LEGACY_BIGINT_MIN_VERSION: u32 = 87;
 pub const LEGACY_SEGMENT_ID_MIN_VERSION: u32 = 78;
 pub const LEGACY_FUNCTION_SOURCE_MIN_VERSION: u32 = 84;
-pub const MODERN_FUNCTION_HEADER_MIN_VERSION: u32 = 97;
+pub use crate::modern_layout::MODERN_FUNCTION_HEADER_MIN_VERSION;
 
 pub fn infer_function_header_layout(version: u32) -> FunctionHeaderLayout {
     if version >= MODERN_FUNCTION_HEADER_MIN_VERSION {
@@ -71,7 +71,7 @@ pub fn parse_legacy_header(
     };
 
     let debug_info_offset = reader.read_u32()?;
-    let options = reader.read_u8()?;
+    let options_raw = reader.read_u8()?;
 
     Ok(BytecodeHeader {
         magic,
@@ -100,7 +100,7 @@ pub fn parse_legacy_header(
         cjs_module_count,
         function_source_count,
         debug_info_offset,
-        options,
+        options_raw,
         layout: HeaderLayout::Legacy,
         function_header_layout: infer_function_header_layout(version),
     })
@@ -132,7 +132,7 @@ pub fn parse_modern_header(
     let cjs_module_count = reader.read_u32()?;
     let function_source_count = reader.read_u32()?;
     let debug_info_offset = reader.read_u32()?;
-    let options = reader.read_u8()?;
+    let options_raw = reader.read_u8()?;
 
     Ok(BytecodeHeader {
         magic,
@@ -161,7 +161,7 @@ pub fn parse_modern_header(
         cjs_module_count,
         function_source_count: Some(function_source_count),
         debug_info_offset,
-        options,
+        options_raw,
         layout: HeaderLayout::Modern,
         function_header_layout: infer_function_header_layout(version),
     })

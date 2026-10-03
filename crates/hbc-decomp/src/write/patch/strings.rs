@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::file::BytecodeFile;
 use crate::opcode::BytecodeFormat;
 
-use crate::write::serialize::{finalize_raw_image, section_offset};
+use crate::write::serialize::{commit_image, section_offset};
 
 use super::PatchOptions;
 
@@ -54,21 +54,20 @@ fn locate_string_bytes(file: &BytecodeFile, id: u32) -> Result<(usize, usize)> {
         let is_utf16 = (raw_e & UTF16) != 0;
         let offset = (raw_e >> OFF_SHIFT) & OFF_MASK;
         let length = (raw_e >> LEN_SHIFT) & LEN_MASK;
-        let (off, len) =
-            if length == LEN_OVERFLOW || offset == OFF_OVERFLOW {
-                let ov_base = overflow_off
-                    .ok_or_else(|| Error::Write("overflow string table missing".into()))?;
-                let ov_slot = ov_base + overflow_index * 8;
-                if ov_slot + 8 > raw.len() {
-                    return Err(Error::Write("overflow string table OOB".into()));
-                }
-                let o = u32::from_le_bytes(raw[ov_slot..ov_slot + 4].try_into().unwrap());
-                let l = u32::from_le_bytes(raw[ov_slot + 4..ov_slot + 8].try_into().unwrap());
-                overflow_index += 1;
-                (o, l)
-            } else {
-                (offset, length)
-            };
+        let (off, len) = if length == LEN_OVERFLOW || offset == OFF_OVERFLOW {
+            let ov_base =
+                overflow_off.ok_or_else(|| Error::Write("overflow string table missing".into()))?;
+            let ov_slot = ov_base + overflow_index * 8;
+            if ov_slot + 8 > raw.len() {
+                return Err(Error::Write("overflow string table OOB".into()));
+            }
+            let o = u32::from_le_bytes(raw[ov_slot..ov_slot + 4].try_into().unwrap());
+            let l = u32::from_le_bytes(raw[ov_slot + 4..ov_slot + 8].try_into().unwrap());
+            overflow_index += 1;
+            (o, l)
+        } else {
+            (offset, length)
+        };
         if i == id as usize {
             if is_utf16 {
                 return Err(Error::Write("patch_string: UTF-16 not supported".into()));
@@ -135,8 +134,8 @@ fn read_all_string_locs(file: &BytecodeFile) -> Result<Vec<StrLoc>> {
         let offset = (raw_e >> OFF_SHIFT) & OFF_MASK;
         let length = (raw_e >> LEN_SHIFT) & LEN_MASK;
         let (off, len) = if length == LEN_OVERFLOW || offset == OFF_OVERFLOW {
-            let ov_base = overflow_off
-                .ok_or_else(|| Error::Write("overflow string table missing".into()))?;
+            let ov_base =
+                overflow_off.ok_or_else(|| Error::Write("overflow string table missing".into()))?;
             let ov_slot = ov_base + overflow_index * 8;
             if ov_slot + 8 > raw.len() {
                 return Err(Error::Write("overflow string table OOB".into()));
@@ -263,16 +262,10 @@ pub fn retarget_string(
         ));
     }
 
-    // Warn on cross-kind retarget.
+    // A cross-kind retarget (from_id and to_id differ in is_identifier) is
+    // allowed but noteworthy; the CLI warns. The library stays silent so
+    // programmatic callers get no unsolicited stderr output.
     let from_is_id = file.strings[from_id as usize].is_identifier;
-    let to_is_id = file.strings[to_id as usize].is_identifier;
-    if from_is_id != to_is_id {
-        eprintln!(
-            "warning: retarget crosses string/identifier boundary \
-             (from_id {} is_identifier={}, to_id {} is_identifier={})",
-            from_id, from_is_id, to_id, to_is_id
-        );
-    }
 
     // Copy the 4-byte entry.
     let entry_bytes: [u8; 4] = raw[to_slot..to_slot + 4].try_into().unwrap();
@@ -290,8 +283,7 @@ pub fn retarget_string(
     file.strings[from_id as usize].value = to_val;
     file.strings[from_id as usize].is_utf16 = to_utf16;
 
-    let out = finalize_raw_image(raw)?;
-    file.raw_bytes = Some(out.clone());
+    let out = commit_image(file, raw)?;
     Ok(out)
 }
 
@@ -319,11 +311,7 @@ pub(super) fn legacy_debug_info_offset_pos(header: &crate::format::BytecodeHeade
 // Legacy layout, non-overflowed function headers, non-identifier UTF-8 target
 // only. Refuses anything that would need an overflow string entry or an
 // identifier-hash rebuild, so it never emits a silently corrupt file.
-fn patch_string_resize(
-    file: &mut BytecodeFile,
-    id: u32,
-    new_value: &str,
-) -> Result<Vec<u8>> {
+fn patch_string_resize(file: &mut BytecodeFile, id: u32, new_value: &str) -> Result<Vec<u8>> {
     let modern = matches!(
         file.header.function_header_layout,
         crate::format::FunctionHeaderLayout::Modern12
@@ -392,7 +380,11 @@ fn patch_string_resize(
             if start + byte_len > raw.len() {
                 return Err(Error::Write("string storage OOB during rebuild".into()));
             }
-            (raw[start..start + byte_len].to_vec(), loc.len_field, loc.is_utf16)
+            (
+                raw[start..start + byte_len].to_vec(),
+                loc.len_field,
+                loc.is_utf16,
+            )
         };
         let off = new_storage.len() as u32;
         new_storage.extend_from_slice(&bytes);
@@ -423,7 +415,7 @@ fn patch_string_resize(
     let storage_size = new_storage.len() as u32;
     let overflow_count = new_overflow.len() as u32;
     region.extend_from_slice(&new_storage);
-    while region.len() % 4 != 0 {
+    while !region.len().is_multiple_of(4) {
         region.push(0);
     }
 
@@ -456,8 +448,10 @@ fn patch_string_resize(
     // body offset shifts. The small function header is before the region and
     // keeps its slot; we edit it in place. When a function is overflowed the
     // small header only holds a pointer to an out-of-line large header (also in
-    // the moved region): we shift that pointer and the large header's own
-    // offset fields, then shift the offsets in its exception handler table.
+    // the moved region): we shift that pointer and the large header's own body
+    // offset (plus its info offset for legacy). Exception-handler tables are
+    // body-relative and are NOT rewritten here — a whole-region shift moves the
+    // table and the code it points into together, so those offsets stay valid.
     let fh_sec = section_offset(file, "function_headers")
         .ok_or_else(|| Error::Write("function_headers section missing".into()))?
         as usize;
@@ -496,8 +490,7 @@ fn patch_string_resize(
     file.header.overflow_string_count = overflow_count;
     file.header.string_storage_size = storage_size;
 
-    let out = finalize_raw_image(rebuilt)?;
-    file.raw_bytes = Some(out.clone());
+    let out = commit_image(file, rebuilt)?;
     Ok(out)
 }
 
@@ -589,16 +582,9 @@ pub fn add_string(
     }
     let old_region_len = array_off - kinds_off;
 
-    // Duplicate check: warn (to stderr) if value already exists but still append.
-    for (i, s) in file.strings.iter().enumerate() {
-        if s.value == value && s.is_identifier == is_identifier {
-            eprintln!(
-                "note: string {:?} already exists at id {} (is_identifier={}); appending anyway as id {}",
-                value, i, is_identifier, new_id
-            );
-            break;
-        }
-    }
+    // A duplicate value is allowed (ids are append-only, so it still gets a new
+    // id); the CLI notes it. The library stays silent so programmatic callers
+    // get no unsolicited stderr output.
 
     // ---- Rebuild storage + small/overflow tables (N+1 entries) ----
     let mut new_storage: Vec<u8> = Vec::new();
@@ -625,7 +611,8 @@ pub fn add_string(
             let e = (0xffu32 << 24) | ((ov_index & 0x7f_ffff) << 1) | (loc.is_utf16 as u32);
             new_small.push(e);
         } else {
-            let e = ((loc.len_field & 0xff) << 24) | ((off & 0x7f_ffff) << 1) | (loc.is_utf16 as u32);
+            let e =
+                ((loc.len_field & 0xff) << 24) | ((off & 0x7f_ffff) << 1) | (loc.is_utf16 as u32);
             new_small.push(e);
         }
     }
@@ -650,7 +637,8 @@ pub fn add_string(
         let e = (0xffu32 << 24) | ((ov_index & 0x7f_ffff) << 1) | (new_is_utf16 as u32);
         new_small.push(e);
     } else {
-        let e = ((new_len_field & 0xff) << 24) | ((new_off & 0x7f_ffff) << 1) | (new_is_utf16 as u32);
+        let e =
+            ((new_len_field & 0xff) << 24) | ((new_off & 0x7f_ffff) << 1) | (new_is_utf16 as u32);
         new_small.push(e);
     }
 
@@ -697,7 +685,7 @@ pub fn add_string(
         };
         region.extend_from_slice(&raw_k.to_le_bytes());
     }
-    while region.len() % 4 != 0 {
+    while !region.len().is_multiple_of(4) {
         region.push(0);
     }
 
@@ -705,7 +693,7 @@ pub fn add_string(
     for h in &new_id_hashes {
         region.extend_from_slice(&h.to_le_bytes());
     }
-    while region.len() % 4 != 0 {
+    while !region.len().is_multiple_of(4) {
         region.push(0);
     }
 
@@ -724,7 +712,7 @@ pub fn add_string(
     let storage_size = new_storage.len() as u32;
     let overflow_count = new_overflow.len() as u32;
     region.extend_from_slice(&new_storage);
-    while region.len() % 4 != 0 {
+    while !region.len().is_multiple_of(4) {
         region.push(0);
     }
 
@@ -801,8 +789,7 @@ pub fn add_string(
     file.header.overflow_string_count = overflow_count;
     file.header.string_storage_size = storage_size;
 
-    let out = finalize_raw_image(rebuilt)?;
-    file.raw_bytes = Some(out.clone());
+    let out = commit_image(file, rebuilt)?;
     Ok((out, new_id))
 }
 
@@ -862,8 +849,7 @@ pub fn patch_string_by_id(
     if let Some(s) = file.strings.get_mut(id as usize) {
         s.value = new_value.to_string();
     }
-    let out = finalize_raw_image(raw)?;
-    file.raw_bytes = Some(out.clone());
+    let out = commit_image(file, raw)?;
     Ok(out)
 }
 
@@ -902,7 +888,7 @@ mod tests {
 
     #[test]
     fn patch_string_same_length_v96() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -934,14 +920,20 @@ mod tests {
 
     #[test]
     fn patch_string_resize_grow_reparses() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
         // "gen" is a plain (non-identifier) string in this fixture.
         let id = file.strings.iter().position(|s| s.value == "gen");
         let Some(id) = id else { return };
-        let out = patch_string_by_id(&mut file, &format, id as u32, "genXXXXX", &PatchOptions::default());
+        let out = patch_string_by_id(
+            &mut file,
+            &format,
+            id as u32,
+            "genXXXXX",
+            &PatchOptions::default(),
+        );
         if let Ok(out) = out {
             assert!(verify_footer(&out));
             let re = BytecodeFile::parse_auto(&out).unwrap();
@@ -951,16 +943,15 @@ mod tests {
 
     #[test]
     fn patch_string_packed_falls_back_to_resize() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
         // "done" shares storage with "next" here, so an in place patch would
         // overlap. The patch must still succeed by rebuilding the table unpacked.
         if file.strings.get(5).map(|s| s.value.as_str()) == Some("done") {
-            let out =
-                patch_string_by_id(&mut file, &format, 5, "GONE", &PatchOptions::default())
-                    .expect("packed same length patch should resize, not fail");
+            let out = patch_string_by_id(&mut file, &format, 5, "GONE", &PatchOptions::default())
+                .expect("packed same length patch should resize, not fail");
             assert!(verify_footer(&out));
             let re = BytecodeFile::parse_auto(&out).unwrap();
             assert_eq!(re.strings[5].value, "GONE");
@@ -979,7 +970,7 @@ mod tests {
     // guards the encoding-by-content rule (a real v98 VM confirmed the round trip).
     #[test]
     fn patch_ascii_to_non_ascii_becomes_utf16() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -989,18 +980,32 @@ mod tests {
             .position(|s| !s.is_utf16 && s.value.is_ascii() && s.value.len() >= 3);
         let Some(id) = id else { return };
         // Latin1-range only characters still require UTF-16 (they are not ASCII).
-        let out = patch_string_by_id(&mut file, &format, id as u32, "éàü", &PatchOptions::default())
-            .expect("patch to non-ascii");
+        let out = patch_string_by_id(
+            &mut file,
+            &format,
+            id as u32,
+            "éàü",
+            &PatchOptions::default(),
+        )
+        .expect("patch to non-ascii");
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).unwrap();
-        assert!(re.strings[id].is_utf16, "non-ascii value must be stored UTF-16");
+        assert!(
+            re.strings[id].is_utf16,
+            "non-ascii value must be stored UTF-16"
+        );
         assert_eq!(re.strings[id].value, "éàü");
 
         // A character above the basic plane also round trips.
         let (mut file2, format2) = load(FIXTURE);
-        let out2 =
-            patch_string_by_id(&mut file2, &format2, id as u32, "a€☕", &PatchOptions::default())
-                .expect("patch to astral");
+        let out2 = patch_string_by_id(
+            &mut file2,
+            &format2,
+            id as u32,
+            "a€☕",
+            &PatchOptions::default(),
+        )
+        .expect("patch to astral");
         let re2 = BytecodeFile::parse_auto(&out2).unwrap();
         assert!(re2.strings[id].is_utf16);
         assert_eq!(re2.strings[id].value, "a€☕");
@@ -1015,16 +1020,21 @@ mod tests {
         }
         let (mut file, format) = load(FIXTURE);
         // Find two distinct non-empty strings to retarget.
-        let a = file.strings.iter().position(|s| !s.value.is_empty() && !s.is_utf16);
-        let b = file.strings.iter().rposition(|s| !s.value.is_empty() && !s.is_utf16);
+        let a = file
+            .strings
+            .iter()
+            .position(|s| !s.value.is_empty() && !s.is_utf16);
+        let b = file
+            .strings
+            .iter()
+            .rposition(|s| !s.value.is_empty() && !s.is_utf16);
         let (a, b) = match (a, b) {
             (Some(a), Some(b)) if a != b => (a as u32, b as u32),
             _ => return,
         };
         let target_val = file.strings[b as usize].value.clone();
         let opts = PatchOptions::default();
-        let out = retarget_string(&mut file, &format, a, b, &opts)
-            .expect("retarget_string basic");
+        let out = retarget_string(&mut file, &format, a, b, &opts).expect("retarget_string basic");
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).unwrap();
         assert_eq!(re.strings[a as usize].value, target_val);
@@ -1043,8 +1053,8 @@ mod tests {
             return;
         }
         let opts = PatchOptions::default();
-        let out = retarget_string(&mut file, &format, a, b, &opts)
-            .expect("retarget_string size check");
+        let out =
+            retarget_string(&mut file, &format, a, b, &opts).expect("retarget_string size check");
         // File size must not change — metadata-only edit.
         assert_eq!(out.len(), original_len, "file size changed after retarget");
     }
@@ -1064,11 +1074,11 @@ mod tests {
             .map(|s| (s.value.clone(), s.is_utf16))
             .collect();
         let opts = PatchOptions::default();
-        let _ = retarget_string(&mut file, &format, 0, 1, &opts)
-            .expect("retarget for unchanged check");
+        let _ =
+            retarget_string(&mut file, &format, 0, 1, &opts).expect("retarget for unchanged check");
         let re = BytecodeFile::parse_auto(file.raw_bytes.as_ref().unwrap()).unwrap();
-        for i in 2..originals.len() {
-            assert_eq!(re.strings[i].value, originals[i].0, "string {i} changed");
+        for (i, (value, _)) in originals.iter().enumerate().skip(2) {
+            assert_eq!(&re.strings[i].value, value, "string {i} changed");
         }
     }
 
@@ -1115,8 +1125,7 @@ mod tests {
         let (a, b) = (ids[0], ids[ids.len() - 1]);
         let to_val = file.strings[b as usize].value.clone();
         let opts = PatchOptions::default();
-        let out = retarget_string(&mut file, &format, a, b, &opts)
-            .expect("retarget identifier");
+        let out = retarget_string(&mut file, &format, a, b, &opts).expect("retarget identifier");
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).unwrap();
         assert_eq!(re.strings[a as usize].value, to_val);
@@ -1186,8 +1195,8 @@ mod tests {
         }
         let (mut file, format) = load(FIXTURE);
         let opts = PatchOptions::default();
-        let (out, new_id) = add_string(&mut file, &format, "café☕", false, &opts)
-            .expect("add_string UTF-16");
+        let (out, new_id) =
+            add_string(&mut file, &format, "café☕", false, &opts).expect("add_string UTF-16");
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).unwrap();
         assert!(re.strings[new_id as usize].is_utf16);
@@ -1321,13 +1330,11 @@ mod tests {
         ));
         let old_count = file.header.string_count;
         let opts = PatchOptions::default();
-        let (out, new_id) =
-            add_string(&mut file, &format, "modernTestProp", true, &opts)
-                .expect("add_string on modern v98");
+        let (out, new_id) = add_string(&mut file, &format, "modernTestProp", true, &opts)
+            .expect("add_string on modern v98");
         assert_eq!(new_id, old_count);
         assert!(verify_footer(&out));
-        let re = BytecodeFile::parse_auto(&out)
-            .expect("reparse after modern add_string");
+        let re = BytecodeFile::parse_auto(&out).expect("reparse after modern add_string");
         assert_eq!(re.header.string_count, old_count + 1);
         assert_eq!(re.strings[new_id as usize].value, "modernTestProp");
         assert!(re.strings[new_id as usize].is_identifier);
@@ -1364,7 +1371,10 @@ mod tests {
         let fmt2 = BytecodeFormat::for_version(re.header.version).unwrap();
         let after = crate::disassemble_function(&re, &fmt2, 0, &disasm_opts)
             .expect("disasm after add_string");
-        assert_eq!(before, after, "function 0 disassembly changed after add_string");
+        assert_eq!(
+            before, after,
+            "function 0 disassembly changed after add_string"
+        );
     }
 
     // Overflow threshold: exercise the overflow path by appending a string whose
@@ -1394,7 +1404,7 @@ mod tests {
     // A patch that stays pure ASCII keeps the one-byte encoding.
     #[test]
     fn patch_ascii_stays_one_byte() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1403,10 +1413,88 @@ mod tests {
             .iter()
             .position(|s| !s.is_utf16 && s.value.is_ascii() && s.value.len() >= 3);
         let Some(id) = id else { return };
-        let out = patch_string_by_id(&mut file, &format, id as u32, "PLAINASCII", &PatchOptions::default())
-            .expect("patch ascii");
+        let out = patch_string_by_id(
+            &mut file,
+            &format,
+            id as u32,
+            "PLAINASCII",
+            &PatchOptions::default(),
+        )
+        .expect("patch ascii");
         let re = BytecodeFile::parse_auto(&out).unwrap();
         assert!(!re.strings[id].is_utf16, "ascii value must stay one byte");
         assert_eq!(re.strings[id].value, "PLAINASCII");
+    }
+
+    // ---- patch_string_replace (--old) tests ----
+    //
+    // WRITE_PATH_GUIDE flags patch_string_replace (the by-value entry point behind the
+    // CLI's --old) as having no test. These build a real image with create_minimal
+    // so they run in CI.
+    fn make_v96(strings: Vec<String>) -> (BytecodeFile, BytecodeFormat) {
+        let bytes = crate::write::create::create_minimal(&crate::write::create::CreateOptions {
+            version: 96,
+            strings,
+            ..Default::default()
+        })
+        .expect("create_minimal v96");
+        let file = BytecodeFile::parse_auto(&bytes).expect("parse created file");
+        let format = BytecodeFormat::for_version_or_latest(96).expect("format").0;
+        (file, format)
+    }
+
+    // Same-length replace located by value: the old value is found and rewritten.
+    #[test]
+    fn patch_string_replace_by_value_same_length() {
+        let (mut file, format) = make_v96(vec!["global".into(), "hello".into()]);
+        let out = patch_string_replace(
+            &mut file,
+            &format,
+            "hello",
+            "world",
+            &PatchOptions::default(),
+        )
+        .expect("replace hello→world");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert!(re.strings.iter().any(|s| s.value == "world"));
+        assert!(!re.strings.iter().any(|s| s.value == "hello"));
+    }
+
+    // Length-changing replace located by value: the lookup path also drives the
+    // resize/rebuild.
+    #[test]
+    fn patch_string_replace_by_value_grow() {
+        let (mut file, format) = make_v96(vec!["global".into(), "hello".into()]);
+        let out = patch_string_replace(
+            &mut file,
+            &format,
+            "hello",
+            "hello_world_longer",
+            &PatchOptions::default(),
+        )
+        .expect("replace hello→hello_world_longer");
+        assert!(verify_footer(&out));
+        let re = BytecodeFile::parse_auto(&out).unwrap();
+        assert!(re.strings.iter().any(|s| s.value == "hello_world_longer"));
+        assert!(!re.strings.iter().any(|s| s.value == "hello"));
+    }
+
+    // A value not in the table is an error, not a panic or silent no-op.
+    #[test]
+    fn patch_string_replace_not_found_errors() {
+        let (mut file, format) = make_v96(vec!["global".into()]);
+        let err = patch_string_replace(
+            &mut file,
+            &format,
+            "nonexistent",
+            "x",
+            &PatchOptions::default(),
+        )
+        .expect_err("missing old value must error");
+        assert!(
+            err.to_string().contains("not found"),
+            "error should say the value was not found, got: {err}"
+        );
     }
 }

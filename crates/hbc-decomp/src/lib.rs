@@ -46,9 +46,32 @@ pub fn configure_thread_pool() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         let _ = rayon::ThreadPoolBuilder::new()
-            .stack_size(64 * 1024 * 1024)
+            .stack_size(LARGE_STACK_SIZE)
             .build_global();
     });
+}
+
+// Stack size given to Rayon workers and to `run_with_large_stack` threads.
+pub const LARGE_STACK_SIZE: usize = 64 * 1024 * 1024;
+
+// Run `f` on a fresh thread with a large stack and return its result.
+//
+// `configure_thread_pool` only covers work that Rayon workers execute. The
+// part of the pipeline that runs on the calling thread (structure recovery and
+// codegen recurse per block and per nested expression) still overflows a
+// default 2 MB stack, which is what a tokio worker or a plain `main` thread
+// gets. Callers that are not on a large-stack thread wrap the whole
+// decompilation in this. A panic inside `f` is resumed on the caller.
+pub fn run_with_large_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let handle = std::thread::Builder::new()
+        .name("hbc-large-stack".into())
+        .stack_size(LARGE_STACK_SIZE)
+        .spawn(f)
+        .expect("failed to spawn large-stack thread");
+    match handle.join() {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 pub mod debug;
@@ -57,11 +80,13 @@ pub mod error;
 pub mod file;
 pub mod format;
 pub mod io;
+pub mod modern_layout;
 pub mod opcode;
 pub mod pipeline;
 pub mod util;
 
 pub mod analysis;
+pub mod cascade;
 pub mod constants;
 pub mod frida_hooks;
 pub mod inspect;
@@ -74,7 +99,10 @@ pub mod write;
 pub use disasm::{collect_label_offsets, disassemble_all, disassemble_function, DisasmOptions};
 pub use error::{Error, Result};
 pub use file::{BytecodeFile, Instruction, SectionInfo};
-pub use format::{BytecodeHeader, FunctionHeader, FunctionHeaderLayout, HeaderLayout};
+pub use format::{
+    BytecodeHeader, BytecodeOptions, CjsModuleForm, FunctionHeader, FunctionHeaderLayout,
+    HeaderLayout,
+};
 pub use opcode::{BytecodeFormat, Operand, OperandType, OperandValue};
 pub use util::{escape_js_string, is_valid_identifier};
 
@@ -96,6 +124,7 @@ pub use transforms::{
 };
 
 pub use debug::{DebugInfo, ScopeDescriptor, SourceLocation};
+pub use file::{DebugInfoStatus, Diagnostic};
 
 pub use inspect::{
     dump_table, dump_table_json, function_info_banner, render_call_graph, TableKind,
@@ -118,8 +147,8 @@ pub use write::{
     HasmModule, InjectStubKind, OperandTarget, PatchOptions, SerializeOptions,
 };
 
-pub use secrets::{format_secrets_report, scan_secrets, scan_secrets_with_custom, SecretHit};
 pub use frida_hooks::{
     build_metro_registry, generate_frida_for_file, generate_frida_hooks, list_modules_summary,
     FridaBundle, FridaHookOptions,
 };
+pub use secrets::{format_secrets_report, scan_secrets, scan_secrets_with_custom, SecretHit};

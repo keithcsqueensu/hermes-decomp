@@ -115,8 +115,23 @@ hermes-decomp patch-string app.hbc --old "done" --new "fini" -o app2.hbc
 hermes-decomp patch-string app.hbc --id 42 --new "hello" -o app2.hbc
 hermes-decomp patch-function app.hbc --function 5 --hasm f5.hasm -o app2.hbc
 hermes-decomp inject-stub app.hbc --function 5 --kind log -o app2.hbc
+hermes-decomp inject-stub dbg.hbc --function 5 --kind log -o out.hbc --allow-stale-debug-info
 hermes-decomp create --version 96 -o tiny.hbc
 ```
+
+⚠️ **A function that carries debug info is handled carefully on a size-changing edit.** Its
+location stream stores bytecode addresses *within* the function, so a resize that ignored them
+would leave every line number past the edit pointing at the wrong instruction.
+
+- **`inject-stub` relocates them.** It inserts at one known point, so each address moves by the
+  size of the insertion and the line table follows. No flag needed.
+- **`asm` and `patch-function` refuse.** Replacing a body wholesale gives new code with no
+  correspondence to the old addresses, so there is nothing to relocate *to*. Pass
+  `--allow-stale-debug-info` to proceed and discard that function's line numbers.
+
+Same-size edits are unaffected either way, and so are React Native bundles: they ship with
+per-function debug info stripped, so none of this fires on them (0 of 62,909 functions in the
+reference bundle carry the flag). See `plan_guides/06_write/RISKS.md` R24.
 
 Legacy files (HBC 96 and below) are fully supported and verified against the real
 Hermes VM. `patch-string` handles both same length edits, done in place, and
@@ -126,9 +141,9 @@ refuses to patch Hermes packed strings whose storage overlaps another entry.
 Modern files (HBC 97 and above, with 12 byte headers) are supported for string
 patches (same length and length changing), `add-string`, function body resize,
 and `inject-stub` resize, including relocation of the out of line large function
-headers. All of these are verified on a real v98 Hermes engine. `create` is the
-only write command that still requires a legacy file (v96 or below). The CLI
-prints a note when it detects a modern file.
+headers. All of these are verified on a real v98 Hermes engine. `create` builds a
+minimal file from scratch, legacy layout for v96 and lower and modern layout for
+v97 and newer. The CLI prints a note when a write command targets a modern file.
 
 `patch-operand` rewrites a single string-id operand inside one instruction
 without rebuilding the function body. Addresses by absolute file offset (`--at`)
@@ -154,31 +169,140 @@ one byte per character; anything with a non-ASCII character uses UTF-16. If the
 value already exists, a note is emitted to stderr but the string is still appended
 (no silent dedup).
 
-#### Why modern output cannot be verified inside the Rust tool
+#### Verifying patched output on a real Hermes VM
 
-The correctness of a patched `.hbc` is checked by running it on a real Hermes VM.
-For HBC 96 and below a standalone `hermes` binary exists in the facebook/hermes
-releases. For HBC 97 and above there is no prebuilt host VM binary, and no way to
-run one from Rust. Hermes is a C++ engine. Its `hermesvm` shared library exports
-only C++ symbols (name mangled, using `std::shared_ptr` and JSI) with no C ABI,
-and there is no Rust binding to its VM. A real modern VM can therefore only be
-driven from C++.
+A patched `.hbc` that reparses is not the same as one that runs. Every defect
+found in the write path's modern branch produced an image that reparsed perfectly
+and was mis-executed or rejected by the real engine, so reparsing is the weaker
+check by a wide margin. Verify by running the output.
 
-The Rust crate stays fully Rust, with no C++, no FFI, and no C++ in `build.rs`.
-The modern verifier is a separate helper that runs only on macOS. It is a small
-C++ program that links the `hermesvm` framework from the
-`com.facebook.hermes:hermes-ios` Maven artifact and runs a `.hbc`. Build it on
-macOS with:
+`hvm` is a standalone command-line Hermes VM driver: give it a `.hbc` path and it
+executes it, printing the program's output and exiting non-zero on an uncaught
+error. It is an ordinary subprocess, so the crate stays fully Rust with no C++,
+no FFI and no C++ in `build.rs` — nothing needs to link `hermesvm`.
 
-```bash
-bash scripts/build/build_hermes_v98_toolchain.sh
-# writes examples/react-native/.toolchains/hermes-v98/ with hermesc, framework, hermes-run
+> An earlier version of this section claimed modern output could only be verified
+> from C++, on macOS, via a helper script. That was wrong on all three counts, and
+> the script it named never existed in this repo. The reasoning ("`hermesvm`
+> exports only mangled C++/JSI symbols with no C ABI") is correct but irrelevant:
+> you do not need to *link* the VM, only to run it.
+
+**One binary per bytecode version.** An `hvm` refuses anything but its own version:
+
+```
+$ hvm file-v96.hbc
+Wrong bytecode version. Expected 99 but got 96
 ```
 
-The `hermes-ios` artifact ships Apple frameworks, so this verifier runs only on
-macOS. On Linux and Windows there is no prebuilt modern host VM. Build Hermes from
-source, or run the `.hbc` on an Android device whose app embeds a matching
-`libhermes.so`.
+so there is no single VM that covers everything. Build the ones you need:
+
+```powershell
+# Builds hvm + hermesc for that version into a git worktree beside your clone,
+# applies the MSVC/CMake portability patches, and smoke-tests the result.
+./scripts/build_hermes_vm.ps1 -Version 96 -HermesRepo C:\src\hermes-src -Fixtures
+```
+
+Supported versions are 96 (the layout the Equinox bundles use), 98 and 99. The
+script prints the environment variable to set when it finishes.
+
+`-HermesRepo` is a plain clone with full history; each version is built in its own
+`git worktree` beside it, so the clone is never touched. Keep the clone's directory
+name *out* of the `hermes-v<N>` pattern — the script refuses to run if the worktree
+path it derives turns out to be the clone itself.
+
+```powershell
+96, 98, 99 | ForEach-Object {
+    ./scripts/build_hermes_vm.ps1 -Version $_ -HermesRepo C:\src\hermes-src -Fixtures
+}
+```
+
+⚠️ **v99 means the React Native release branch**, `origin/260318099.0.0-stable`,
+not `static_h`. Both declare `BYTECODE_VERSION = 99` and their
+`BytecodeFileFormat.h` is byte-identical, so nothing about the header layout can
+tell them apart — but `static_h` carries a later `NewFastArray` that takes a third
+operand, making the instruction 5 bytes where a shipped v99 bundle has 4. RN ships
+from the release branch, so that is the dialect this crate encodes.
+
+**Running the checks:**
+
+```powershell
+$env:HERMES_VM_V96 = 'C:\src\hermes-v96\build\bin\Release\hvm.exe'
+$env:HERMES_VM_V99 = 'C:\src\hermes-v99\build\bin\Release\hvm.exe'
+cargo test --test vm_verify
+```
+
+`crates/hbc-decomp/tests/vm_verify.rs` runs each write op against committed
+fixtures and asserts on the VM's stdout and exit code. With no `HERMES_VM_V*` set
+the tests still run and still assert everything that does not need a VM; only the
+"and it runs" step is skipped, with a printed note. CI without a Hermes build
+therefore degrades to reparse-only coverage rather than failing.
+
+Three further suites work the same way, each checking against a different external
+source of truth. All are opt-in, so a checkout without these artifacts still builds
+and tests — see **Requiring the oracles** below for how to make a run refuse to skip:
+
+| Suite | Checks against | Env |
+|---|---|---|
+| `tests/vm_verify.rs` | a real Hermes VM: does the patched image run | `HERMES_VM_V96` / `_V98` / `_V99` |
+| `tests/upstream_pin.rs` | the Hermes sources: does our format model still match `FUNC_HEADER_FIELDS` and `BytecodeList.def` | `HERMES_SRC_V96` / `_V97` / `_V98` / `_V99` |
+| `tests/corpus.rs` | a production bundle, plus `hbcdump` as a second disassembler | `HBC_CORPUS_BUNDLE`, `HBC_CORPUS_LIMIT`, `HERMES_HBCDUMP_V96` |
+| `hbc-decomp-cli/tests/stdout_contract.rs` | the process boundary: stdout, stderr, exit codes | none |
+
+```powershell
+$env:HERMES_SRC_V99     = 'C:\src\hermes-v99'
+$env:HERMES_HBCDUMP_V96 = 'C:\src\hermes-v96\build\bin\Release\hbcdump.exe'
+$env:HBC_CORPUS_BUNDLE  = 'C:\path\to\index.android.bundle'
+$env:HBC_CORPUS_LIMIT   = '0'   # sweep every function (~9s); default 2000
+cargo test
+```
+
+`upstream_pin` is the one worth running after any Hermes bump: it re-derives the
+modern header layout and the whole opcode table from a checkout and fails if either
+disagrees with what this crate ships. Upstream has changed both **without bumping
+the bytecode version**, so the version number alone is not a safe signal.
+
+It needs source only, no build, so there is a cheaper way to get its four checkouts
+than building VMs — one that also guarantees they are the exact commits the tables
+record:
+
+```powershell
+python scripts/fetch_pinned_hermes.py C:\src\pins
+# v96: 2afc7b09f -> C:\src\pins\hermes-v96 (fetched)   ... and 97, 98, 99
+```
+
+Each is a blobless, sparse checkout at that version's `GitCommitHash` — about 4 MB
+and a few seconds for all four, against ~1.5 GB for a full clone.
+
+**Requiring the oracles.** An unset variable means "I do not have this oracle" and
+the suite skips with a printed note. That is what keeps an unconfigured checkout
+testable, but it also means a run can be green while asserting almost nothing.
+`HBC_REQUIRE_ORACLES` names the oracles a run refuses to do without:
+
+```powershell
+$env:HBC_REQUIRE_ORACLES = 'src'          # every HERMES_SRC_V<N>
+$env:HBC_REQUIRE_ORACLES = 'src,vm'       # ...and an hvm per fixture version
+$env:HBC_REQUIRE_ORACLES = 'all'          # src, vm, hbcdump, corpus
+```
+
+An absent oracle then fails with the variable to set rather than skipping. Two
+things are errors regardless of this setting: a variable that is *set* but does not
+point at what it claims (a stale path silently degrading to a no-op is the failure
+this exists to remove), and an unknown token in the list itself.
+
+CI runs `cargo test --workspace` unconfigured, then fetches the four pinned
+checkouts and re-runs `upstream_pin` under `HBC_REQUIRE_ORACLES=src`, so the
+bundled format tables cannot drift from the upstream commits they record without
+the build going red. `vm_verify` and `corpus` need a Hermes build and a third-party
+bundle respectively, so they stay opt-in on a public runner.
+
+`corpus` is the one worth running before trusting a change against a real bundle: it
+sweeps every function for encode/decode symmetry and diffs the disassembly against
+`hbcdump`. The fixtures contain no overflowed string entries at all; a production
+bundle has ~1,400.
+
+Two other binaries from the same build are useful as read-side oracles:
+`hbcdump -mode=objdump` (reference disassembly plus a string table with kinds,
+byte ranges and identifier hashes) and `hermesc` (minting known-good fixtures).
 
 ### Self-update
 

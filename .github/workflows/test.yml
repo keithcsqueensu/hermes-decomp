@@ -1,0 +1,57 @@
+name: Test
+
+# R21: before this job existed, CI built the binaries and ran no tests at all, so a
+# green run asserted only that the crate compiles. Two steps here, deliberately
+# separate:
+#
+#   1. `cargo test --workspace` with no oracles configured -- the run every
+#      contributor gets. It must stay green, because a checkout without a Hermes
+#      build has to remain testable; that is the whole reason the oracles are opt-in.
+#   2. The same pin suite again with the four upstream checkouts provisioned and
+#      HBC_REQUIRE_ORACLES=src, so an absent one fails instead of printing [skip].
+#
+# What (2) buys: this repo's encoded view of the bytecode format -- Bytecode*.json
+# and ModernLayout -- can no longer be edited away from the upstream commit it
+# claims to come from without CI saying so. It does not detect upstream moving; the
+# pins are fixed commits, and moving them is a deliberate repin.
+#
+# vm_verify and corpus stay opt-in: their oracles are a per-version Hermes build and
+# a third-party bundle, neither of which belongs on a public runner. Strict mode is
+# the lever for a runner that does have them.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test (no oracles — the unconfigured path stays green)
+        run: cargo test --workspace
+
+      # ~4 MB and a few seconds: blobless, sparse, fetched by the sha each table
+      # records. See scripts/fetch_pinned_hermes.py.
+      - name: Fetch pinned Hermes checkouts
+        run: python3 scripts/fetch_pinned_hermes.py "$RUNNER_TEMP/hermes"
+
+      - name: Upstream pin (strict — a missing checkout is a failure)
+        env:
+          HBC_REQUIRE_ORACLES: src
+          HERMES_SRC_V96: ${{ runner.temp }}/hermes/hermes-v96
+          HERMES_SRC_V97: ${{ runner.temp }}/hermes/hermes-v97
+          HERMES_SRC_V98: ${{ runner.temp }}/hermes/hermes-v98
+          HERMES_SRC_V99: ${{ runner.temp }}/hermes/hermes-v99
+        run: cargo test -p hbc-decomp --test upstream_pin -- --nocapture

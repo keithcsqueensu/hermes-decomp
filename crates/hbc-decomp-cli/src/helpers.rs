@@ -1,4 +1,4 @@
-use crate::cli_args::{FunctionLayoutArg, LayoutArg};
+use crate::cli_args::{FormatArgs, FunctionLayoutArg, LayoutArg};
 use hbc_decomp::file::header::{peek_version, MODERN_FUNCTION_HEADER_MIN_VERSION};
 use hbc_decomp::{BytecodeFile, BytecodeFormat, FunctionHeaderLayout, HeaderLayout};
 use std::fs;
@@ -6,19 +6,18 @@ use std::path::PathBuf;
 
 pub fn load_file(
     input: &PathBuf,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
+    args: &FormatArgs,
 ) -> Result<BytecodeFile, Box<dyn std::error::Error>> {
-    let (file, _) = load_file_with_bytes(input, layout, function_layout)?;
+    let (file, _) = load_file_with_bytes(input, args)?;
     Ok(file)
 }
 
 pub fn load_file_with_bytes(
     input: &PathBuf,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
+    args: &FormatArgs,
 ) -> Result<(BytecodeFile, Vec<u8>), Box<dyn std::error::Error>> {
     let bytes = fs::read(input)?;
+    let (layout, function_layout) = (args.layout, args.function_layout);
     warn_layout_mismatch(&bytes, layout, function_layout);
     let file = match layout {
         LayoutArg::Auto => BytecodeFile::parse_auto(&bytes)?,
@@ -31,7 +30,22 @@ pub fn load_file_with_bytes(
             BytecodeFile::parse_with_layout(&bytes, HeaderLayout::Modern, function_layout)?
         }
     };
+    warn_diagnostics(&file);
     Ok((file, bytes))
+}
+
+// Print everything the parse found wrong but recovered from.
+//
+// The read path deliberately degrades instead of failing -- reading a broken or
+// hand-patched image is a legitimate use -- and for most of this crate's life it
+// did so in complete silence. A stale SHA-1 footer, a file decoded under the
+// layout its version says is wrong, or a debug section this build cannot read all
+// produced output that looked exactly like a clean read. Say it once, on stderr,
+// before the output the user actually asked for.
+pub fn warn_diagnostics(file: &BytecodeFile) {
+    for w in file.warnings() {
+        eprintln!("warning: {w}");
+    }
 }
 
 // Forcing a layout that contradicts the file's declared version reads every
@@ -127,11 +141,27 @@ pub fn load_format(
     let version = format_version.unwrap_or(file.header.version);
     let (format, used_version) = BytecodeFormat::for_version_or_latest(version)?;
     if used_version != version {
+        // Spell out the consequence, not just the substitution. A wrong opcode
+        // table does not fail: at v99 eight phantom opcodes shifted twelve later
+        // ones and `===` decoded as `>=`, which reads as perfectly good
+        // JavaScript that says the opposite of what the program does.
         eprintln!(
-            "warning: using opcode format version {used_version} for bytecode version {version}"
+            "warning: no opcode table for bytecode version {version}; decoding with the version \
+             {used_version} table. Opcode numbering and operand shapes may differ, which silently \
+             changes which instruction each byte means."
         );
     }
     Ok(format)
+}
+
+// The name the bytecode stores for a function, or None when it stores none
+// (anonymous functions carry an empty name).
+pub fn function_name(file: &BytecodeFile, id: u32) -> Option<String> {
+    file.function_headers
+        .get(id as usize)
+        .and_then(|h| file.string_at(h.function_name()))
+        .map(|e| e.value.clone())
+        .filter(|s| !s.is_empty())
 }
 
 pub fn write_output(
@@ -142,12 +172,7 @@ pub fn write_output(
         fs::write(&path, content)?;
         let lines = content.lines().count();
         let kib = content.len() as f64 / 1024.0;
-        eprintln!(
-            "Wrote {} ({} lines, {:.1} KiB)",
-            path.display(),
-            lines,
-            kib
-        );
+        eprintln!("Wrote {} ({} lines, {:.1} KiB)", path.display(), lines, kib);
     } else {
         print!("{content}");
     }

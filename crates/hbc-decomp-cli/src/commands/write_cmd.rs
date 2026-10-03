@@ -3,13 +3,13 @@
 use std::path::{Path, PathBuf};
 
 use hbc_decomp::{
-    add_string, create_minimal, emit_hasm_function, generate_frida_for_file, inject_stub,
-    parse_hasm_with_context, patch_function_body, patch_string_by_id, patch_string_operand,
-    patch_string_replace, retarget_string, scan_secrets, format_secrets_report, CreateOptions,
+    add_string, create_minimal, emit_hasm_function, format_secrets_report, generate_frida_for_file,
+    inject_stub, parse_hasm_with_context, patch_function_body, patch_string_by_id,
+    patch_string_operand, patch_string_replace, retarget_string, scan_secrets, CreateOptions,
     FridaHookOptions, InjectStubKind, OperandTarget, PatchOptions,
 };
 
-use crate::cli_args::{FunctionLayoutArg, LayoutArg};
+use crate::cli_args::FormatArgs;
 use crate::helpers::{load_file, load_format};
 
 type BoxErr = Box<dyn std::error::Error>;
@@ -22,13 +22,18 @@ fn warn_modern_write(file: &hbc_decomp::BytecodeFile) {
         hbc_decomp::FunctionHeaderLayout::Modern12
     );
     if modern {
+        let note = [
+            "String patches, function body resize and stub injection are all supported,",
+            "and `create` builds a modern file from scratch: legacy layout for v96 and",
+            "lower, modern layout for v97 and newer. The out of line function header",
+            "changed size between v98 and v99, so only those two modern layouts are known",
+            "here; any other v97+ version is refused rather than guessed at. To run the",
+            "output on a real engine, build a matching VM with",
+            "scripts/build_hermes_vm.ps1 and see crates/hbc-decomp/tests/vm_verify.rs.",
+        ]
+        .join("\n  ");
         eprintln!(
-            "note: modern HBC v{} (version 97 or newer, 12 byte headers). String patches,\n  \
-             function body resize and stub injection are all supported and verified on a real\n  \
-             engine, including length changes, identifiers and UTF-16. Building a modern file\n  \
-             from scratch with create is not supported yet and stays legacy only.\n  \
-             To run modern output yourself, build the external verifier with\n  \
-             scripts/build/build_hermes_v98_toolchain.sh on macOS.",
+            "note: modern HBC v{} (version 97 or newer, 12 byte headers).\n  {note}",
             file.header.version
         );
     }
@@ -36,12 +41,11 @@ fn warn_modern_write(file: &hbc_decomp::BytecodeFile) {
 
 pub fn run_secrets(
     input: &PathBuf,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
+    args: &FormatArgs,
     json: bool,
     show_full: bool,
 ) -> Result<(), BoxErr> {
-    let file = load_file(input, layout, function_layout)?;
+    let file = load_file(input, args)?;
     let hits = scan_secrets(&file, &[]);
     if json {
         let rows: Vec<_> = hits
@@ -64,21 +68,23 @@ pub fn run_secrets(
 
 pub fn run_frida_hooks(
     input: &PathBuf,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
     module_id: u32,
     export: Option<String>,
     out_dir: PathBuf,
 ) -> Result<(), BoxErr> {
-    let file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     let mut opts = FridaHookOptions {
         module_id,
         ..Default::default()
     };
     if let Some(e) = export {
-        opts.exports = e.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        opts.exports = e
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
     }
     let bundle = generate_frida_for_file(&file, &format, opts)?;
     std::fs::create_dir_all(&out_dir)?;
@@ -105,21 +111,25 @@ pub fn run_frida_hooks(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_asm(
     input: &PathBuf,
     hasm: &PathBuf,
     function: u32,
     output: &PathBuf,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
+    allow_stale_debug_info: bool,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
     let text = std::fs::read_to_string(hasm)?;
     let insns = parse_hasm_with_context(&text, &format, &file)?;
-    let out = patch_function_body(&mut file, &format, function, &insns, &PatchOptions::default())?;
+    let opts = PatchOptions {
+        allow_stale_debug_info,
+        ..Default::default()
+    };
+    let out = patch_function_body(&mut file, &format, function, &insns, &opts)?;
     std::fs::write(output, out)?;
     eprintln!(
         "Assembled function {function} from {} → {}",
@@ -133,12 +143,10 @@ pub fn run_emit_hasm(
     input: &PathBuf,
     function: u32,
     output: Option<PathBuf>,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
 ) -> Result<(), BoxErr> {
-    let file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     let text = emit_hasm_function(&file, &format, function)?;
     if let Some(path) = output {
         std::fs::write(path, text)?;
@@ -158,12 +166,10 @@ pub fn run_patch_operand(
     string: Option<String>,
     string_id: Option<u32>,
     operand_index: Option<usize>,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
 
     // Resolve addressing mode.
@@ -179,23 +185,22 @@ pub fn run_patch_operand(
     // Resolve string value to id.
     let new_id = match (string_id, string) {
         (Some(id), _) => id,
-        (None, Some(val)) => {
-            file.strings
-                .iter()
-                .position(|s| s.value == val)
-                .map(|i| i as u32)
-                .ok_or_else(|| {
-                    format!(
-                        "string {:?} not in table; use add-string first",
-                        val
-                    )
-                })?
-        }
+        (None, Some(val)) => file
+            .strings
+            .iter()
+            .position(|s| s.value == val)
+            .map(|i| i as u32)
+            .ok_or_else(|| format!("string {:?} not in table; use add-string first", val))?,
         _ => return Err("provide --string-id or --string".into()),
     };
 
     let opts = PatchOptions::default();
-    let out = patch_string_operand(&mut file, &format, target, new_id, operand_index, &opts)?;
+    let (out, status, warning) =
+        patch_string_operand(&mut file, &format, target, new_id, operand_index, &opts)?;
+    if let Some(w) = warning {
+        eprintln!("{w}");
+    }
+    eprintln!("{status}");
     std::fs::write(output, out)?;
     Ok(())
 }
@@ -208,51 +213,64 @@ pub fn run_retarget_string(
     to_id: Option<u32>,
     from: Option<String>,
     to: Option<String>,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
 
     // Resolve by-value to by-id if needed.
     let fid = match (from_id, from) {
         (Some(id), _) => id,
-        (None, Some(val)) => {
-            file.strings
-                .iter()
-                .position(|s| s.value == val)
-                .map(|i| i as u32)
-                .ok_or_else(|| format!("string not found: {:?}", val))?
-        }
+        (None, Some(val)) => file
+            .strings
+            .iter()
+            .position(|s| s.value == val)
+            .map(|i| i as u32)
+            .ok_or_else(|| format!("string not found: {:?}", val))?,
         _ => return Err("provide --from-id or --from".into()),
     };
     let tid = match (to_id, to) {
         (Some(id), _) => id,
-        (None, Some(val)) => {
-            file.strings
-                .iter()
-                .position(|s| s.value == val)
-                .map(|i| i as u32)
-                .ok_or_else(|| format!("string not found: {:?}", val))?
-        }
+        (None, Some(val)) => file
+            .strings
+            .iter()
+            .position(|s| s.value == val)
+            .map(|i| i as u32)
+            .ok_or_else(|| format!("string not found: {:?}", val))?,
         _ => return Err("provide --to-id or --to".into()),
     };
 
     let opts = PatchOptions::default();
-    // retarget_string validates both ids before accessing the string table,
-    // so we read values after it succeeds to avoid panicking on bad ids.
+    // retarget_string validates both ids before accessing the string table, so
+    // read values through .get() to avoid panicking on bad ids. Capture the
+    // kinds before the call for the cross-kind note (retarget never changes
+    // is_identifier, so before/after are equal).
     let to_val = file
         .strings
         .get(tid as usize)
         .map(|s| s.value.clone())
         .unwrap_or_default();
+    let from_is_id = file.strings.get(fid as usize).map(|s| s.is_identifier);
+    let to_is_id = file.strings.get(tid as usize).map(|s| s.is_identifier);
     let out = retarget_string(&mut file, &format, fid, tid, &opts)?;
     std::fs::write(output, out)?;
+    // Cross-kind retarget note (moved here from the library layer).
+    if let (Some(f), Some(t)) = (from_is_id, to_is_id) {
+        if f != t {
+            eprintln!(
+                "warning: retarget crosses string/identifier boundary \
+                 (from_id {} is_identifier={}, to_id {} is_identifier={})",
+                fid, f, tid, t
+            );
+        }
+    }
     eprintln!(
         "Retargeted string {} → {} ({:?}) → {}",
-        fid, tid, to_val, output.display()
+        fid,
+        tid,
+        to_val,
+        output.display()
     );
     Ok(())
 }
@@ -263,21 +281,34 @@ pub fn run_add_string(
     output: &PathBuf,
     value: String,
     identifier: bool,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
     let opts = PatchOptions::default();
+    // Duplicate note (moved here from the library layer): find the first
+    // existing entry with the same value and kind before appending.
+    let dup = file
+        .strings
+        .iter()
+        .position(|s| s.value == value && s.is_identifier == identifier);
     let (out, new_id) = add_string(&mut file, &format, &value, identifier, &opts)?;
     std::fs::write(output, out)?;
+    if let Some(i) = dup {
+        eprintln!(
+            "note: string {:?} already exists at id {} (is_identifier={}); appending anyway as id {}",
+            value, i, identifier, new_id
+        );
+    }
     // Bare id on stdout for script consumption; human text on stderr.
     println!("{new_id}");
     eprintln!(
         "Added string {:?} (id {}, identifier={}) → {}",
-        value, new_id, identifier, output.display()
+        value,
+        new_id,
+        identifier,
+        output.display()
     );
     Ok(())
 }
@@ -289,12 +320,10 @@ pub fn run_patch_string(
     id: Option<u32>,
     old: Option<String>,
     new: String,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
     let opts = PatchOptions::default();
     let out = if let Some(id) = id {
@@ -309,37 +338,29 @@ pub fn run_patch_string(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_patch_function(
     input: &PathBuf,
     output: &PathBuf,
     function: u32,
     hasm: &PathBuf,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
+    allow_stale_debug_info: bool,
 ) -> Result<(), BoxErr> {
-    run_asm(
-        input,
-        hasm,
-        function,
-        output,
-        layout,
-        function_layout,
-        format_version,
-    )
+    run_asm(input, hasm, function, output, args, allow_stale_debug_info)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_inject_stub(
     input: &PathBuf,
     output: &PathBuf,
     function: u32,
     kind: &str,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
+    allow_stale_debug_info: bool,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
     let kind = match kind {
         "nop" | "NopPad" => InjectStubKind::NopPad,
@@ -351,10 +372,16 @@ pub fn run_inject_stub(
         &format,
         function,
         kind,
-        &PatchOptions::default(),
+        &PatchOptions {
+            allow_stale_debug_info,
+            ..Default::default()
+        },
     )?;
     std::fs::write(output, out)?;
-    eprintln!("Injected stub into function {function} → {}", output.display());
+    eprintln!(
+        "Injected stub into function {function} → {}",
+        output.display()
+    );
     Ok(())
 }
 
@@ -369,6 +396,9 @@ pub fn run_create(version: u32, output: &PathBuf, strings: Vec<String>) -> Resul
         ..Default::default()
     };
     let bytes = create_minimal(&opts)?;
+    if let Ok(file) = hbc_decomp::BytecodeFile::parse_auto(&bytes) {
+        warn_modern_write(&file);
+    }
     std::fs::write(output, bytes)?;
     eprintln!("Created minimal HBC v{version} → {}", output.display());
     Ok(())
@@ -391,6 +421,9 @@ pub fn run_roundtrip_check(input: &Path, function: u32) -> Result<(), BoxErr> {
     if a != b {
         return Err("HASM round-trip byte mismatch".into());
     }
-    eprintln!("OK: hasm round-trip function {function} on {}", input.display());
+    eprintln!(
+        "OK: hasm round-trip function {function} on {}",
+        input.display()
+    );
     Ok(())
 }
