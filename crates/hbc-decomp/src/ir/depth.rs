@@ -112,7 +112,7 @@ mod tests {
     // with STATUS_STACK_OVERFLOW, which is an abort and cannot be caught.
     #[test]
     fn deep_expression_renders_instead_of_overflowing_the_stack() {
-        use crate::ir::{BinaryOp, Expression, Value};
+        use crate::ir::{BinaryOp, Binding, Expression, Value};
         // The guard bounds descent at MAX_RENDER_DEPTH levels; the probe thread
         // only has to hold that many `format_expr` frames without overflowing
         // first, so it can actually reach the guard and return the marker. In a
@@ -123,12 +123,12 @@ mod tests {
         let handle = std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
             .spawn(|| {
-                let mut e = Expression::Value(Value::Register(0));
+                let mut e = Expression::Value(Value::Binding(Binding::Register(0)));
                 for _ in 0..50_000 {
                     e = Expression::Binary {
                         op: BinaryOp::Add,
                         left: Box::new(e),
-                        right: Box::new(Expression::Value(Value::Register(1))),
+                        right: Box::new(Expression::Value(Value::Binding(Binding::Register(1)))),
                     };
                 }
                 let rendered = format!("{e}");

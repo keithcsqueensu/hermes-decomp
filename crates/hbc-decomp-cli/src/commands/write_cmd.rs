@@ -9,7 +9,7 @@ use hbc_decomp::{
     FridaHookOptions, InjectStubKind, OperandTarget, PatchOptions,
 };
 
-use crate::cli_args::{FunctionLayoutArg, LayoutArg};
+use crate::cli_args::FormatArgs;
 use crate::helpers::{load_file, load_format};
 
 type BoxErr = Box<dyn std::error::Error>;
@@ -41,12 +41,11 @@ fn warn_modern_write(file: &hbc_decomp::BytecodeFile) {
 
 pub fn run_secrets(
     input: &PathBuf,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
+    args: &FormatArgs,
     json: bool,
     show_full: bool,
 ) -> Result<(), BoxErr> {
-    let file = load_file(input, layout, function_layout)?;
+    let file = load_file(input, args)?;
     let hits = scan_secrets(&file, &[]);
     if json {
         let rows: Vec<_> = hits
@@ -69,21 +68,23 @@ pub fn run_secrets(
 
 pub fn run_frida_hooks(
     input: &PathBuf,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
     module_id: u32,
     export: Option<String>,
     out_dir: PathBuf,
 ) -> Result<(), BoxErr> {
-    let file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     let mut opts = FridaHookOptions {
         module_id,
         ..Default::default()
     };
     if let Some(e) = export {
-        opts.exports = e.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        opts.exports = e
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
     }
     let bundle = generate_frida_for_file(&file, &format, opts)?;
     std::fs::create_dir_all(&out_dir)?;
@@ -116,13 +117,11 @@ pub fn run_asm(
     hasm: &PathBuf,
     function: u32,
     output: &PathBuf,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
     allow_stale_debug_info: bool,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
     let text = std::fs::read_to_string(hasm)?;
     let insns = parse_hasm_with_context(&text, &format, &file)?;
@@ -144,12 +143,10 @@ pub fn run_emit_hasm(
     input: &PathBuf,
     function: u32,
     output: Option<PathBuf>,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
 ) -> Result<(), BoxErr> {
-    let file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     let text = emit_hasm_function(&file, &format, function)?;
     if let Some(path) = output {
         std::fs::write(path, text)?;
@@ -169,12 +166,10 @@ pub fn run_patch_operand(
     string: Option<String>,
     string_id: Option<u32>,
     operand_index: Option<usize>,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
 
     // Resolve addressing mode.
@@ -223,12 +218,10 @@ pub fn run_retarget_string(
     to_id: Option<u32>,
     from: Option<String>,
     to: Option<String>,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
 
     // Resolve by-value to by-id if needed.
@@ -292,12 +285,10 @@ pub fn run_add_string(
     output: &PathBuf,
     value: String,
     identifier: bool,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
     let opts = PatchOptions::default();
     // Duplicate note (moved here from the library layer): find the first
@@ -330,12 +321,10 @@ pub fn run_patch_string(
     id: Option<u32>,
     old: Option<String>,
     new: String,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
     let opts = PatchOptions::default();
     let out = if let Some(id) = id {
@@ -356,21 +345,10 @@ pub fn run_patch_function(
     output: &PathBuf,
     function: u32,
     hasm: &PathBuf,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
     allow_stale_debug_info: bool,
 ) -> Result<(), BoxErr> {
-    run_asm(
-        input,
-        hasm,
-        function,
-        output,
-        layout,
-        function_layout,
-        format_version,
-        allow_stale_debug_info,
-    )
+    run_asm(input, hasm, function, output, args, allow_stale_debug_info)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -379,13 +357,11 @@ pub fn run_inject_stub(
     output: &PathBuf,
     function: u32,
     kind: &str,
-    layout: LayoutArg,
-    function_layout: FunctionLayoutArg,
-    format_version: Option<u32>,
+    args: &FormatArgs,
     allow_stale_debug_info: bool,
 ) -> Result<(), BoxErr> {
-    let mut file = load_file(input, layout, function_layout)?;
-    let format = load_format(&file, format_version)?;
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
     let kind = match kind {
         "nop" | "NopPad" => InjectStubKind::NopPad,
@@ -403,7 +379,10 @@ pub fn run_inject_stub(
         },
     )?;
     std::fs::write(output, out)?;
-    eprintln!("Injected stub into function {function} → {}", output.display());
+    eprintln!(
+        "Injected stub into function {function} → {}",
+        output.display()
+    );
     Ok(())
 }
 
@@ -443,6 +422,9 @@ pub fn run_roundtrip_check(input: &Path, function: u32) -> Result<(), BoxErr> {
     if a != b {
         return Err("HASM round-trip byte mismatch".into());
     }
-    eprintln!("OK: hasm round-trip function {function} on {}", input.display());
+    eprintln!(
+        "OK: hasm round-trip function {function} on {}",
+        input.display()
+    );
     Ok(())
 }

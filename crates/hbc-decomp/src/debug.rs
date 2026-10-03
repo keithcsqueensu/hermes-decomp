@@ -712,8 +712,8 @@ mod tests {
         // One scope: parent=-1 (0x7f), flags=0, name_count=1, name_idx=0 -> "hi".
         let scope = [0x7f, 0x00, 0x01, 0x00];
         let strings = [0x02, b'h', b'i']; // string table: one entry "hi"
-        // Two filenames + one file region so data_start =
-        // 28 + 8*2 + len("app.js"=6)+len("b.js"=4) + 12*1 = 28+16+10+12 = 66.
+                                          // Two filenames + one file region so data_start =
+                                          // 28 + 8*2 + len("app.js"=6)+len("b.js"=4) + 12*1 = 28+16+10+12 = 66.
         let (bytes, off) = build_debug_section(&["app.js", "b.js"], 1, &scope, &[], &strings);
         let info = DebugInfo::parse(&bytes, off, 96, &BTreeMap::new()).unwrap();
         assert_eq!(info.string_table, vec!["hi".to_string()]);

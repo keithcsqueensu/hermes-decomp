@@ -55,6 +55,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     hbc_decomp::configure_thread_pool();
 
     let args = Args::parse();
+    // Rayon workers need a large stack for deep recursion in the pipeline.
+    // The tool bodies themselves run on large-stack threads (see server/mod.rs).
+    hbc_decomp::configure_thread_pool();
 
     match args.transport {
         Transport::Stdio => {
