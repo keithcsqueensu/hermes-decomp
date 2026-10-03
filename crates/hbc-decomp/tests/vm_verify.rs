@@ -75,7 +75,12 @@ fn format_for(file: &BytecodeFile) -> BytecodeFormat {
 /// Set but not a file is a failure, not a skip: that is a stale path, and skipping
 /// it silently is how a configured run turns back into an unconfigured one.
 fn vm_for(version: u32) -> Option<PathBuf> {
-    common::oracle_path(Oracle::Vm, Some(version), |p| p.is_file(), "an existing file")
+    common::oracle_path(
+        Oracle::Vm,
+        Some(version),
+        |p| p.is_file(),
+        "an existing file",
+    )
 }
 
 struct VmRun {
@@ -457,13 +462,23 @@ fn chained_size_changing_ops_need_no_reparse() {
         add_string(&mut file, &format, "CHAINED", false, &Default::default())
             .unwrap_or_else(|e| panic!("v{version}: second op on an unre-parsed file: {e}"));
         // 3. And a third, so the "one stale op is survivable" reading is excluded.
-        let (out2, _) = add_string(&mut file, &format, "CHAINED_AGAIN", true, &Default::default())
-            .unwrap_or_else(|e| panic!("v{version}: third op on an unre-parsed file: {e}"));
+        let (out2, _) = add_string(
+            &mut file,
+            &format,
+            "CHAINED_AGAIN",
+            true,
+            &Default::default(),
+        )
+        .unwrap_or_else(|e| panic!("v{version}: third op on an unre-parsed file: {e}"));
 
         let reparsed = BytecodeFile::parse_auto(&out2).expect("chained image reparses");
         assert_eq!(
             reparsed.header.string_count,
-            BytecodeFile::parse_auto(&bytes).unwrap().header.string_count + 2,
+            BytecodeFile::parse_auto(&bytes)
+                .unwrap()
+                .header
+                .string_count
+                + 2,
             "v{version}: both appended strings should be present"
         );
         assert_runs(

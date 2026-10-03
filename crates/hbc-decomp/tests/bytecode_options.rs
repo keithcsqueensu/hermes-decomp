@@ -249,7 +249,11 @@ fn a_synthesised_statically_resolved_bit_selects_the_module_id_form() {
         .iter()
         .map(|e| e["function_id"].as_u64().unwrap())
         .collect();
-    assert_eq!(ids, vec![1, 2], "the function id half does not depend on the bit");
+    assert_eq!(
+        ids,
+        vec![1, 2],
+        "the function id half does not depend on the bit"
+    );
 }
 
 /// A bundle with no CJS modules must not acquire a form it cannot have -- the
@@ -262,9 +266,6 @@ fn a_bundle_without_cjs_modules_dumps_an_empty_table() {
         let file = fixture(&format!("plain.v{version}.hbc"));
         assert_eq!(file.cjs_module_table.len(), 0, "v{version}");
         let text = dump_table(&file, TableKind::CjsModules);
-        assert!(
-            text.contains("(0 entries,"),
-            "v{version}: {text}"
-        );
+        assert!(text.contains("(0 entries,"), "v{version}: {text}");
     }
 }

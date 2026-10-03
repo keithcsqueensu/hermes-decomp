@@ -182,8 +182,7 @@ const MAX_NAMED_EXPORTS_FOR_NAMING: usize = 4;
 // once there are many: naming the RN barrel after its first getter labelled 91
 // other modules `registerCallableModule` through dependency propagation.
 pub(super) fn is_export_barrel(stmts: &[Statement]) -> bool {
-    named_export_keys(stmts, MAX_NAMED_EXPORTS_FOR_NAMING + 1).len()
-        > MAX_NAMED_EXPORTS_FOR_NAMING
+    named_export_keys(stmts, MAX_NAMED_EXPORTS_FOR_NAMING + 1).len() > MAX_NAMED_EXPORTS_FOR_NAMING
 }
 
 // For unnamed modules, try to infer a name from the first meaningful named export property.
@@ -259,7 +258,10 @@ mod tests {
     // `Object.defineProperty(obj, "<key>", { get: … })`
     fn define_property(key: &str) -> Statement {
         Statement::Expr(Expression::call(
-            Expression::member(Expression::Value(Value::Binding(Binding::Variable("Object".into()))), "defineProperty"),
+            Expression::member(
+                Expression::Value(Value::Binding(Binding::Variable("Object".into()))),
+                "defineProperty",
+            ),
             vec![
                 Expression::Value(Value::Binding(Binding::Variable("obj".into()))),
                 Expression::constant(Constant::String(key.into())),

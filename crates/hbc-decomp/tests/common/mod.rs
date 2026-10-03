@@ -57,7 +57,9 @@ impl Oracle {
 
     /// The variable that provides this oracle, for `version` where it is per-version.
     pub fn env(self, version: Option<u32>) -> String {
-        let v = version.map(|v| v.to_string()).unwrap_or_else(|| "<N>".into());
+        let v = version
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<N>".into());
         match self {
             Oracle::Src => format!("HERMES_SRC_V{v}"),
             Oracle::Vm => format!("HERMES_VM_V{v}"),

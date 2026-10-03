@@ -24,7 +24,9 @@ pub use patch::{
     PatchOptions,
 };
 pub use reloc::RelocPlan;
-pub use serialize::{commit_image, finalize_raw_image, serialize_file, write_file, SerializeOptions};
+pub use serialize::{
+    commit_image, finalize_raw_image, serialize_file, write_file, SerializeOptions,
+};
 
 // Whether a corpus fixture is present, for the tests that need real bytecode.
 //

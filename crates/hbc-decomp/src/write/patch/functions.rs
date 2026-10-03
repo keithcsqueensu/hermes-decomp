@@ -195,7 +195,9 @@ pub fn patch_function_bytes(
     // an unsupported modern version fails here rather than mis-encoding silently
     // (WRITE_PATH_GUIDE R8/R15).
     let layout = if modern {
-        Some(crate::modern_layout::ModernLayout::for_version(file.header.version)?)
+        Some(crate::modern_layout::ModernLayout::for_version(
+            file.header.version,
+        )?)
     } else {
         None
     };
@@ -358,7 +360,12 @@ fn resize_overflowed_function(
     }
     // Size field: legacy at +8, modern at MODERN_LARGE_BYTECODE_SIZE.
     if let Some(sz) = new_size {
-        let size_pos = new_lh + if modern { MODERN_LARGE_BYTECODE_SIZE } else { 8 };
+        let size_pos = new_lh
+            + if modern {
+                MODERN_LARGE_BYTECODE_SIZE
+            } else {
+                8
+            };
         rebuilt[size_pos..size_pos + 4].copy_from_slice(&sz.to_le_bytes());
     }
     // Legacy large headers keep info_offset at +16.
@@ -432,7 +439,10 @@ mod tests {
             patch_function_body(&mut file, &format, 0, &body, &PatchOptions::default()).unwrap();
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).unwrap();
-        assert_eq!(re.function_headers[0].bytecode_size_in_bytes(), old_size + 4);
+        assert_eq!(
+            re.function_headers[0].bytecode_size_in_bytes(),
+            old_size + 4
+        );
         let body2 = re.decode_function_instructions(&format, 0).unwrap();
         assert_eq!(body2.len(), body.len());
     }
@@ -466,7 +476,11 @@ mod tests {
     #[test]
     fn alignment_pad_makes_delta_4_aligned() {
         let (mut file, format) = make(96);
-        if !format.definitions.iter().any(|d| d.name == "AsyncBreakCheck") {
+        if !format
+            .definitions
+            .iter()
+            .any(|d| d.name == "AsyncBreakCheck")
+        {
             return; // pad instruction unavailable on this version
         }
         let old_size = file.function_headers[0].bytecode_size_in_bytes();
@@ -479,8 +493,15 @@ mod tests {
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).unwrap();
         let delta = re.function_headers[0].bytecode_size_in_bytes() as i64 - old_size as i64;
-        assert_eq!(delta % 4, 0, "size delta {delta} must be 4-aligned after padding");
-        assert!(delta >= 4, "the +2 body should have been padded up to +4, got {delta}");
+        assert_eq!(
+            delta % 4,
+            0,
+            "size delta {delta} must be 4-aligned after padding"
+        );
+        assert!(
+            delta >= 4,
+            "the +2 body should have been padded up to +4, got {delta}"
+        );
     }
 
     // Modern (v98) global is overflowed, so a body resize goes through
@@ -502,7 +523,10 @@ mod tests {
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).unwrap();
         assert_eq!(re.function_headers.len(), file.function_headers.len());
-        assert_eq!(re.function_headers[0].bytecode_size_in_bytes(), old_size + 4);
+        assert_eq!(
+            re.function_headers[0].bytecode_size_in_bytes(),
+            old_size + 4
+        );
     }
 
     // A grow must shift debug_info_offset (in the header and in the model) by the
@@ -584,7 +608,10 @@ mod tests {
     fn missing_asyncbreakcheck_pad_is_hard_error() {
         let (mut file, format) = make(56); // v56 has no AsyncBreakCheck
         assert!(
-            !format.definitions.iter().any(|d| d.name == "AsyncBreakCheck"),
+            !format
+                .definitions
+                .iter()
+                .any(|d| d.name == "AsyncBreakCheck"),
             "v56 unexpectedly has AsyncBreakCheck"
         );
         let mut body = file.decode_function_instructions(&format, 0).unwrap();

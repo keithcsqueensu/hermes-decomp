@@ -427,15 +427,42 @@ mod tests {
         } = base.clone();
 
         let variants = [
-            DecompileOptionsV2 { resolve_strings: !base.resolve_strings, ..base.clone() },
-            DecompileOptionsV2 { include_offsets: !base.include_offsets, ..base.clone() },
-            DecompileOptionsV2 { propagate: !base.propagate, ..base.clone() },
-            DecompileOptionsV2 { simplify: !base.simplify, ..base.clone() },
-            DecompileOptionsV2 { recover_structures: !base.recover_structures, ..base.clone() },
-            DecompileOptionsV2 { assembly_mode: !base.assembly_mode, ..base.clone() },
-            DecompileOptionsV2 { deep: !base.deep, ..base.clone() },
-            DecompileOptionsV2 { stable: !base.stable, ..base.clone() },
-            DecompileOptionsV2 { cascade: Some("proposal.json".into()), ..base.clone() },
+            DecompileOptionsV2 {
+                resolve_strings: !base.resolve_strings,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                include_offsets: !base.include_offsets,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                propagate: !base.propagate,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                simplify: !base.simplify,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                recover_structures: !base.recover_structures,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                assembly_mode: !base.assembly_mode,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                deep: !base.deep,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                stable: !base.stable,
+                ..base.clone()
+            },
+            DecompileOptionsV2 {
+                cascade: Some("proposal.json".into()),
+                ..base.clone()
+            },
         ];
         for (i, v) in variants.iter().enumerate() {
             assert_ne!(

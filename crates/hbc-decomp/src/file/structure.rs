@@ -153,7 +153,11 @@ impl Diagnostic {
                 "header.file_length is {declared} but the file is {actual} bytes \
                  ({} bytes {})",
                 (*actual as i64 - *declared as i64).unsigned_abs(),
-                if (*actual as u64) < *declared as u64 { "short" } else { "extra" }
+                if (*actual as u64) < *declared as u64 {
+                    "short"
+                } else {
+                    "extra"
+                }
             ),
             Self::LayoutFallback {
                 version,

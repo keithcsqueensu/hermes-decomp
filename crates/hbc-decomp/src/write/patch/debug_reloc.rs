@@ -83,7 +83,9 @@ fn source_location_slots(bytes: &[u8], headers: &[FunctionHeader]) -> Vec<(u32, 
             if count > 1000 {
                 continue;
             }
-            pos = pos.saturating_add(4).saturating_add(count.saturating_mul(12));
+            pos = pos
+                .saturating_add(4)
+                .saturating_add(count.saturating_mul(12));
             pos = pos.saturating_add(3) & !3;
         }
         let Some(raw) = bytes.get(pos..pos + 4) else {
@@ -91,7 +93,13 @@ fn source_location_slots(bytes: &[u8], headers: &[FunctionHeader]) -> Vec<(u32, 
         };
         let stream_offset = u32::from_le_bytes(raw.try_into().unwrap());
         if stream_offset != u32::MAX {
-            out.push((id, OffsetsSlot { at: pos, stream_offset }));
+            out.push((
+                id,
+                OffsetsSlot {
+                    at: pos,
+                    stream_offset,
+                },
+            ));
         }
     }
     out
@@ -260,7 +268,21 @@ mod tests {
 
     #[test]
     fn sleb128_round_trips() {
-        for value in [0i64, 1, -1, 63, 64, -64, -65, 127, 128, -128, 1000, -1000, i32::MAX as i64] {
+        for value in [
+            0i64,
+            1,
+            -1,
+            63,
+            64,
+            -64,
+            -65,
+            127,
+            128,
+            -128,
+            1000,
+            -1000,
+            i32::MAX as i64,
+        ] {
             let encoded = encode_sleb128(value);
             let mut reader = ByteReader::new(&encoded);
             assert_eq!(

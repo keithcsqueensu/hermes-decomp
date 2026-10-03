@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use hbc_decomp::{
-    add_string, create_minimal, emit_hasm_function, generate_frida_for_file, inject_stub,
-    parse_hasm_with_context, patch_function_body, patch_string_by_id, patch_string_operand,
-    patch_string_replace, retarget_string, scan_secrets, format_secrets_report, CreateOptions,
+    add_string, create_minimal, emit_hasm_function, format_secrets_report, generate_frida_for_file,
+    inject_stub, parse_hasm_with_context, patch_function_body, patch_string_by_id,
+    patch_string_operand, patch_string_replace, retarget_string, scan_secrets, CreateOptions,
     FridaHookOptions, InjectStubKind, OperandTarget, PatchOptions,
 };
 
@@ -185,23 +185,18 @@ pub fn run_patch_operand(
     // Resolve string value to id.
     let new_id = match (string_id, string) {
         (Some(id), _) => id,
-        (None, Some(val)) => {
-            file.strings
-                .iter()
-                .position(|s| s.value == val)
-                .map(|i| i as u32)
-                .ok_or_else(|| {
-                    format!(
-                        "string {:?} not in table; use add-string first",
-                        val
-                    )
-                })?
-        }
+        (None, Some(val)) => file
+            .strings
+            .iter()
+            .position(|s| s.value == val)
+            .map(|i| i as u32)
+            .ok_or_else(|| format!("string {:?} not in table; use add-string first", val))?,
         _ => return Err("provide --string-id or --string".into()),
     };
 
     let opts = PatchOptions::default();
-    let (out, status, warning) = patch_string_operand(&mut file, &format, target, new_id, operand_index, &opts)?;
+    let (out, status, warning) =
+        patch_string_operand(&mut file, &format, target, new_id, operand_index, &opts)?;
     if let Some(w) = warning {
         eprintln!("{w}");
     }
@@ -227,24 +222,22 @@ pub fn run_retarget_string(
     // Resolve by-value to by-id if needed.
     let fid = match (from_id, from) {
         (Some(id), _) => id,
-        (None, Some(val)) => {
-            file.strings
-                .iter()
-                .position(|s| s.value == val)
-                .map(|i| i as u32)
-                .ok_or_else(|| format!("string not found: {:?}", val))?
-        }
+        (None, Some(val)) => file
+            .strings
+            .iter()
+            .position(|s| s.value == val)
+            .map(|i| i as u32)
+            .ok_or_else(|| format!("string not found: {:?}", val))?,
         _ => return Err("provide --from-id or --from".into()),
     };
     let tid = match (to_id, to) {
         (Some(id), _) => id,
-        (None, Some(val)) => {
-            file.strings
-                .iter()
-                .position(|s| s.value == val)
-                .map(|i| i as u32)
-                .ok_or_else(|| format!("string not found: {:?}", val))?
-        }
+        (None, Some(val)) => file
+            .strings
+            .iter()
+            .position(|s| s.value == val)
+            .map(|i| i as u32)
+            .ok_or_else(|| format!("string not found: {:?}", val))?,
         _ => return Err("provide --to-id or --to".into()),
     };
 
@@ -274,7 +267,10 @@ pub fn run_retarget_string(
     }
     eprintln!(
         "Retargeted string {} → {} ({:?}) → {}",
-        fid, tid, to_val, output.display()
+        fid,
+        tid,
+        to_val,
+        output.display()
     );
     Ok(())
 }
@@ -309,7 +305,10 @@ pub fn run_add_string(
     println!("{new_id}");
     eprintln!(
         "Added string {:?} (id {}, identifier={}) → {}",
-        value, new_id, identifier, output.display()
+        value,
+        new_id,
+        identifier,
+        output.display()
     );
     Ok(())
 }

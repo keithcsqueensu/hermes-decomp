@@ -49,7 +49,10 @@ fn locations(file: &BytecodeFile, function_id: u32) -> BTreeMap<u32, u32> {
 fn last_ret_offset(file: &BytecodeFile, format: &BytecodeFormat, function_id: u32) -> Option<u32> {
     let mut at = 0u32;
     let mut last = None;
-    for insn in file.decode_function_instructions(format, function_id).ok()? {
+    for insn in file
+        .decode_function_instructions(format, function_id)
+        .ok()?
+    {
         if format
             .definitions
             .get(insn.opcode as usize)
@@ -68,10 +71,7 @@ fn subject(file: &BytecodeFile) -> u32 {
     let debug = file.debug_info.as_ref().expect("debug info");
     (0..file.function_headers.len() as u32)
         .find(|id| {
-            debug
-                .source_locations
-                .get(id)
-                .is_some_and(|l| l.len() >= 3)
+            debug.source_locations.get(id).is_some_and(|l| l.len() >= 3)
                 && !file.function_headers[*id as usize].has_exception_handler()
         })
         .expect("a function with several locations and no handlers")

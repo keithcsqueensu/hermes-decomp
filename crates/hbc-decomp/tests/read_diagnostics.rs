@@ -11,8 +11,11 @@ use common::Oracle;
 use hbc_decomp::{BytecodeFile, Diagnostic, FunctionHeaderLayout, HeaderLayout};
 
 fn fx(name: &str) -> Vec<u8> {
-    std::fs::read(format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")))
-        .unwrap_or_else(|e| panic!("fixture {name}: {e}"))
+    std::fs::read(format!(
+        "{}/tests/fixtures/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap_or_else(|e| panic!("fixture {name}: {e}"))
 }
 
 const CLEAN: [&str; 4] = [
@@ -260,7 +263,11 @@ fn overflowed_legacy_headers_report_themselves_as_overflowed() {
     );
     // A frame_size above 127 cannot fit the small header's 7-bit field, so any
     // such function demonstrably came from a large header and must be flagged.
-    for h in file.function_headers.iter().filter(|h| h.frame_size() > 127) {
+    for h in file
+        .function_headers
+        .iter()
+        .filter(|h| h.frame_size() > 127)
+    {
         assert!(
             h.is_overflowed(),
             "function {} has frame_size {} (impossible in a small header) but \

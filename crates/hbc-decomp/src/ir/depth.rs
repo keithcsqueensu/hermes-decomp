@@ -158,6 +158,9 @@ mod tests {
         );
         drop(held);
         assert_eq!(DepthGuard::current(), 0);
-        assert!(DepthGuard::enter().is_some(), "budget is restored after unwind");
+        assert!(
+            DepthGuard::enter().is_some(),
+            "budget is restored after unwind"
+        );
     }
 }

@@ -100,9 +100,13 @@ pub struct XrefParams {
     #[schemars(description = "Type of query: 'string' or 'function' (default: 'string')")]
     #[serde(default = "default_string")]
     pub kind: String,
-    #[schemars(description = "Maximum number of cross-references to return (default: all, capped                               by the response size limit)")]
+    #[schemars(
+        description = "Maximum number of cross-references to return (default: all, capped                               by the response size limit)"
+    )]
     pub limit: Option<usize>,
-    #[schemars(description = "Index of the first cross-reference to return, for paging (default: 0)")]
+    #[schemars(
+        description = "Index of the first cross-reference to return, for paging (default: 0)"
+    )]
     #[serde(default)]
     pub offset: usize,
 }
@@ -135,7 +139,9 @@ pub struct DumpParams {
     #[schemars(description = "What to dump: 'strings', 'functions', 'identifiers', or 'all'")]
     #[serde(default = "default_strings")]
     pub kind: String,
-    #[schemars(description = "Maximum number of entries to return (default: all, capped by the                               response size limit)")]
+    #[schemars(
+        description = "Maximum number of entries to return (default: all, capped by the                               response size limit)"
+    )]
     pub limit: Option<usize>,
     #[schemars(description = "Index of the first entry to return, for paging (default: 0)")]
     #[serde(default)]
@@ -170,7 +176,9 @@ pub struct PatchStringParams {
     pub id: Option<u32>,
     #[schemars(description = "Existing string value to replace (use this or id)")]
     pub old_value: Option<String>,
-    #[schemars(description = "New string value, any length. Most patches rebuild the string table (so the output file grows) because packed Hermes storage is shared between entries; only an entry with exclusive storage and an identical byte length is patched in place")]
+    #[schemars(
+        description = "New string value, any length. Most patches rebuild the string table (so the output file grows) because packed Hermes storage is shared between entries; only an entry with exclusive storage and an identical byte length is patched in place"
+    )]
     pub new_value: String,
     #[schemars(description = "Path to write the patched .hbc")]
     pub output_path: String,

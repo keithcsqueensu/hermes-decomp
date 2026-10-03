@@ -290,7 +290,11 @@ fn pair_group(
     }
 
     // Whatever nobody claimed, in id order, paired positionally with the rest.
-    let mut left2: Vec<u32> = ids2.iter().copied().filter(|i| !claimed.contains(i)).collect();
+    let mut left2: Vec<u32> = ids2
+        .iter()
+        .copied()
+        .filter(|i| !claimed.contains(i))
+        .collect();
     let n = left1.len().min(left2.len());
     for k in 0..n {
         pairs.push((left1[k], left2[k]));

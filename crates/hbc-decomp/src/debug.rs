@@ -17,8 +17,8 @@
 // `lib/BCGen/HBC/DebugInfo.cpp` (`DebugInfoGenerator::appendSourceLocations`) and
 // `FunctionDebugInfoDeserializer`. See `docs/UNMODELED_REGIONS_PLAN.md`.
 
-use crate::file::DebugInfoStatus;
 use crate::error::Result;
+use crate::file::DebugInfoStatus;
 use crate::io::ByteReader;
 use std::collections::BTreeMap;
 
@@ -296,8 +296,8 @@ impl DebugInfo {
         // their names by index into it.
         // Two views of the same region: the decoded list (for display) and the raw
         // bytes, which is what name references actually address.
-        let string_data = slice_range(data, header.string_table_offset, header.debug_data_size)
-            .unwrap_or(&[]);
+        let string_data =
+            slice_range(data, header.string_table_offset, header.debug_data_size).unwrap_or(&[]);
         debug_info.string_table = Self::parse_string_table(string_data);
 
         if let Some(scope_data) = slice_range(

@@ -161,7 +161,10 @@ mod tests {
         // All bits set is -1 at any width.
         assert_eq!(dec(&[0xff; 9]), "-1");
         // -(2^64): the old code printed this as an unsigned hex blob.
-        assert_eq!(dec(&[0, 0, 0, 0, 0, 0, 0, 0, 0xff]), "-18446744073709551616");
+        assert_eq!(
+            dec(&[0, 0, 0, 0, 0, 0, 0, 0, 0xff]),
+            "-18446744073709551616"
+        );
         // Zero, and a zero magnitude that must not acquire a sign.
         assert_eq!(dec(&[0; 9]), "0");
         assert_eq!(dec(&[0; 16]), "0");

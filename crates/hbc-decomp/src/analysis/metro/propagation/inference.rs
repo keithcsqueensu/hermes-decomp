@@ -399,7 +399,9 @@ fn infer_name_from_view_config(stmts: &[Statement]) -> Option<String> {
                         let is_key = matches!(&prop.key,
                             PropertyKey::Ident(k) | PropertyKey::String(k) if k == "uiViewClassName");
                         if is_key {
-                            if let Expression::Value(Value::Constant(Constant::String(s))) = &prop.value {
+                            if let Expression::Value(Value::Constant(Constant::String(s))) =
+                                &prop.value
+                            {
                                 if is_meaningful_name(s) {
                                     self.0 = Some(s.clone());
                                     return;
@@ -576,7 +578,9 @@ mod tests {
     fn view_config_is_found_inside_nested_expressions() {
         // Codegen wraps the config in a registration call.
         let stmts = vec![Statement::Return(Some(Expression::call(
-            Expression::Value(Value::Binding(Binding::Variable("registerComponent".into()))),
+            Expression::Value(Value::Binding(Binding::Variable(
+                "registerComponent".into(),
+            ))),
             vec![view_config_stmt_value("AndroidProgressBar")],
         )))];
         assert_eq!(

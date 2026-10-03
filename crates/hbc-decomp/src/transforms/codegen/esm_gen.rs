@@ -962,8 +962,14 @@ mod tests {
         let cases = [
             ("import foo from \"mod\";", (Some("foo"), Some("mod"))),
             ("import { foo } from \"mod\";", (Some("foo"), Some("mod"))),
-            ("import { bar as foo } from \"mod\";", (Some("foo"), Some("mod"))),
-            ("import { default as foo } from \"mod\";", (Some("foo"), Some("mod"))),
+            (
+                "import { bar as foo } from \"mod\";",
+                (Some("foo"), Some("mod")),
+            ),
+            (
+                "import { default as foo } from \"mod\";",
+                (Some("foo"), Some("mod")),
+            ),
             ("import * as foo from \"mod\";", (Some("foo"), Some("mod"))),
             ("import \"mod\";", (None, Some("mod"))),
         ];
@@ -1032,7 +1038,10 @@ mod tests {
     fn declared_names_are_read_from_top_level_only() {
         assert_eq!(declared_name("export const Foo = x;"), Some("Foo"));
         assert_eq!(declared_name("function Foo(a) {"), Some("Foo"));
-        assert_eq!(declared_name("export async function* Foo(a) {"), Some("Foo"));
+        assert_eq!(
+            declared_name("export async function* Foo(a) {"),
+            Some("Foo")
+        );
         assert_eq!(declared_name("class Foo extends Bar {"), Some("Foo"));
         assert_eq!(declared_name("let Foo;"), Some("Foo"));
         // Nested in another declaration, so it introduces no top-level name.
@@ -1048,7 +1057,10 @@ mod tests {
         let mut imports = vec!["import DrawerActions from \"DrawerActions\";".to_string()];
         let mut exports = vec!["export const DrawerActions = DrawerActions.default;".to_string()];
         resolve_import_declaration_collisions(&mut imports, &[], &mut exports);
-        assert_eq!(exports, ["export { default as DrawerActions } from \"DrawerActions\";"]);
+        assert_eq!(
+            exports,
+            ["export { default as DrawerActions } from \"DrawerActions\";"]
+        );
         // The import stays: the body may still use the binding.
         assert_eq!(imports, ["import DrawerActions from \"DrawerActions\";"]);
     }
@@ -1056,7 +1068,8 @@ mod tests {
     #[test]
     fn reexport_keeps_the_property_name() {
         let mut imports = vec!["import StackActions from \"StackActions\";".to_string()];
-        let mut exports = vec!["export const StackActions = StackActions.StackActions;".to_string()];
+        let mut exports =
+            vec!["export const StackActions = StackActions.StackActions;".to_string()];
         resolve_import_declaration_collisions(&mut imports, &[], &mut exports);
         assert_eq!(exports, ["export { StackActions } from \"StackActions\";"]);
     }
@@ -1096,7 +1109,8 @@ mod tests {
         let body = vec!["function getIteratorFn(iterable) {
   return null;
 }
-".to_string()];
+"
+        .to_string()];
         let mut exports: Vec<String> = vec![];
         resolve_import_declaration_collisions(&mut imports, &body, &mut exports);
         assert_eq!(imports, ["import \"getIteratorFn\";"]);
@@ -1106,7 +1120,8 @@ mod tests {
     fn non_colliding_declarations_are_left_alone() {
         let mut imports = vec!["import dep from \"dep\";".to_string()];
         let body = vec!["function helper() {}
-".to_string()];
+"
+        .to_string()];
         let mut exports = vec!["export const value = dep.default;".to_string()];
         let (i0, e0) = (imports.clone(), exports.clone());
         resolve_import_declaration_collisions(&mut imports, &body, &mut exports);

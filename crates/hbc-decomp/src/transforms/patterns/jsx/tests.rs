@@ -249,8 +249,14 @@ fn props_substitution_stops_at_a_direct_cycle() {
 fn self_referential_props_binding_terminates() {
     let jsx_call = |tag: &str, props: Expression| {
         Expression::call(
-            Expression::member(Expression::Value(Value::Binding(Binding::Variable("_r".into()))), "jsx"),
-            vec![Expression::Value(Value::Binding(Binding::Variable(tag.into()))), props],
+            Expression::member(
+                Expression::Value(Value::Binding(Binding::Variable("_r".into()))),
+                "jsx",
+            ),
+            vec![
+                Expression::Value(Value::Binding(Binding::Variable(tag.into()))),
+                props,
+            ],
         )
     };
     let stmts = vec![
@@ -259,7 +265,10 @@ fn self_referential_props_binding_terminates() {
             value: Expression::Object {
                 properties: vec![ObjectProperty {
                     key: PropertyKey::Ident("accessory".into()),
-                    value: jsx_call("Inner", Expression::Value(Value::Binding(Binding::Variable("p".into())))),
+                    value: jsx_call(
+                        "Inner",
+                        Expression::Value(Value::Binding(Binding::Variable("p".into()))),
+                    ),
                 }],
             },
         },
@@ -358,7 +367,10 @@ fn nested_block_write_invalidates_recorded_props() {
         write(AssignTarget::Binding(Binding::Variable("p".into()))),
         // if (c) { p.a.deep = "y"; }
         write(AssignTarget::Member {
-            object: Expression::member(Expression::Value(Value::Binding(Binding::Variable("p".into()))), "a"),
+            object: Expression::member(
+                Expression::Value(Value::Binding(Binding::Variable("p".into()))),
+                "a",
+            ),
             property: "deep".into(),
         }),
     ];

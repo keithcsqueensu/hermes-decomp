@@ -4,9 +4,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::{tool, tool_router, ErrorData as McpError};
 
-use hbc_decomp::{
-    BytecodeFile, ClosureInfo, DecompileOptionsV2, IRBuilder, IRBuilderOptions,
-};
+use hbc_decomp::{BytecodeFile, ClosureInfo, DecompileOptionsV2, IRBuilder, IRBuilderOptions};
 
 use super::bounds::{parse_globs, parse_id_ranges, truncate_at_line};
 use super::params::*;
@@ -376,8 +374,11 @@ impl HermesService {
 
             let string_line = |i: usize, out: &mut String| {
                 if let Some(s) = file.string_at(i as u32) {
-                    out.push_str(&format!("{}: {}
-", i, s.value));
+                    out.push_str(&format!(
+                        "{}: {}
+",
+                        i, s.value
+                    ));
                 }
             };
 
@@ -398,20 +399,26 @@ impl HermesService {
                         ));
                     }
                     if file.identifier_hashes.is_empty() {
-                        output.push_str("No identifier hash table found.
-");
+                        output.push_str(
+                            "No identifier hash table found.
+",
+                        );
                     }
                 }
                 "all" => {
-                    output.push_str("=== strings ===
-");
+                    output.push_str(
+                        "=== strings ===
+",
+                    );
                     let (a, b) = window(file.header.string_count as usize, &mut output, "strings");
                     for i in a..b {
                         string_line(i, &mut output);
                     }
-                    output.push_str("
+                    output.push_str(
+                        "
 === functions ===
-");
+",
+                    );
                     let (a, b) = window(file.function_headers.len(), &mut output, "functions");
                     for i in a..b {
                         fn_line(i, &mut output);
@@ -552,10 +559,7 @@ impl HermesService {
             // below v96) and "the section points past EOF" were one answer.
             let status = loaded.file.debug_info_status;
             if status != hbc_decomp::DebugInfoStatus::Present {
-                return text_result(format!(
-                    "No debug info available: {}.",
-                    status.describe()
-                ));
+                return text_result(format!("No debug info available: {}.", status.describe()));
             }
 
             // The file's own parse, which carries the per-function DebugOffsets

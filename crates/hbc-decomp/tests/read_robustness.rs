@@ -52,9 +52,26 @@ fn probe(name: &str, bytes: &[u8], report: &mut Vec<String>) {
         let n = file.function_headers.len().min(64);
         for i in 0..n {
             let _ = file.decode_function_instructions(&fmt, i as u32);
-            let _ = hbc_decomp::disassemble_function(&file, &fmt, i as u32, &hbc_decomp::DisasmOptions::default());
+            let _ = hbc_decomp::disassemble_function(
+                &file,
+                &fmt,
+                i as u32,
+                &hbc_decomp::DisasmOptions::default(),
+            );
         }
-        for k in [hbc_decomp::inspect::TableKind::CjsModules, hbc_decomp::inspect::TableKind::RegExp, hbc_decomp::inspect::TableKind::ObjShapes, hbc_decomp::inspect::TableKind::FunctionSources, hbc_decomp::inspect::TableKind::StringKinds, hbc_decomp::inspect::TableKind::Sections, hbc_decomp::inspect::TableKind::BigInt, hbc_decomp::inspect::TableKind::ArrayBuffer] { let _ = hbc_decomp::inspect::dump_table(&file, k); let _ = hbc_decomp::inspect::dump_table_json(&file, k); }
+        for k in [
+            hbc_decomp::inspect::TableKind::CjsModules,
+            hbc_decomp::inspect::TableKind::RegExp,
+            hbc_decomp::inspect::TableKind::ObjShapes,
+            hbc_decomp::inspect::TableKind::FunctionSources,
+            hbc_decomp::inspect::TableKind::StringKinds,
+            hbc_decomp::inspect::TableKind::Sections,
+            hbc_decomp::inspect::TableKind::BigInt,
+            hbc_decomp::inspect::TableKind::ArrayBuffer,
+        ] {
+            let _ = hbc_decomp::inspect::dump_table(&file, k);
+            let _ = hbc_decomp::inspect::dump_table_json(&file, k);
+        }
         let _ = hbc_decomp::inspect::function_info_banner(&file, 0);
         let _ = hbc_decomp::render_call_graph(&file, &fmt, Some(0), 3, false);
         // debug info / source locations
@@ -65,7 +82,9 @@ fn probe(name: &str, bytes: &[u8], report: &mut Vec<String>) {
         for sh in file.obj_shape_table.iter().take(64) {
             let _ = file.read_key_buffer_series(sh.key_buffer_offset, sh.num_props);
         }
-        for i in 0..file.big_int_table.len().min(64) { let _ = file.bigint_at(i as u32); }
+        for i in 0..file.big_int_table.len().min(64) {
+            let _ = file.bigint_at(i as u32);
+        }
         for off in [0u32, 1, 2, 4, 8] {
             let _ = file.read_array_buffer_series(off, 16);
             let _ = file.read_value_buffer_series(off, 16);

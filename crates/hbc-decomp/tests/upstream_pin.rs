@@ -53,8 +53,8 @@ use std::path::{Path, PathBuf};
 
 use hbc_decomp::debug::{DebugLayout, StreamEncoding};
 use hbc_decomp::modern_layout::ModernLayout;
-use hbc_decomp::BytecodeOptions;
 use hbc_decomp::BytecodeFormat;
+use hbc_decomp::BytecodeOptions;
 
 mod common;
 use common::Oracle;
@@ -143,7 +143,10 @@ fn checkout_for(version: u32) -> Option<PathBuf> {
     common::oracle_path(
         Oracle::Src,
         Some(version),
-        |p| p.join("include/hermes/BCGen/HBC/BytecodeFileFormat.h").is_file(),
+        |p| {
+            p.join("include/hermes/BCGen/HBC/BytecodeFileFormat.h")
+                .is_file()
+        },
         "a Hermes source tree (no include/hermes/BCGen/HBC/BytecodeFileFormat.h under it)",
     )
 }
@@ -323,7 +326,11 @@ fn modern_layout_matches_upstream_headers() {
     let mut checked = 0;
     for version in CHECKOUT_VERSIONS {
         let Some(root) = checkout_for(version) else {
-            common::skip_or_fail(Oracle::Src, Some(version), &format!("no HERMES_SRC_V{version}"));
+            common::skip_or_fail(
+                Oracle::Src,
+                Some(version),
+                &format!("no HERMES_SRC_V{version}"),
+            );
             continue;
         };
         let declared = upstream_version(&root);
@@ -479,7 +486,11 @@ fn opcode_tables_match_upstream() {
     let mut checked = 0;
     for version in CHECKOUT_VERSIONS {
         let Some(root) = checkout_for(version) else {
-            common::skip_or_fail(Oracle::Src, Some(version), &format!("no HERMES_SRC_V{version}"));
+            common::skip_or_fail(
+                Oracle::Src,
+                Some(version),
+                &format!("no HERMES_SRC_V{version}"),
+            );
             continue;
         };
         let upstream = parse_bytecode_list(&root);
@@ -546,7 +557,6 @@ fn opcode_tables_match_upstream() {
         );
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // The options bitfield (what `BytecodeOptions` decodes)
@@ -677,7 +687,11 @@ fn bytecode_options_bits_match_upstream() {
     let mut checked = 0;
     for version in CHECKOUT_VERSIONS {
         let Some(root) = checkout_for(version) else {
-            common::skip_or_fail(Oracle::Src, Some(version), &format!("no HERMES_SRC_V{version}"));
+            common::skip_or_fail(
+                Oracle::Src,
+                Some(version),
+                &format!("no HERMES_SRC_V{version}"),
+            );
             continue;
         };
         let bits = parse_bytecode_options_bits(&root);
@@ -686,7 +700,8 @@ fn bytecode_options_bits_match_upstream() {
         // it, and the probes below would keep passing for the bits underneath.
         for (i, bit) in bits.iter().enumerate() {
             assert_eq!(
-                bit.width, 1, "v{version}: {} is {} bits wide upstream, not 1; every bit above \
+                bit.width, 1,
+                "v{version}: {} is {} bits wide upstream, not 1; every bit above \
                  position {i} has moved",
                 bit.name, bit.width
             );
@@ -694,7 +709,11 @@ fn bytecode_options_bits_match_upstream() {
 
         // Added or removed: the bits are contiguous from bit 0, so upstream's
         // count is the mask.
-        assert!(bits.len() <= 8, "v{version}: {} bits do not fit a byte", bits.len());
+        assert!(
+            bits.len() <= 8,
+            "v{version}: {} bits do not fit a byte",
+            bits.len()
+        );
         let upstream_mask = ((1u16 << bits.len()) - 1) as u8;
         let ours = BytecodeOptions::new(0xff, version).defined_mask();
         assert_eq!(
@@ -749,8 +768,16 @@ fn bytecode_options_bits_match_upstream() {
             declares_async,
             "v{version}: upstream {} hasAsync, but BytecodeOptions::has_async {} it. Reporting \
              Some(false) for a bit that does not exist is the failure OB1 describes.",
-            if declares_async { "declares" } else { "does not declare" },
-            if declares_async { "does not model" } else { "models" },
+            if declares_async {
+                "declares"
+            } else {
+                "does not declare"
+            },
+            if declares_async {
+                "does not model"
+            } else {
+                "models"
+            },
         );
 
         checked += 1;
@@ -840,10 +867,17 @@ fn debug_info_shapes_match_upstream() {
     let mut checked = 0;
     for version in CHECKOUT_VERSIONS {
         let Some(root) = checkout_for(version) else {
-            common::skip_or_fail(Oracle::Src, Some(version), &format!("no HERMES_SRC_V{version}"));
+            common::skip_or_fail(
+                Oracle::Src,
+                Some(version),
+                &format!("no HERMES_SRC_V{version}"),
+            );
             continue;
         };
-        let format_h = strip_comments(&read(&root, "include/hermes/BCGen/HBC/BytecodeFileFormat.h"));
+        let format_h = strip_comments(&read(
+            &root,
+            "include/hermes/BCGen/HBC/BytecodeFileFormat.h",
+        ));
         let debug_h = strip_comments(&read(&root, "include/hermes/BCGen/HBC/DebugInfo.h"));
 
         let header_fields = count_u32_members(&format_h, "DebugInfoHeader")

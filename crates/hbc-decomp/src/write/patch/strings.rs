@@ -611,7 +611,8 @@ pub fn add_string(
             let e = (0xffu32 << 24) | ((ov_index & 0x7f_ffff) << 1) | (loc.is_utf16 as u32);
             new_small.push(e);
         } else {
-            let e = ((loc.len_field & 0xff) << 24) | ((off & 0x7f_ffff) << 1) | (loc.is_utf16 as u32);
+            let e =
+                ((loc.len_field & 0xff) << 24) | ((off & 0x7f_ffff) << 1) | (loc.is_utf16 as u32);
             new_small.push(e);
         }
     }
@@ -636,7 +637,8 @@ pub fn add_string(
         let e = (0xffu32 << 24) | ((ov_index & 0x7f_ffff) << 1) | (new_is_utf16 as u32);
         new_small.push(e);
     } else {
-        let e = ((new_len_field & 0xff) << 24) | ((new_off & 0x7f_ffff) << 1) | (new_is_utf16 as u32);
+        let e =
+            ((new_len_field & 0xff) << 24) | ((new_off & 0x7f_ffff) << 1) | (new_is_utf16 as u32);
         new_small.push(e);
     }
 
@@ -683,7 +685,7 @@ pub fn add_string(
         };
         region.extend_from_slice(&raw_k.to_le_bytes());
     }
-    while region.len() % 4 != 0 {
+    while !region.len().is_multiple_of(4) {
         region.push(0);
     }
 
@@ -691,7 +693,7 @@ pub fn add_string(
     for h in &new_id_hashes {
         region.extend_from_slice(&h.to_le_bytes());
     }
-    while region.len() % 4 != 0 {
+    while !region.len().is_multiple_of(4) {
         region.push(0);
     }
 
@@ -710,7 +712,7 @@ pub fn add_string(
     let storage_size = new_storage.len() as u32;
     let overflow_count = new_overflow.len() as u32;
     region.extend_from_slice(&new_storage);
-    while region.len() % 4 != 0 {
+    while !region.len().is_multiple_of(4) {
         region.push(0);
     }
 
@@ -1018,16 +1020,21 @@ mod tests {
         }
         let (mut file, format) = load(FIXTURE);
         // Find two distinct non-empty strings to retarget.
-        let a = file.strings.iter().position(|s| !s.value.is_empty() && !s.is_utf16);
-        let b = file.strings.iter().rposition(|s| !s.value.is_empty() && !s.is_utf16);
+        let a = file
+            .strings
+            .iter()
+            .position(|s| !s.value.is_empty() && !s.is_utf16);
+        let b = file
+            .strings
+            .iter()
+            .rposition(|s| !s.value.is_empty() && !s.is_utf16);
         let (a, b) = match (a, b) {
             (Some(a), Some(b)) if a != b => (a as u32, b as u32),
             _ => return,
         };
         let target_val = file.strings[b as usize].value.clone();
         let opts = PatchOptions::default();
-        let out = retarget_string(&mut file, &format, a, b, &opts)
-            .expect("retarget_string basic");
+        let out = retarget_string(&mut file, &format, a, b, &opts).expect("retarget_string basic");
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).unwrap();
         assert_eq!(re.strings[a as usize].value, target_val);
@@ -1046,8 +1053,8 @@ mod tests {
             return;
         }
         let opts = PatchOptions::default();
-        let out = retarget_string(&mut file, &format, a, b, &opts)
-            .expect("retarget_string size check");
+        let out =
+            retarget_string(&mut file, &format, a, b, &opts).expect("retarget_string size check");
         // File size must not change — metadata-only edit.
         assert_eq!(out.len(), original_len, "file size changed after retarget");
     }
@@ -1067,11 +1074,11 @@ mod tests {
             .map(|s| (s.value.clone(), s.is_utf16))
             .collect();
         let opts = PatchOptions::default();
-        let _ = retarget_string(&mut file, &format, 0, 1, &opts)
-            .expect("retarget for unchanged check");
+        let _ =
+            retarget_string(&mut file, &format, 0, 1, &opts).expect("retarget for unchanged check");
         let re = BytecodeFile::parse_auto(file.raw_bytes.as_ref().unwrap()).unwrap();
-        for i in 2..originals.len() {
-            assert_eq!(re.strings[i].value, originals[i].0, "string {i} changed");
+        for (i, (value, _)) in originals.iter().enumerate().skip(2) {
+            assert_eq!(&re.strings[i].value, value, "string {i} changed");
         }
     }
 
@@ -1118,8 +1125,7 @@ mod tests {
         let (a, b) = (ids[0], ids[ids.len() - 1]);
         let to_val = file.strings[b as usize].value.clone();
         let opts = PatchOptions::default();
-        let out = retarget_string(&mut file, &format, a, b, &opts)
-            .expect("retarget identifier");
+        let out = retarget_string(&mut file, &format, a, b, &opts).expect("retarget identifier");
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).unwrap();
         assert_eq!(re.strings[a as usize].value, to_val);
@@ -1189,8 +1195,8 @@ mod tests {
         }
         let (mut file, format) = load(FIXTURE);
         let opts = PatchOptions::default();
-        let (out, new_id) = add_string(&mut file, &format, "café☕", false, &opts)
-            .expect("add_string UTF-16");
+        let (out, new_id) =
+            add_string(&mut file, &format, "café☕", false, &opts).expect("add_string UTF-16");
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).unwrap();
         assert!(re.strings[new_id as usize].is_utf16);
@@ -1324,13 +1330,11 @@ mod tests {
         ));
         let old_count = file.header.string_count;
         let opts = PatchOptions::default();
-        let (out, new_id) =
-            add_string(&mut file, &format, "modernTestProp", true, &opts)
-                .expect("add_string on modern v98");
+        let (out, new_id) = add_string(&mut file, &format, "modernTestProp", true, &opts)
+            .expect("add_string on modern v98");
         assert_eq!(new_id, old_count);
         assert!(verify_footer(&out));
-        let re = BytecodeFile::parse_auto(&out)
-            .expect("reparse after modern add_string");
+        let re = BytecodeFile::parse_auto(&out).expect("reparse after modern add_string");
         assert_eq!(re.header.string_count, old_count + 1);
         assert_eq!(re.strings[new_id as usize].value, "modernTestProp");
         assert!(re.strings[new_id as usize].is_identifier);
@@ -1367,7 +1371,10 @@ mod tests {
         let fmt2 = BytecodeFormat::for_version(re.header.version).unwrap();
         let after = crate::disassemble_function(&re, &fmt2, 0, &disasm_opts)
             .expect("disasm after add_string");
-        assert_eq!(before, after, "function 0 disassembly changed after add_string");
+        assert_eq!(
+            before, after,
+            "function 0 disassembly changed after add_string"
+        );
     }
 
     // Overflow threshold: exercise the overflow path by appending a string whose
@@ -1440,8 +1447,14 @@ mod tests {
     #[test]
     fn patch_string_replace_by_value_same_length() {
         let (mut file, format) = make_v96(vec!["global".into(), "hello".into()]);
-        let out = patch_string_replace(&mut file, &format, "hello", "world", &PatchOptions::default())
-            .expect("replace hello→world");
+        let out = patch_string_replace(
+            &mut file,
+            &format,
+            "hello",
+            "world",
+            &PatchOptions::default(),
+        )
+        .expect("replace hello→world");
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).unwrap();
         assert!(re.strings.iter().any(|s| s.value == "world"));
@@ -1471,8 +1484,14 @@ mod tests {
     #[test]
     fn patch_string_replace_not_found_errors() {
         let (mut file, format) = make_v96(vec!["global".into()]);
-        let err = patch_string_replace(&mut file, &format, "nonexistent", "x", &PatchOptions::default())
-            .expect_err("missing old value must error");
+        let err = patch_string_replace(
+            &mut file,
+            &format,
+            "nonexistent",
+            "x",
+            &PatchOptions::default(),
+        )
+        .expect_err("missing old value must error");
         assert!(
             err.to_string().contains("not found"),
             "error should say the value was not found, got: {err}"

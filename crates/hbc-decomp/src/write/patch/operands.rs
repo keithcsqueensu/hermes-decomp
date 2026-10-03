@@ -141,7 +141,12 @@ pub fn patch_string_operand(
         .operands
         .iter()
         .enumerate()
-        .filter(|(_, op)| matches!(op.ty, OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S))
+        .filter(|(_, op)| {
+            matches!(
+                op.ty,
+                OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S
+            )
+        })
         .map(|(i, op)| (i, op, operand_positions[i]))
         .collect();
 
@@ -195,7 +200,10 @@ pub fn patch_string_operand(
 
     // Read-back verification.
     let (verify_insn, _) = decode_one_at(&out, abs_off, format)?;
-    let verify_val = verify_insn.operands[op_idx].value.as_u32().unwrap_or(u32::MAX);
+    let verify_val = verify_insn.operands[op_idx]
+        .value
+        .as_u32()
+        .unwrap_or(u32::MAX);
     if verify_val != new_string_id {
         return Err(Error::Write(format!(
             "read-back failed: expected {new_string_id}, got {verify_val}"
@@ -280,13 +288,21 @@ mod tests {
         while pos < body_off + body_len {
             if let Ok((insn, _positions)) = decode_one_at(raw, pos, &format) {
                 let has_string = insn.operands.iter().any(|op| {
-                    matches!(op.ty, OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S)
+                    matches!(
+                        op.ty,
+                        OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S
+                    )
                 });
                 if has_string {
                     let old_id = insn
                         .operands
                         .iter()
-                        .find(|op| matches!(op.ty, OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S))
+                        .find(|op| {
+                            matches!(
+                                op.ty,
+                                OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S
+                            )
+                        })
                         .and_then(|op| op.value.as_u32())
                         .unwrap();
                     found = Some((pos as u32, old_id));
@@ -321,7 +337,12 @@ mod tests {
         let patched_id = verify
             .operands
             .iter()
-            .find(|op| matches!(op.ty, OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S))
+            .find(|op| {
+                matches!(
+                    op.ty,
+                    OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S
+                )
+            })
             .and_then(|op| op.value.as_u32())
             .unwrap();
         assert_eq!(patched_id, new_id);
@@ -343,7 +364,10 @@ mod tests {
         while pos < body_off + body_len {
             if let Ok((insn, _)) = decode_one_at(raw, pos, &format) {
                 let has_string = insn.operands.iter().any(|op| {
-                    matches!(op.ty, OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S)
+                    matches!(
+                        op.ty,
+                        OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S
+                    )
                 });
                 if has_string {
                     found = Some((pos - body_off) as u32);
@@ -388,7 +412,10 @@ mod tests {
         while pos < body_off + body_len {
             if let Ok((insn, _)) = decode_one_at(raw, pos, &format) {
                 let has_string = insn.operands.iter().any(|op| {
-                    matches!(op.ty, OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S)
+                    matches!(
+                        op.ty,
+                        OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S
+                    )
                 });
                 if !has_string && !insn.operands.is_empty() {
                     found = Some(pos as u32);
@@ -409,7 +436,10 @@ mod tests {
             None,
             &opts,
         );
-        assert!(result.is_err(), "should reject instruction with no string operand");
+        assert!(
+            result.is_err(),
+            "should reject instruction with no string operand"
+        );
     }
 
     // Regression: string id past the end of the string table should error,
@@ -430,7 +460,10 @@ mod tests {
         while pos < body_off + body_len {
             if let Ok((insn, _)) = decode_one_at(raw, pos, &format) {
                 if insn.operands.iter().any(|op| {
-                    matches!(op.ty, OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S)
+                    matches!(
+                        op.ty,
+                        OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S
+                    )
                 }) {
                     found = Some(pos as u32);
                     break;
@@ -482,7 +515,10 @@ mod tests {
         );
         assert!(result.is_err(), "insn_offset past body should be rejected");
         assert!(
-            result.unwrap_err().to_string().contains("function body size"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("function body size"),
             "error should mention function body size"
         );
     }
@@ -507,11 +543,19 @@ mod tests {
             .find(|d| d.name == name)
             .unwrap_or_else(|| panic!("opcode {name} missing"))
             .opcode;
-        Instruction { offset: 0, opcode, operands, length: 0 }
+        Instruction {
+            offset: 0,
+            opcode,
+            operands,
+            length: 0,
+        }
     }
 
     // Build a v96 image whose global body is `body`, with the given strings.
-    fn make_with_body(body: &[Instruction], strings: Vec<String>) -> (BytecodeFile, BytecodeFormat) {
+    fn make_with_body(
+        body: &[Instruction],
+        strings: Vec<String>,
+    ) -> (BytecodeFile, BytecodeFormat) {
         let format = BytecodeFormat::for_version_or_latest(96).unwrap().0;
         let encoded = encode_function_body(&format, body).expect("encode body");
         let bytes = create_minimal(&CreateOptions {
@@ -529,13 +573,21 @@ mod tests {
         // GetById r0, r0, cache 0, str 0 ; Ret r0
         let format0 = BytecodeFormat::for_version_or_latest(96).unwrap().0;
         let body = vec![
-            insn(&format0, "GetById", vec![
-                op(OperandType::Reg8, OperandValue::U8(0)),
-                op(OperandType::Reg8, OperandValue::U8(0)),
-                op(OperandType::UInt8, OperandValue::U8(0)),
-                op(OperandType::UInt16S, OperandValue::U16(0)),
-            ]),
-            insn(&format0, "Ret", vec![op(OperandType::Reg8, OperandValue::U8(0))]),
+            insn(
+                &format0,
+                "GetById",
+                vec![
+                    op(OperandType::Reg8, OperandValue::U8(0)),
+                    op(OperandType::Reg8, OperandValue::U8(0)),
+                    op(OperandType::UInt8, OperandValue::U8(0)),
+                    op(OperandType::UInt16S, OperandValue::U16(0)),
+                ],
+            ),
+            insn(
+                &format0,
+                "Ret",
+                vec![op(OperandType::Reg8, OperandValue::U8(0))],
+            ),
         ];
         let (mut file, format) = make_with_body(&body, vec!["global".into(), "other".into()]);
         // Both strings are non-identifier (create emits only String kind).
@@ -552,8 +604,14 @@ mod tests {
         .expect("patch GetById operand");
         assert!(status.contains("GetById"));
         let w = warning.expect("expected a *ById non-identifier warning");
-        assert!(w.contains("identifier"), "warning should mention identifier, got: {w}");
-        assert!(w.contains("GetById"), "warning should name the opcode, got: {w}");
+        assert!(
+            w.contains("identifier"),
+            "warning should mention identifier, got: {w}"
+        );
+        assert!(
+            w.contains("GetById"),
+            "warning should name the opcode, got: {w}"
+        );
     }
 
     #[test]
@@ -561,11 +619,19 @@ mod tests {
         // LoadConstString is not a *ById opcode → no property-name warning.
         let format0 = BytecodeFormat::for_version_or_latest(96).unwrap().0;
         let body = vec![
-            insn(&format0, "LoadConstString", vec![
-                op(OperandType::Reg8, OperandValue::U8(0)),
-                op(OperandType::UInt16S, OperandValue::U16(0)),
-            ]),
-            insn(&format0, "Ret", vec![op(OperandType::Reg8, OperandValue::U8(0))]),
+            insn(
+                &format0,
+                "LoadConstString",
+                vec![
+                    op(OperandType::Reg8, OperandValue::U8(0)),
+                    op(OperandType::UInt16S, OperandValue::U16(0)),
+                ],
+            ),
+            insn(
+                &format0,
+                "Ret",
+                vec![op(OperandType::Reg8, OperandValue::U8(0))],
+            ),
         ];
         let (mut file, format) = make_with_body(&body, vec!["global".into(), "other".into()]);
         let func0 = file.function_headers[0].offset();
@@ -578,6 +644,9 @@ mod tests {
             &PatchOptions::default(),
         )
         .expect("patch LoadConstString operand");
-        assert!(warning.is_none(), "non-*ById opcode must not warn, got: {warning:?}");
+        assert!(
+            warning.is_none(),
+            "non-*ById opcode must not warn, got: {warning:?}"
+        );
     }
 }

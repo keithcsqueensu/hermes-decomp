@@ -388,7 +388,13 @@ fn parse_trailing_and_build(
     // overstates that section by the size of the other three -- 48 bytes on a
     // stripped release build, megabytes on a `-g3` one -- and `dump --kind
     // sections` is the tool people use for exactly this offset arithmetic.
-    push_tail_sections(&mut sections, bytes, instruction_offset, &header, &tables.function_headers);
+    push_tail_sections(
+        &mut sections,
+        bytes,
+        instruction_offset,
+        &header,
+        &tables.function_headers,
+    );
 
     let (strings, invalid_string_storage) = decode_string_table(
         header.string_count,
@@ -401,8 +407,7 @@ fn parse_trailing_and_build(
     // The index into the location streams: one `DebugOffsets.sourceLocations` per
     // function that has debug info. Without this the streams cannot be addressed at
     // all, which is why `source_locations` was empty for the life of this crate.
-    let debug_offsets =
-        parse_debug_offsets(bytes, &tables.function_headers, header.version);
+    let debug_offsets = parse_debug_offsets(bytes, &tables.function_headers, header.version);
     let (debug_info, debug_info_status) = try_parse_debug_info(
         bytes,
         header.debug_info_offset,
@@ -519,7 +524,6 @@ fn push_tail_sections(
     push("footer", footer_start, file_end);
 }
 
-
 // Read each function's `DebugOffsets.sourceLocations` -- the offset of its location
 // stream within the debug *data* region, or absent when it has none.
 //
@@ -564,7 +568,9 @@ fn parse_debug_offsets(
             if count > 1000 {
                 continue;
             }
-            pos = pos.saturating_add(4).saturating_add(count.saturating_mul(12));
+            pos = pos
+                .saturating_add(4)
+                .saturating_add(count.saturating_mul(12));
             pos = pos.saturating_add(3) & !3;
         }
 

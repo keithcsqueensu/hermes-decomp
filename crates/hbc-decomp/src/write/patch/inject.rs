@@ -6,10 +6,10 @@ use crate::file::{BytecodeFile, Instruction};
 use crate::format::FunctionHeader;
 use crate::opcode::BytecodeFormat;
 
-use crate::write::encode::encode_function_body;
 use crate::modern_layout::{
     MODERN_LARGE_FRAME_SIZE, MODERN_SMALL_FLAGS_POS, MODERN_SMALL_HEADER_SIZE,
 };
+use crate::write::encode::encode_function_body;
 use crate::write::header_write::read_modern_large_pointer;
 use crate::write::serialize::{commit_image, section_offset};
 
@@ -54,8 +54,7 @@ fn reserve_modern_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<
     // The overflow bit lives in the small header (byte 11). For an overflowed
     // function the parsed struct flags come from the large header instead, which
     // does not carry the bit, so read it straight from the small header here.
-    let overflowed =
-        raw[slot + MODERN_SMALL_FLAGS_POS] & crate::format::FLAG_OVERFLOWED != 0;
+    let overflowed = raw[slot + MODERN_SMALL_FLAGS_POS] & crate::format::FLAG_OVERFLOWED != 0;
     if overflowed {
         let lp = read_modern_large_pointer(&raw[slot..slot + MODERN_SMALL_HEADER_SIZE])? as usize;
         if lp + layout.large_size() > raw.len() {
@@ -268,11 +267,7 @@ pub fn inject_stub(
                             .unwrap_or(false)
                     })
                     .unwrap_or(body.len());
-                insert_at = body
-                    .iter()
-                    .take(nop_at)
-                    .map(|i| i.length)
-                    .sum();
+                insert_at = body.iter().take(nop_at).map(|i| i.length).sum();
                 body.insert(
                     nop_at,
                     Instruction {
@@ -310,8 +305,13 @@ pub fn inject_stub(
         .unwrap_or(old_size);
     let delta = new_size - old_size;
 
-    match debug_reloc::relocate_locations_for_insertion(file, out.clone(), function_id, insert_at, delta)
-    {
+    match debug_reloc::relocate_locations_for_insertion(
+        file,
+        out.clone(),
+        function_id,
+        insert_at,
+        delta,
+    ) {
         Ok(relocated) => commit_image(file, relocated),
         // The only failure is a version whose debug layout is not modelled. If the
         // caller explicitly accepted a stale line table, honour that; otherwise the
@@ -415,9 +415,15 @@ mod tests {
         let (mut file, format) = make_legacy(vec!["global".into(), "print".into()]);
         // Skip if this version lacks any opcode the log prologue needs.
         let has = |n: &str| format.definitions.iter().any(|d| d.name == n);
-        if !["GetGlobalObject", "TryGetById", "LoadConstUndefined", "LoadConstString", "Call2"]
-            .iter()
-            .all(|n| has(n))
+        if ![
+            "GetGlobalObject",
+            "TryGetById",
+            "LoadConstUndefined",
+            "LoadConstString",
+            "Call2",
+        ]
+        .iter()
+        .all(|n| has(n))
         {
             return;
         }
@@ -426,8 +432,14 @@ mod tests {
             FunctionHeader::Legacy(_)
         ));
         let before = file.function_headers[0].bytecode_size_in_bytes();
-        let out = inject_stub(&mut file, &format, 0, InjectStubKind::LogEntry, &PatchOptions::default())
-            .expect("legacy log entry inject");
+        let out = inject_stub(
+            &mut file,
+            &format,
+            0,
+            InjectStubKind::LogEntry,
+            &PatchOptions::default(),
+        )
+        .expect("legacy log entry inject");
         assert!(verify_footer(&out));
         let re = BytecodeFile::parse_auto(&out).expect("reparse after legacy log inject");
         assert!(
@@ -441,8 +453,14 @@ mod tests {
     #[test]
     fn log_entry_without_print_string_errors() {
         let (mut file, format) = make_legacy(vec!["global".into()]);
-        let err = inject_stub(&mut file, &format, 0, InjectStubKind::LogEntry, &PatchOptions::default())
-            .expect_err("must fail without a print string");
+        let err = inject_stub(
+            &mut file,
+            &format,
+            0,
+            InjectStubKind::LogEntry,
+            &PatchOptions::default(),
+        )
+        .expect_err("must fail without a print string");
         assert!(
             err.to_string().contains("print"),
             "error should mention the missing print string, got: {err}"
@@ -459,8 +477,14 @@ mod tests {
             FunctionHeader::Legacy(leg) => leg.flags |= crate::format::FLAG_OVERFLOWED,
             _ => panic!("expected a legacy function header"),
         }
-        let err = inject_stub(&mut file, &format, 0, InjectStubKind::LogEntry, &PatchOptions::default())
-            .expect_err("overflowed legacy must be refused");
+        let err = inject_stub(
+            &mut file,
+            &format,
+            0,
+            InjectStubKind::LogEntry,
+            &PatchOptions::default(),
+        )
+        .expect_err("overflowed legacy must be refused");
         assert!(
             err.to_string().contains("overflow"),
             "error should mention overflow, got: {err}"

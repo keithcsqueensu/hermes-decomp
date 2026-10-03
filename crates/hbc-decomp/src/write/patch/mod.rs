@@ -5,9 +5,9 @@
 
 use crate::write::serialize::SerializeOptions;
 
+pub mod debug_reloc;
 pub mod functions;
 pub mod inject;
-pub mod debug_reloc;
 pub mod operands;
 pub mod strings;
 

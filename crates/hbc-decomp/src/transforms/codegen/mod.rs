@@ -343,8 +343,12 @@ impl Codegen {
     // nesting. See `crate::ir::depth`.
     pub fn generate_statements(&mut self, statements: &[Statement]) -> String {
         let Some(_guard) = crate::ir::depth::DepthGuard::enter() else {
-            return format!("{}{}
-", self.current_indent(), crate::ir::depth::TOO_DEEP);
+            return format!(
+                "{}{}
+",
+                self.current_indent(),
+                crate::ir::depth::TOO_DEEP
+            );
         };
         let mut output = String::new();
         // A loop label the structure recovery left as `labelN:` belongs to

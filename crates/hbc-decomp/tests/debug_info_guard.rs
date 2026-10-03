@@ -120,8 +120,9 @@ fn the_opt_out_permits_the_same_edit() {
             allow_stale_debug_info: true,
             ..Default::default()
         };
-        let out = hbc_decomp::write::patch::patch_function_body(&mut file, &format, 1, &body, &opts)
-            .unwrap_or_else(|e| panic!("v{version}: opt-out should permit the edit: {e}"));
+        let out =
+            hbc_decomp::write::patch::patch_function_body(&mut file, &format, 1, &body, &opts)
+                .unwrap_or_else(|e| panic!("v{version}: opt-out should permit the edit: {e}"));
         BytecodeFile::parse_auto(&out).expect("the patched image still reparses");
     }
 }

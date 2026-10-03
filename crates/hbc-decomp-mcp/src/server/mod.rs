@@ -262,7 +262,10 @@ mod tests {
             msg.contains("No file loaded"),
             "expected the normal no-file error, got: {msg}"
         );
-        assert!(!msg.contains("poison"), "poisoning must not leak out: {msg}");
+        assert!(
+            !msg.contains("poison"),
+            "poisoning must not leak out: {msg}"
+        );
     }
 
     #[test]

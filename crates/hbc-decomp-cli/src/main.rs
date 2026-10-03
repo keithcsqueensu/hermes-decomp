@@ -623,13 +623,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             format,
         } => {
             commands::write_cmd::run_retarget_string(
-                &input,
-                &output,
-                from_id,
-                to_id,
-                from,
-                to,
-                &format,
+                &input, &output, from_id, to_id, from, to, &format,
             )?;
         }
         Command::AddString {
@@ -639,13 +633,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             identifier,
             format,
         } => {
-            commands::write_cmd::run_add_string(
-                &input,
-                &output,
-                value,
-                identifier,
-                &format,
-            )?;
+            commands::write_cmd::run_add_string(&input, &output, value, identifier, &format)?;
         }
         Command::PatchString {
             input,

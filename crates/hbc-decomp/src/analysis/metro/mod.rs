@@ -30,28 +30,72 @@ pub(crate) const GENERIC_NAME_PREFIXES: &[&str] = &[
 
 // Exact generic names that should not be used as module names.
 pub(crate) const GENERIC_EXACT_NAMES: &[&str] = &[
-    "default", "_default", "undefined", "null", "true", "false",
-    "item", "self", "key", "value", "merged",
-    "exports", "wrapper", "require", "anonymous", "global",
-    "__esModule", "module", "dependencyMap",
+    "default",
+    "_default",
+    "undefined",
+    "null",
+    "true",
+    "false",
+    "item",
+    "self",
+    "key",
+    "value",
+    "merged",
+    "exports",
+    "wrapper",
+    "require",
+    "anonymous",
+    "global",
+    "__esModule",
+    "module",
+    "dependencyMap",
     // React Native codegen gives every native component the same export key,
     // holding the view config. `infer_name_from_view_config` reads the real
     // component name out of it instead.
     "__INTERNAL_VIEW_CONFIG",
     // Metro factory parameter role names (and their reserved-word-escaped
     // `_`-prefixed forms) must never be mistaken for a module's own name.
-    "_module", "_exports", "_require", "_global", "_dependencyMap",
-    "importDefault", "importAll", "_importDefault", "_importAll",
-    "Object", "Object2", "Object3", "Array", "Array2", "Array3",
-    "num", "str", "val", "res",
+    "_module",
+    "_exports",
+    "_require",
+    "_global",
+    "_dependencyMap",
+    "importDefault",
+    "importAll",
+    "_importDefault",
+    "_importAll",
+    "Object",
+    "Object2",
+    "Object3",
+    "Array",
+    "Array2",
+    "Array3",
+    "num",
+    "str",
+    "val",
+    "res",
     // Names the decompiler synthesizes for unnamed registers (see
     // `transforms::var_naming::suggestions`). They describe what a value came
     // from, never what the module is.
-    "items", "keys", "values", "entries", "result", "results", "prototype",
-    "call", "apply", "toString", "arr", "obj", "fn",
+    "items",
+    "keys",
+    "values",
+    "entries",
+    "result",
+    "results",
+    "prototype",
+    "call",
+    "apply",
+    "toString",
+    "arr",
+    "obj",
+    "fn",
     // Common method / export keys that leaked as Metro specifiers
     // (`from "clear"`, `export * from "keys"`). These are not recovered names.
-    "clear", "store", "callback", "set",
+    "clear",
+    "store",
+    "callback",
+    "set",
 ];
 
 // Helper functions the transpiler injects into every module that needs them, so
@@ -61,38 +105,96 @@ pub(crate) const GENERIC_EXACT_NAMES: &[&str] = &[
 // common wrong module name in a large bundle.
 pub(crate) const TRANSPILER_HELPER_NAMES: &[&str] = &[
     // Babel: module interop
-    "_getRequireWildcardCache", "ownKeys",
+    "_getRequireWildcardCache",
+    "ownKeys",
     // Babel: classes
-    "_typeof", "_classCallCheck", "_defineProperties", "_createClass",
-    "_callSuper", "_createSuper", "_inherits", "_inheritsLoose",
-    "_possibleConstructorReturn", "_assertThisInitialized",
-    "_isNativeReflectConstruct", "_isNativeFunction", "_getPrototypeOf",
-    "_setPrototypeOf", "_superPropBase", "_superPropGet", "_wrapNativeSuper",
-    "_construct", "_newArrowCheck", "_instanceof", "_readOnlyError",
-    "_writeOnlyError", "_applyDecoratedDescriptor", "_initializerDefineProperty",
-    "_classPrivateFieldGet", "_classPrivateFieldSet", "_classPrivateMethodGet",
+    "_typeof",
+    "_classCallCheck",
+    "_defineProperties",
+    "_createClass",
+    "_callSuper",
+    "_createSuper",
+    "_inherits",
+    "_inheritsLoose",
+    "_possibleConstructorReturn",
+    "_assertThisInitialized",
+    "_isNativeReflectConstruct",
+    "_isNativeFunction",
+    "_getPrototypeOf",
+    "_setPrototypeOf",
+    "_superPropBase",
+    "_superPropGet",
+    "_wrapNativeSuper",
+    "_construct",
+    "_newArrowCheck",
+    "_instanceof",
+    "_readOnlyError",
+    "_writeOnlyError",
+    "_applyDecoratedDescriptor",
+    "_initializerDefineProperty",
+    "_classPrivateFieldGet",
+    "_classPrivateFieldSet",
+    "_classPrivateMethodGet",
     // Babel: spread / destructuring
-    "_toConsumableArray", "_arrayWithoutHoles", "_iterableToArray",
-    "_unsupportedIterableToArray", "_nonIterableSpread", "_arrayLikeToArray",
-    "_slicedToArray", "_arrayWithHoles", "_iterableToArrayLimit",
-    "_nonIterableRest", "_createForOfIteratorHelper",
-    "_createForOfIteratorHelperLoose", "_objectSpread", "_objectSpread2",
-    "_defineProperty", "_objectWithoutProperties",
-    "_objectWithoutPropertiesLoose", "_extends", "_toPrimitive",
-    "_toPropertyKey", "_taggedTemplateLiteral", "_taggedTemplateLiteralLoose",
+    "_toConsumableArray",
+    "_arrayWithoutHoles",
+    "_iterableToArray",
+    "_unsupportedIterableToArray",
+    "_nonIterableSpread",
+    "_arrayLikeToArray",
+    "_slicedToArray",
+    "_arrayWithHoles",
+    "_iterableToArrayLimit",
+    "_nonIterableRest",
+    "_createForOfIteratorHelper",
+    "_createForOfIteratorHelperLoose",
+    "_objectSpread",
+    "_objectSpread2",
+    "_defineProperty",
+    "_objectWithoutProperties",
+    "_objectWithoutPropertiesLoose",
+    "_extends",
+    "_toPrimitive",
+    "_toPropertyKey",
+    "_taggedTemplateLiteral",
+    "_taggedTemplateLiteralLoose",
     // Babel: async / generators
-    "_asyncToGenerator", "_asyncIterator", "_awaitAsyncGenerator",
-    "_wrapAsyncGenerator", "_asyncGeneratorDelegate", "_skipFirstGeneratorNext",
-    "_regeneratorRuntime", "_regenerator", "_usingCtx",
+    "_asyncToGenerator",
+    "_asyncIterator",
+    "_awaitAsyncGenerator",
+    "_wrapAsyncGenerator",
+    "_asyncGeneratorDelegate",
+    "_skipFirstGeneratorNext",
+    "_regeneratorRuntime",
+    "_regenerator",
+    "_usingCtx",
     // graphql-tag: every generated document module defines this deduper
     "_unique",
     // TypeScript (tslib)
-    "__importDefault", "__importStar", "__awaiter", "__generator", "__extends",
-    "__assign", "__rest", "__decorate", "__param", "__metadata",
-    "__spreadArray", "__spread", "__spreadArrays", "__values", "__read",
-    "__exportStar", "__createBinding", "__makeTemplateObject", "__await",
-    "__asyncValues", "__asyncGenerator", "__asyncDelegator",
-    "__classPrivateFieldGet", "__classPrivateFieldSet",
+    "__importDefault",
+    "__importStar",
+    "__awaiter",
+    "__generator",
+    "__extends",
+    "__assign",
+    "__rest",
+    "__decorate",
+    "__param",
+    "__metadata",
+    "__spreadArray",
+    "__spread",
+    "__spreadArrays",
+    "__values",
+    "__read",
+    "__exportStar",
+    "__createBinding",
+    "__makeTemplateObject",
+    "__await",
+    "__asyncValues",
+    "__asyncGenerator",
+    "__asyncDelegator",
+    "__classPrivateFieldGet",
+    "__classPrivateFieldSet",
 ];
 
 // Extra placeholders rejected as import specifiers even when they can still be
@@ -346,8 +448,12 @@ pub(crate) fn is_obviously_generic(name: &str) -> bool {
     // A module name becomes a file name and an import specifier, so anything
     // that is not one token cannot be one (`get registerCallableModule` is an
     // accessor key picked up from a barrel module's property table).
-    if name.chars().any(char::is_whitespace) { return true; }
-    if is_generic_ident(name) { return true; }
+    if name.chars().any(char::is_whitespace) {
+        return true;
+    }
+    if is_generic_ident(name) {
+        return true;
+    }
     // Colliding names get a numeric suffix during register naming (`keys1`,
     // `_default2`, `fnResult3`), so judge those by the name they were made from.
     let base = name.trim_end_matches(|c: char| c.is_ascii_digit());
@@ -356,9 +462,13 @@ pub(crate) fn is_obviously_generic(name: &str) -> bool {
 
 fn is_generic_ident(name: &str) -> bool {
     // Reject exact matches from shared list
-    if GENERIC_EXACT_NAMES.contains(&name) { return true; }
+    if GENERIC_EXACT_NAMES.contains(&name) {
+        return true;
+    }
     // Reject transpiler-injected helpers, which every module redefines
-    if TRANSPILER_HELPER_NAMES.contains(&name) { return true; }
+    if TRANSPILER_HELPER_NAMES.contains(&name) {
+        return true;
+    }
     // Reject generic prefixes from shared list
     if GENERIC_NAME_PREFIXES.iter().any(|p| name.starts_with(p)) {
         return true;

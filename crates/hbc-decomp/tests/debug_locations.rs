@@ -59,7 +59,8 @@ fn streams_are_decoded_at_every_supported_version() {
                 "v{version}: fn#{id} has an entry but no locations"
             );
             assert!(
-                locs.windows(2).all(|w| w[0].bytecode_offset <= w[1].bytecode_offset),
+                locs.windows(2)
+                    .all(|w| w[0].bytecode_offset <= w[1].bytecode_offset),
                 "v{version}: fn#{id} addresses must be non-decreasing: {:?}",
                 locs.iter().map(|l| l.bytecode_offset).collect::<Vec<_>>()
             );
