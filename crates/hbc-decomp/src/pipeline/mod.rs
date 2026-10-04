@@ -47,8 +47,8 @@ pub struct DecompileOptionsV2 {
     pub stable: bool,
     /// Path to a proposal artifact whose names are applied once the bytecode has
     /// confirmed them (see `crate::cascade`). A proposal the bytecode refuses
-    /// changes nothing. The on-disk analysis cache does not key on this, so a run
-    /// that sets it has to bypass the cache.
+    /// changes nothing. `PipelineContext::build_cached` never reads or writes the
+    /// on-disk cache when this is set: the key would see only the path.
     pub cascade: Option<std::path::PathBuf>,
 }
 

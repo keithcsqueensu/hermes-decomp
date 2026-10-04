@@ -241,8 +241,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 stable,
                 cascade: cascade.clone(),
             };
-            // The analysis cache does not key on the artifact, so a cached context
-            // would be served with none of the confirmed names applied.
+            // `build_cached` bypasses the cache for a cascade build on its own; saying
+            // so here keeps the "cache hit/miss" status line from being misleading.
             let no_cache = no_cache || cascade.is_some();
 
             if check_dead_code {

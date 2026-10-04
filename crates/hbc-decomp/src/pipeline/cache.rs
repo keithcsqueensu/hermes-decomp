@@ -145,6 +145,17 @@ impl PipelineContext {
         bytes: &[u8],
         cache_path: &Path,
     ) -> Result<Self> {
+        // A proposal artifact is read at build time, and neither half of the cache
+        // can stand for it: the key would hash the artifact's path, not its
+        // contents, so an edited proposal would hit a stale entry; and the snapshot
+        // does not carry `cascade_names`, so a hit would drop the confirmed header
+        // names. A cascade build therefore never reads or writes the cache.
+        if options.cascade.is_some() {
+            log::debug!("[cache] bypassed: a cascade artifact is set");
+            super::progress::status("cache bypassed: cascade artifact set");
+            return Self::build_with_options(file, format, options);
+        }
+
         let header = CacheHeader {
             magic: MAGIC,
             cache_version: CACHE_VERSION,
@@ -205,8 +216,8 @@ impl PipelineContext {
             child_functions,
             ancestor_env_slots: BTreeMap::new(),
             captured_by_descendants: BTreeMap::new(),
-            // A cached context was built without an artifact: the cache key does
-            // not carry one, so a run that wants confirmed names bypasses it.
+            // A cached context was built without an artifact: `build_cached`
+            // never reads or writes the cache when one is set.
             cascade_names: BTreeMap::new(),
             worklet_sources: snap.worklet_sources,
         };
@@ -341,8 +352,8 @@ mod tests {
             child_functions: BTreeMap::new(),
             ancestor_env_slots: BTreeMap::new(),
             captured_by_descendants: BTreeMap::new(),
-            // A cached context was built without an artifact: the cache key does
-            // not carry one, so a run that wants confirmed names bypasses it.
+            // A cached context was built without an artifact: `build_cached`
+            // never reads or writes the cache when one is set.
             cascade_names: BTreeMap::new(),
             worklet_sources: BTreeMap::new(),
         };
@@ -471,6 +482,38 @@ mod tests {
                 "field {i} does not affect the cache key, so a context built with                  one value would be served for the other"
             );
         }
+    }
+
+    // A cascade build must neither write an entry (it would be keyed on the
+    // artifact's path and miss its names) nor serve one.
+    #[test]
+    fn a_cascade_build_bypasses_the_cache() {
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/plain.v96.hbc");
+        let bytes = std::fs::read(fixture).unwrap();
+        let file = BytecodeFile::parse_auto(&bytes).unwrap();
+        let format = BytecodeFormat::for_version(file.header.version).unwrap();
+        let dir = std::env::temp_dir().join(format!("hdcache-cascade-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = dir.join("plain.hdcache");
+        let _ = std::fs::remove_file(&cache);
+
+        let options = DecompileOptionsV2 {
+            // Absent on purpose: a missing artifact warns and names nothing, which
+            // is enough to exercise the cache decision.
+            cascade: Some(dir.join("no-such-proposal.json")),
+            ..DecompileOptionsV2::default()
+        };
+        PipelineContext::build_cached(&file, &format, &options, &bytes, &cache).unwrap();
+        assert!(!cache.exists(), "a cascade build must not write the cache");
+
+        // And a valid entry already there is left alone rather than served.
+        let plain = DecompileOptionsV2::default();
+        PipelineContext::build_cached(&file, &format, &plain, &bytes, &cache).unwrap();
+        let before = std::fs::read(&cache).unwrap();
+        PipelineContext::build_cached(&file, &format, &options, &bytes, &cache).unwrap();
+        assert_eq!(std::fs::read(&cache).unwrap(), before);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

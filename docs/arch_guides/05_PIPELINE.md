@@ -161,10 +161,9 @@ than a clone. Loads run on `crate::run_with_large_stack` (a 64 MiB thread) becau
 decode recurses per IR level. The snapshot stores six fields (`all_ir`, `registry`,
 `closure_ctx`, `global_analysis`, `inline_bodies`, `worklet_sources`); `child_functions`,
 `ancestor_env_slots` and `captured_by_descendants` are recomputed on load, and
-`cascade_names` is **not** stored — a cache hit always has none. The `options_key` does hash
-the `cascade` *path* but not the artifact's contents, so the CLI forces `--no-cache` whenever
-`--cascade` is given; a library caller of `build_cached` gets no such guard (see
-`../plan_guides/05_pipeline/RISKS.md` § cascade).
+`cascade_names` is **not** stored — so `build_cached` never reads or writes the cache when
+`cascade` is set (the key would see only the artifact's path); see
+`../plan_guides/05_pipeline/RISKS.md` § cascade.
 
 ## Progress (`progress.rs`)
 

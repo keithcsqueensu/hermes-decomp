@@ -5,7 +5,7 @@
 > two fields) and **F13** (cache temp-file race, and the 134 MB unauthenticated cache),
 > split here from the read-path hardening review because both live in `pipeline/cache.rs`;
 > plus two unnumbered items found later (the `cascade` option vs. the cache, and
-> `stages.rs` drift, now fixed).
+> `stages.rs` drift), both now fixed.
 > *Delegates* the pipeline's *description* — the F/W stage spine, `PipelineContext`, the cache
 > key design — to `../../arch_guides/05_PIPELINE.md`, and the upstream framing of the F-series
 > to `../01_read/RISKS.md`. Finding numbers are shared across the stage registers and indexed
@@ -13,8 +13,8 @@
 
 Status: ✅ fixed (F8; F13's race). F13's size/trust notes are documentation items, recorded
 not changed. Two items found since, unnumbered (the F-series belongs to the read pass), both
-at the end: the `cascade` option vs. the cache (**open**), and stage labels drifting from
-`stages.rs` (✅ fixed, and now test-guarded). Evidence tag **[measured]** means reproduced against the shipped Equinox v96
+at the end and both ✅ fixed and test-guarded: the `cascade` option vs. the cache, and stage
+labels drifting from `stages.rs`. Evidence tag **[measured]** means reproduced against the shipped Equinox v96
 bundle (see `../01_read/RISKS.md` for its identity).
 
 ---
@@ -81,10 +81,13 @@ that looks right.
   a fix.
 
 
-## Open — the `cascade` option vs. the cache
+## The `cascade` option vs. the cache — ✅ fixed
 
-> **Open; mitigated in the CLI only.** Found re-auditing after `DecompileOptionsV2` gained
-> `cascade: Option<PathBuf>`.
+> **Fixed by option (a) below.** `PipelineContext::build_cached` never reads or writes the cache
+> when `cascade` is set, so the guard lives in the library and every caller gets it. Pinned by
+> `cache.rs::tests::a_cascade_build_bypasses_the_cache` (no entry written; an existing entry
+> neither served nor touched), which fails with the bypass removed. Found re-auditing after
+> `DecompileOptionsV2` gained `cascade: Option<PathBuf>`.
 
 Two gaps, both in `pipeline/cache.rs`, both the F8 shape again — a cache hit that looks valid
 but was built from different input:
@@ -98,16 +101,16 @@ but was built from different input:
   which prefers `cascade_names`) fall back to the string table — `fN` for an anonymous
   function — on every hit.
 
-The CLI sidesteps both by forcing `no_cache` whenever `--cascade` is given
-(`hbc-decomp-cli/src/main.rs:246`). A library caller of `PipelineContext::build_cached` or
-`decompile_*_cached` with `cascade: Some(..)` has no such guard. The code comments in
-`pipeline/mod.rs` (on the `cascade` field) and `cache.rs:from_snapshot` say the cache "does
-not key on" the artifact; it keys on the path, which is the worse half-truth.
+Before the fix only the CLI sidestepped both, by forcing `no_cache` whenever `--cascade` is
+given (`hbc-decomp-cli/src/main.rs:246`, still there, now redundant); a library caller of
+`PipelineContext::build_cached` or `decompile_*_cached` with `cascade: Some(..)` had no guard,
+and the comments in `pipeline/mod.rs` and `cache.rs:from_snapshot` said the cache "does not key
+on" the artifact when it keyed on the path. Those comments now describe the bypass.
 
-**Fix, either:** (a) refuse — `build_cached` bypasses load *and* save when `cascade` is set, so
-the guard lives in the library rather than one frontend; or (b) key on the artifact bytes
-(hash the file into the header) *and* add `cascade_names` to the snapshot, bumping
-`CACHE_VERSION`. (a) is a few lines and matches "the cache is an optimization".
+**The options were:** (a) refuse — `build_cached` bypasses load *and* save when `cascade` is set;
+or (b) key on the artifact bytes *and* add `cascade_names` to the snapshot, bumping
+`CACHE_VERSION`. (a) shipped: a few lines, and it matches "the cache is an optimization". A
+proposal changes between runs by design, so (b) would rarely hit anyway.
 
 ## Stage labels drifting from `stages.rs` — ✅ fixed
 
