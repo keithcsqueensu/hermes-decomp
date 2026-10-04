@@ -10,7 +10,7 @@ keep in step.
 Each checkout is a real git tree at that exact commit -- the pin runs
 `git rev-parse HEAD` and requires it to *be* the recorded commit -- but a cheap
 one: a blobless partial clone (`--filter=blob:none`), fetched by sha at depth 1,
-sparse-checked-out to the one directory the tests read. That is ~0.5 MB and about
+sparse-checked-out to the two directories the tests read. That is a few MB and about
 a second per version, against ~1.5 GB for a full clone, which is what makes
 running these in CI on every push practical.
 
@@ -32,10 +32,12 @@ import subprocess
 import sys
 
 REMOTE = "https://github.com/facebook/hermes.git"
-# The one directory the pin reads: BytecodeFileFormat.h, BytecodeVersion.h,
-# BytecodeList.def. Widening this costs blob downloads, so widen it only when a
-# test actually needs another file.
-SPARSE = "include/hermes/BCGen/HBC"
+# The directories the pin reads: BytecodeFileFormat.h, BytecodeVersion.h,
+# BytecodeList.def and DebugInfo.h under include/, and lib/'s DebugInfo.cpp, which
+# is where FunctionDebugInfoDeserializer lives at v96 (debug_info_shapes_match_upstream
+# reads its stream shape). Widening this costs blob downloads, so widen it only
+# when a test actually needs another file.
+SPARSE = ["include/hermes/BCGen/HBC", "lib/BCGen/HBC"]
 TABLE_DIR = pathlib.Path(__file__).resolve().parent.parent / "crates/hbc-decomp/resources/bytecode"
 DEFAULT_VERSIONS = [96, 97, 98, 99]
 
@@ -77,6 +79,9 @@ def head_of(tree: pathlib.Path) -> str | None:
 def fetch(version: int, commit: str, tree: pathlib.Path) -> str:
     """Leave `tree` checked out at `commit`. Idempotent -- reuses a tree already there."""
     if head_of(tree) == commit:
+        # Re-apply the sparse set, so a tree fetched before SPARSE widened gains the
+        # new directories instead of failing the pin on a file it never checked out.
+        git("sparse-checkout", "set", "--cone", *SPARSE, cwd=tree)
         return "already at the pinned commit"
 
     if tree.exists() and any(tree.iterdir()):
@@ -90,7 +95,7 @@ def fetch(version: int, commit: str, tree: pathlib.Path) -> str:
     # By sha, so this cannot drift with a branch; blobless + depth 1 so it does not
     # pay for history it will never read.
     git("fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", commit, cwd=tree)
-    git("sparse-checkout", "set", "--cone", SPARSE, cwd=tree)
+    git("sparse-checkout", "set", "--cone", *SPARSE, cwd=tree)
     git("checkout", "-q", "--detach", "FETCH_HEAD", cwd=tree)
 
     got = head_of(tree)

@@ -7,6 +7,9 @@ name: Test
 #   1. `cargo test --workspace` with no oracles configured -- the run every
 #      contributor gets. It must stay green, because a checkout without a Hermes
 #      build has to remain testable; that is the whole reason the oracles are opt-in.
+#      The compiled round-trip corpus is not built here either (build.yml says why),
+#      so the tests that read a corpus fixture opt out via HBC_CORPUS_OPTIONAL;
+#      without it they fail by design and step (2) never runs.
 #   2. The same pin suite again with the four upstream checkouts provisioned and
 #      HBC_REQUIRE_ORACLES=src, so an absent one fails instead of printing [skip].
 #
@@ -40,6 +43,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Test (no oracles — the unconfigured path stays green)
+        env:
+          HBC_CORPUS_OPTIONAL: "1"
         run: cargo test --workspace
 
       # ~4 MB and a few seconds: blobless, sparse, fetched by the sha each table
