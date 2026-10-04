@@ -20,9 +20,12 @@ Three crates, one library and two thin frontends over it:
 
 | Crate | Binary | LOC | Role |
 |---|---|---|---|
-| `hbc-decomp` | — (lib) | ~54K | Everything: parse, decompile, write. The subject of guides 01–06. |
-| `hbc-decomp-cli` | `hermes-decomp` | ~7.4K | clap command surface + ratatui TUI over the library (guide 07). |
-| `hbc-decomp-mcp` | `hermes-mcp` | ~1.5K | MCP server exposing the library to AI assistants (guide 07). |
+| `hbc-decomp` | — (lib) | ~76K | Everything: parse, decompile, write. The subject of guides 01–06. |
+| `hbc-decomp-cli` | `hermes-decomp` | ~8.3K | clap command surface + ratatui TUI over the library (guide 07). |
+| `hbc-decomp-mcp` | `hermes-mcp` | ~1.9K | MCP server exposing the library to AI assistants (guide 07). |
+
+LOC is approximate: total lines of `.rs` under each crate's `src/` (inline tests included,
+`tests/` excluded), measured 2026-10-03.
 
 Supports **HBC bytecode versions 40–99**. The per-version opcode/builtin tables are JSON
 under `crates/hbc-decomp/resources/bytecode/` and are embedded at compile time by
@@ -59,6 +62,8 @@ understand the crate. Each stage is a guide:
 The **pipeline guide (05)** is the one to read first if you only read one — it owns the
 stage ordering (`pipeline/stages.rs` documents F1–F26 per-function and W1–W17
 whole-program), and the ordering is a load-bearing contract, not an implementation detail.
+`stages.rs` currently lags the code (about 15 passes unlisted, some stage labels reused); guide
+05 says where, and its spine follows what actually runs.
 
 ## The guides
 
@@ -88,20 +93,26 @@ Four ideas recur in every layer; they are the crate's design DNA.
    after IPA so a single pass never both discovers a name and consumes it (W8→W9). The same
    split is the core doctrine of the write path (`../plan_guides`).
 4. **Ordering is a contract.** `pipeline/stages.rs` is a non-executable file that exists
-   only to pin F/W stage dependencies and prevent silent reordering bugs.
+   only to pin F/W stage dependencies and prevent silent reordering bugs. A contract only
+   holds while it is kept: see guide 05's drift note.
 
 ## Cross-cutting infrastructure
 
 - **Recursion & stack.** The IR is a tree of boxed nodes; every walker (Display, visitor,
   transforms) recurses. `configure_thread_pool()` (lib.rs) gives Rayon workers a 64 MiB
-  stack and the CLI's `main` runs on a 64 MiB worker thread — both because the default
-  ~1–2 MiB stack overflows on real bundles. `ir/depth.rs` bounds *render* recursion.
+  stack (`LARGE_STACK_SIZE`), `run_with_large_stack` runs one closure on such a thread (cache
+  load, MCP `load_file`; the MCP server's scoped variant runs every other tool body), and the
+  CLI's `main` runs on a 64 MiB worker thread — all because the default ~1–2 MiB stack
+  overflows on real bundles. `ir/depth.rs` bounds *render* recursion.
 - **Parallelism.** Whole-program work fans out over Rayon (`build_closure_context_from_file`,
   `generate_all_optimized_ir`), order-preserving.
 - **Caching.** `PipelineContext` serializes to `<input>.hdcache` (MessagePack), keyed on
   bytecode SHA-256 + build fingerprint + the whole options struct; any mismatch rebuilds.
 - **Error model.** One `error::Error` enum (`Io`, `Parse`, `UnsupportedVersion`,
   `MissingFormat`, `Write`) with `Result<T>` throughout.
+- **Quality gates.** `scripts/build/gates.sh` runs every gate in one command (fmt `--check`,
+  clippy `-D warnings`, tests, release build, corpus round trip, JS parse check against
+  `syntax_baseline.tsv`); `.github/workflows/` runs the fmt/clippy/test subset in CI.
 
 ## Relationship to `plan_guides`
 

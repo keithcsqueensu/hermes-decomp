@@ -11,6 +11,10 @@ analysis layer's fixed-point iterations are all bounded (`MAX_PARAM_LINK_ITERATI
 `MAX_WRAPPER_CHAIN_DEPTH`, `MAX_INLINE_BODY_PASSES`, `MAX_ASYNC_PROPAGATION_ITERATIONS`) — the
 read register (`../01_read/RISKS.md` § What is fine) retired the "is the analysis layer bounded"
 worry by measurement; it is only the IR tree-walk that was not, which is F9 in `../02_ir/RISKS.md`.
+Two loops added since that pass are bounded the same way: the structured-IR dataflow engine's
+loop settling (`MAX_LOOP_ITERATIONS`, `analysis/dataflow/mod.rs`) and deep-naming IPA
+convergence (`MAX_DEEP_NAMING_ITERATIONS`, `pipeline/context/naming.rs`) **[code]** — neither
+was covered by that measurement.
 
 ---
 
@@ -19,13 +23,12 @@ worry by measurement; it is only the IR tree-walk that was not, which is F9 in `
 The one open item is not a *robustness* risk but a *model* one, and it is fully scoped in its
 own plan:
 
-- **The closure / env-slot model** → [`closure_model/PLAN.md`](closure_model/PLAN.md). Findings
-  K1–K4 (specified, none shipped). In one sentence: the slot→name map is consumed as a
-  register→name map (C1), two spellings of the same slot exist (C2), tens of thousands of
-  placeholders are excluded from naming by their spelling (C3), and `ClosureSlotValue` has no
-  rung for a better source of truth (C6) — so a name Hermes itself recorded cannot outrank one
-  inferred from a store. This is what `../01_read/unmodeled_regions/PLAN.md` P1b (put recovered
-  debug names in the decompiler) is blocked on. See the plan for the measurements and the fix.
+- **The closure / env-slot model** → [`closure_model/PLAN.md`](closure_model/PLAN.md). Phases
+  K1–K4; the plan's § 6 carries their status (none shipped as specified; parts of K1 and K2
+  have landed by other routes). Its core finding: a slot's name carries no provenance (C6), so a
+  name Hermes itself recorded cannot outrank one inferred from a store. This is what
+  `../01_read/unmodeled_regions/PLAN.md` P1b (put recovered debug names in the decompiler) is
+  blocked on. See the plan for the findings, measurements and the fix.
 
 ## The load-bearing spelling
 

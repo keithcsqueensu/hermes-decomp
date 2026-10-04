@@ -100,7 +100,7 @@ not just on disk — but it is ~122 KB on an APK, which is the honest scale of t
 
 This is the part that makes packing a design change rather than an optimisation.
 
-`patch_string_by_id` (`strings.rs:799`) patches a same-length string **in place**, but first
+`patch_string_by_id` (`strings.rs:800`; the guard is at `:834`) patches a same-length string **in place**, but first
 scans every other entry for a range intersection **[code]**:
 
 ```rust
@@ -140,6 +140,11 @@ turns the overlap guard from "usually true after a rebuild" into "never true for
   index-parallel to the table and must come out untouched — that is the invariant to assert.
 
 ## Plan
+
+Re-derived at `81c4e2a`: **none of P0–P4 has shipped.** Rebuilt storage is still emitted
+unpacked (`patch_string_resize`, `strings.rs:314`), nothing checks the finished blob's entries against the intended text (`commit_image` reparses
+the image but compares nothing), and no
+`--pack-strings` flag exists.
 
 ### P0 — Always-on packing validation *(prerequisite, useful on its own)*
 

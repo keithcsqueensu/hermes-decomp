@@ -18,6 +18,10 @@ different contracts. This plan is about closing that gap.
 
 ## What is actually true today
 
+Re-derived at `81c4e2a`: **none of P0–P3 has shipped.** The write path's relocation code has
+had only `cargo fmt`/clippy churn since `92fc80e`, so the analysis below still holds;
+the `[code]` references are re-pointed to that commit.
+
 ### The stub
 
 `write/reloc.rs` is 31 lines. `RelocPlan { code_delta, string_storage_delta, resized_functions }`
@@ -42,13 +46,13 @@ every shipped op splices **exactly one** region and shifts everything after it b
 
 | Site | Region spliced | Which offsets shift | How it writes headers |
 |---|---|---|---|
-| `patch/functions.rs:168` (`patch_function_bytes`) | one function body | those `>= end of the patched body` | legacy small: **re-encoded from the model**; modern + overflowed: shifted in place |
-| `patch/strings.rs:461` (`patch_string_resize`) | the whole string region | all of them (every body is past it) | shifted in place |
-| `patch/strings.rs:756` (`add_string`) | the whole string region | all of them | shifted in place |
+| `patch/functions.rs:204` (`patch_function_bytes`) | one function body | those `>= end of the patched body` | legacy small: **re-encoded from the model**; modern + overflowed: shifted in place |
+| `patch/strings.rs:460` (`patch_string_resize`) | the whole string region | all of them (every body is past it) | shifted in place |
+| `patch/strings.rs:757` (`add_string`) | the whole string region | all of them | shifted in place |
 
-The two string loops are byte-identical to each other. The overflow case is duplicated a second
-time underneath them: `functions.rs:285 resize_overflowed_function` and
-`strings.rs:501 relocate_overflowed_header` do the same job — shift the small header's pointer to
+The two string loops are identical to each other, bar one comment. The overflow case is duplicated a second
+time underneath them: `functions.rs:321 resize_overflowed_function` and
+`strings.rs:500 relocate_overflowed_header` do the same job — shift the small header's pointer to
 the out-of-line large header, then the large header's own body offset and (legacy) info offset —
 with the former adding a threshold test and an optional size write.
 
@@ -86,9 +90,13 @@ unnecessary second contract, currently correct and pinned by nothing.
 The demand for a structured path, in full:
 
 - **Size change on a function that declares an exception handler** — refused (`functions.rs:43`,
-  the Q4 guard). Handler entries are *body-relative*, so this is not a file relocation at all;
-  Q3 in the guide owns it.
-- **`create` cannot emit overflow string entries** (`serialize.rs:153`, `:292`). A serializer
+  in `patch_function_body`, the Q4 guard). Handler entries are *body-relative*, so this is not a
+  file relocation at all; Q3 in the guide owns it.
+- **Size change on a function that carries debug info**, in a file with a debug section —
+  refused unless `allow_stale_debug_info` (`functions.rs:71`, R24). Also body-relative, not a
+  file relocation; insertions (`inject-stub`) relocate the line table instead
+  (`patch/debug_reloc.rs`).
+- **`create` cannot emit overflow string entries** (`serialize.rs:155`, `:294`). A serializer
   limit, not a relocation one.
 - **No op inserts or removes a function.** This is the only shipped-adjacent case a structured
   rebuild would genuinely serve, and nothing asks for it yet.
@@ -102,7 +110,7 @@ survived: it is correct, and its cost has been zero.
 
 ### There is no section table to fix up
 
-The HBC header stores **counts and sizes**, not section offsets (`format.rs:53`). Sections are
+The HBC header stores **counts and sizes**, not section offsets (`BytecodeHeader`, `format.rs:250`). Sections are
 implied by sequential layout with 4-byte alignment, so growing a region relocates everything
 after it without any table needing an update. The whole absolute-offset surface of the format is:
 
@@ -144,8 +152,9 @@ which is the argument against writing one that walks the header looking for thin
 
 ### The 4-alignment rule (I5)
 
-`patch_function_bytes` pads the body so the delta is a multiple of 4 (`functions.rs:59`);
-`patch_string_resize` pads the rebuilt region to 4 (`strings.rs:419`). Same rule, two
+`patch_function_body` pads the body so the delta is a multiple of 4 (`functions.rs:93`), and
+`patch_function_bytes` trusts its callers to have done so; `patch_string_resize` pads the rebuilt
+region to 4 (`strings.rs:418`). Same rule, two
 enforcement points: a non-4-aligned delta misaligns every downstream large header and the
 FunctionInfo region. One primitive should assert it once, with the reason attached.
 
@@ -157,7 +166,7 @@ FunctionInfo region. One primitive should assert it once, with the reason attach
 
 Delete `apply_reloc` and `RelocPlan`, or replace them with P1's real signature. Do not leave the
 current pair in place: an exported type with no producer, whose field names imply a design the
-crate does not use, is R20's shape — a reference that reads as a capability and is not one. The
+crate does not use, is R20's shape (`../../07_frontends/RISKS.md`) — a reference that reads as a capability and is not one. The
 guide's limitation bullet already points here; after P0 it describes a decision taken rather
 than a placeholder left.
 
@@ -226,7 +235,7 @@ What it requires, none of which exists: a total serializer covering debug info
 shape table — every region currently preserved only because it is copied through verbatim.
 
 **The gate, if it is ever built.** Byte-identical re-emit of the 11.39.0 bundle
-(`serialize(parse(b)) == b`, 5 MB, no exceptions), *plus* the `hbcdump` differential, *plus* a VM
+(`serialize(parse(b)) == b`, 16.8 MB, no exceptions), *plus* the `hbcdump` differential, *plus* a VM
 run. Anything less ships a rebuild that reparses and is wrong somewhere in the middle — the
 failure mode this codebase keeps finding.
 

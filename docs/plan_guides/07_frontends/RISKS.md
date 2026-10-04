@@ -7,7 +7,7 @@
 > lifetime), split here from the read-path hardening review because both live in
 > `hbc-decomp-mcp`. **The CLI output surface:** the stdout/stderr two-channel contract and the
 > four CLI-surface risks **R17** (no CLI/integration coverage), **R18** (stderr has no formal
-> log levels), **R20** (a CLI note pointed at a script that does not exist) and **R22** (an
+> log levels), **R20** (a CLI note pointed at a script that did not exist) and **R22** (an
 > unoptimized CLI build overflows its stack) — all relocated here from `../06_write/RISKS.md`,
 > because they are about how the `hbc-decomp` CLI *presents* a write rather than about the
 > mutation itself. *Delegates* the write *mechanics* those risks sit on — the ops, invariants
@@ -17,7 +17,7 @@
 > across the stage registers and indexed in `../README.md`; F3, F4, R17, R18, R20 and R22 keep
 > theirs — an `R#` names one hazard wherever it is hosted.
 
-Status: ✅ fixed (F3, F4). Evidence tag **[measured]** means reproduced against the shipped
+Status: ✅ fixed (F3, F4), each with a named residual. Evidence tag **[measured]** means reproduced against the shipped
 Equinox v96 bundle over a real stdio MCP session (see `../01_read/RISKS.md` for the bundle
 identity). The CLI-surface risks below carry their own residual.
 
@@ -25,16 +25,26 @@ identity). The CLI-surface risks below carry their own residual.
 
 ## F3 — the MCP surface has no output bound
 
-> **Fixed.** Three layers. Every tool response goes through `text_result`, capped at
-> `MAX_RESPONSE_BYTES` (256 KiB) with an explicit tail naming the real size and telling
-> the caller to narrow the request — truncation is never silent. `dump` and
-> `xref_search` take `limit`/`offset` and state the window they returned.
-> `decompile_all` *refuses* above 2,000 functions rather than truncating, pointing at
-> `list_modules` + `decompile_module`: capping 41 MB at 256 KiB would return 0.6% of the
-> answer while looking like it worked. Verified end-to-end over stdio against the real
-> bundle — `dump kind=strings` came back capped with `this response was 5382496 bytes`,
-> and `decompile_all` refused with the pointer. Held by four `cap_text` tests including
-> the multibyte-boundary case.
+> **Fixed.** Three layers. Every `tools_analyze.rs` response except `decompile_all` goes
+> through `text_result`, capped at `MAX_RESPONSE_BYTES` (256 KiB) with an explicit tail
+> naming the real size and telling the caller to narrow the request — truncation is never
+> silent. `dump` and `xref_search` take `limit`/`offset` and state the window they returned.
+> `decompile_all` is bounded separately (upstream v0.2.4's design, which replaced this fork's
+> original refusal above 2,000 functions in the `b4f2797` merge): it takes module filters
+> (`modules`, `module_name` / `exclude_module_name`, `from_module` + `module_depth`) and a
+> `max_chars` cap, default 2,000,000, cut at a line boundary by `server/bounds.rs::truncate_at_line`
+> with an in-band `// truncated: …` marker and a second JSON block reporting `truncated`,
+> `total_chars`, `kept_chars`. So the unfiltered call no longer refuses: on the 41 MB bundle it
+> returns ~2 MB (≈5%) of the answer, flagged as truncated. The earlier measured run — `dump
+> kind=strings` capped with `this response was 5382496 bytes` — still describes the cap; the
+> `decompile_all` refusal it also recorded no longer exists. Held by four `cap_text` tests
+> (including the multibyte-boundary case) and six `bounds.rs` tests (four on `truncate_at_line`).
+>
+> **Residual.** The bound is per-tool, not global. `decompile_all`'s 2,000,000-char default is
+> ~8× the 256 KiB cap every other read tool gets, and the seven `tools_write.rs` tools return
+> `CallToolResult` directly, outside `cap_text` — `emit_hasm` is one function, but `secrets`
+> builds its report over the whole string table with no limit. Not re-measured on the Equinox
+> bundle since the merge.
 
 
 **[measured]** on the Equinox bundle:
@@ -46,7 +56,7 @@ identity). The CLI-surface risks below carry their own residual.
 | `dump --kind functions` | 3,717,753 bytes |
 | `callgraph` (no root) | 303,412 bytes (14 s — cost is in `analyze_module`, not the string) |
 
-Of the 21 tools in `tools_analyze.rs`, exactly **one** (`list_modules`) takes a `limit`, and
+At finding time, of the 21 tools in `tools_analyze.rs`, exactly **one** (`list_modules`) took a `limit`, and
 one (`dead_code`) hardcodes `take(200)`. `decompile_all`, `dump`, `dump_table`, `xref_search`,
 `disassemble` and `callgraph` are all unbounded, and each returns a single
 `ContentBlock::text`.
@@ -66,12 +76,22 @@ explicit `"… truncated, N of M shown, pass offset=N"` tail, and a hard refusal
 > data behind the lock is a parsed file plus a memoised context — a panic mid-read
 > cannot leave it half-updated), and every tool body runs inside `catch_tool_panic`,
 > which turns a panic into one failed call carrying the panic message and a note that
-> the session survived. Held by `a_panic_does_not_brick_the_service`, which genuinely
-> poisons the mutex and then asserts a normal tool call still returns its normal
-> error.
+> the session survived. Since the upstream v0.2.4 merge (`b4f2797`), `with_file` /
+> `with_file_mut` run that wrapper *inside* upstream's `run_scoped_with_large_stack` (a
+> scoped 64 MiB thread), so the panic is
+> caught on the tool thread before it can resume on the caller. Held by
+> `a_panic_does_not_brick_the_service`, which genuinely poisons the mutex and then asserts a
+> normal tool call still returns its normal error, and
+> `catch_tool_panic_converts_a_panic_into_one_failed_call`.
+>
+> **Residual.** `load_file` does not go through `with_file`: it parses on
+> `hbc_decomp::run_with_large_stack`, which *resumes* a panic on the calling thread, with no
+> `catch_tool_panic` around it. The lock is taken only after parsing, so such a panic cannot
+> poison the mutex — but it escapes the tool as a panic rather than as one failed call.
 
 
-`server/mod.rs:29` — `loaded: Mutex<Option<LoadedFile>>`, and every tool goes through
+Below is the finding as written (2026-08-28); line refs re-derived at HEAD.
+`server/mod.rs:33` — `loaded: Mutex<Option<LoadedFile>>`, and every tool goes through
 `with_file` / `with_file_mut`, which map a lock failure to an error. `std::sync::Mutex`
 **poisons** on a panic while held. So any panic inside any tool body — F7's overflow (now in
 `../01_read/RISKS.md`), an
@@ -80,14 +100,14 @@ unforeseen index, a future regression — does not merely fail that call: it mak
 returns `lock: poisoned`. The server stays up, answers nothing, and gives no hint that a
 restart is the fix.
 
-There is no `catch_unwind` anywhere in either binary (the sole one in the tree is in the
-TUI's git-diff view, `tui/gitdiff.rs:249`).
+There was no `catch_unwind` anywhere in either binary (the sole one in the tree was in the
+TUI's git-diff view, now `tui/gitdiff.rs:261`).
 
 **Fix.** Recover from poisoning (`.unwrap_or_else(|e| e.into_inner())`) — the invariant being
 protected is "a parsed file", which a panic mid-read does not corrupt — and wrap tool bodies
 in `catch_unwind` so a panic becomes one failed call with a diagnosable message.
 
-A related note: `pipeline_ctx.as_ref().unwrap()` at `tools_analyze.rs:115, 228, 258, 560, 586`
+A related note, still open: `pipeline_ctx.as_ref().unwrap()` at `tools_analyze.rs:140, 297, 327, 664, 687`
 is locally sound (each is preceded by `ensure_pipeline()?`), but it is five unwraps standing
 on a call-order convention. A `let … else { return Err(…) }` costs nothing.
 
@@ -111,15 +131,17 @@ risk touches, carried over verbatim from the write register.
 
 | R# | Hazard | § | Inherent | Residual | Mitigation (in tree) | Hardening (todo + open decision) |
 |---|---|---|---|---|---|---|
-| R17 | No CLI / integration coverage | all | M×M | 🟧 | `hbc-decomp-cli/tests/stdout_contract.rs` covers the stdout/stderr contract and the exit-code path across six commands, and needed the debug-stack fix (F9) to be possible at all | Extend beyond the stdout contract to argument resolution: `--at` vs `--function`+`--insn-offset` precedence, `--string` vs `--string-id`, `--from`/`--to` value→id lookup. Those are still untested. |
-| R18 | stderr has no formal log levels — ad-hoc `warning:`/`note:`/plain prefixes | cli | L×M | 🟩 | two-channel split is honored (data→stdout, diagnostics→stderr); ERROR is the `Result`/exit path; implicit severity via wording | Formalize the INFO/WARN prefixes (a tiny `eprintln`-wrapping helper, no external crate — keeps the pure-Rust ethos); keep ERROR on the `Result`/exit path, not a stderr line. **Decision:** local 2-line helper vs a `log`/`tracing` dep — recommend the local helper. See Stdout/stderr discipline. |
-| R20 | CLI points users at a verifier script that does not exist | cli | H×L | ⬜ | `warn_modern_write` now points at `scripts/build_hermes_vm.ps1` and `tests/vm_verify.rs`, both of which exist; docs/USAGE.md's "cannot be verified" section is rewritten around `hvm` | — (fixed). Note nothing *tests* stderr text, so this class can rot again; see R17/R18. |
-| R22 | An unoptimized build of the CLI overflows its stack | cli | H×M | ⬜ **fixed** | `run` is one large match over every subcommand and a debug build gives each arm's locals their own slot in one frame, exceeding Windows' 1 MiB main-thread stack. Work now runs on a 64 MiB-stack thread (F9) | — (fixed). The underlying shape is unchanged: the match still holds every arm's locals at once, so splitting arms into functions is the real fix if the frame grows again. Note the release build was always fine, which is why this survived — *test what CI builds*. |
+| R17 | No CLI / integration coverage | all | M×M | 🟧 | `hbc-decomp-cli/tests/stdout_contract.rs` covers the stdout/stderr contract and the exit-code path across six commands (plus `info` for the missing-file error), and needed the debug-stack fix (history finding F9) to be possible at all. Upstream's `tests/e2e_corpus.rs` adds a process-level `decompile` run over the generated corpus — read side only, no write command | Extend beyond the stdout contract to argument resolution: `--at` vs `--function`+`--insn-offset` precedence, `--string` vs `--string-id`, `--from`/`--to` value→id lookup. Those are still untested. |
+| R18 | stderr has no formal log levels — ad-hoc `warning:`/`note:`/plain prefixes | cli | L×M | 🟩 | two-channel split is honored by the write commands (data→stdout, diagnostics→stderr); ERROR is the `Result`/exit path; implicit severity via wording. Upstream has since added `log` + `env_logger` for opt-in library tracing (`--log` / `RUST_LOG`), but no CLI status line goes through it | Formalize the INFO/WARN prefixes; keep ERROR on the `Result`/exit path, not a stderr line. **Decision:** local 2-line `eprintln` helper vs routing status through the `log` facade that now exists — the "no external crate" argument for the helper is gone, but `log` output is off unless `--log` is passed, so status lines would need their own always-on target. See Stdout/stderr discipline. |
+| R20 | CLI points users at a verifier script that does not exist | cli | H×L | ⬜ | `warn_modern_write` now points at `scripts/build_hermes_vm.ps1` and `crates/hbc-decomp/tests/vm_verify.rs`, both of which exist; docs/USAGE.md's "cannot be verified" section is rewritten around `hvm`. (Upstream later added a *different* script under the old name — see the R20 paragraph below.) | — (fixed). `stdout_contract.rs::modern_write_note_points_at_paths_that_exist` now asserts the note's paths exist, but only for tokens ending `.ps1` or `.rs` — a `.sh` reference would go unchecked. |
+| R22 | An unoptimized build of the CLI overflows its stack | cli | H×M | ⬜ **fixed** | `run` is one large match over every subcommand and a debug build gives each arm's locals their own slot in one frame, exceeding Windows' 1 MiB main-thread stack. Work now runs on a 64 MiB-stack thread (history finding F9) | — (fixed). The underlying shape is unchanged: the match still holds every arm's locals at once, so splitting arms into functions is the real fix if the frame grows again. Note the release build was always fine, which is why this survived — *test what CI builds*. CI now builds both: `.github/workflows/test.yml` runs `cargo test --workspace` (debug), `build.yml` runs it `--release`. |
 
 R17 and R18 are open (🟧 / 🟩); R20 and R22 are fixed (⬜). The write register's risk-grid no
 longer plots these — it points here instead. The findings behind R20 and R22 are catalogued in
-`../06_write/reference/HARNESSES_AND_HISTORY.md` (F9 is the debug-stack overflow; the harness
-list records R20), which reference them by number.
+`../06_write/reference/HARNESSES_AND_HISTORY.md` (its git-history finding F9 is the debug-stack
+overflow; the harness list records R20), which reference them by number. That file's F1–F10 are
+its own series, not the shared read-pass F-numbers: history F3 (the `add-string` stdout bug) and
+history F9 are not this register's F3 or `../02_ir/RISKS.md`'s F9.
 
 ---
 
@@ -132,8 +154,9 @@ list records R20), which reference them by number.
   without `-o` (HASM text), `add-string` (the bare new id). A command that only transforms a
   file into `-o` writes **nothing** to stdout. This is load-bearing for scripting:
   `id=$(hbc-decomp add-string …)` must capture the id and *only* the id. `add-string` originally
-  broke it (human text on stdout) — a bug fixed in `316741f` (finding F3), which is why the rule
-  is stated rather than assumed.
+  broke it (human text on stdout) — a bug fixed in `316741f` (history finding F3 in
+  `../06_write/reference/HARNESSES_AND_HISTORY.md`), which is why the rule is stated rather than
+  assumed.
 - **stderr = the diagnostics / log channel** — human status, progress, notes and warnings:
   everything *about* the run rather than the run's output. Redirecting or discarding stderr must
   never change the captured data.
@@ -149,7 +172,8 @@ stderr *is* the log channel, but the levels are not formalized:
   Debug-prints and sets a non-zero exit code (see Exit codes). So "ERROR level" lives in the
   exit path, not the log.
 
-There is **no `log`/`tracing` crate**; the prefixes are ad-hoc. So the durable contract is the
+The prefixes are ad-hoc `eprintln!`s. The `log` facade upstream added (`--log`, `RUST_LOG`) is
+opt-in debug tracing from the library, off by default, and carries none of these lines. So the durable contract is the
 stdout/stderr *split*, not the levels — formalizing the INFO/WARN prefixes is tracked as **R18**
 (low residual). Do **not** teach a consumer to parse stderr by level; parse stdout for data and
 read the exit code for success/failure.
@@ -158,7 +182,7 @@ Per-command reality:
 
 | Command | stdout | stderr |
 |---|---|---|
-| `add-string` | **bare new id** (`println!`, `write_cmd.rs:307`) | "Added string …" + dup note (if any) |
+| `add-string` | **bare new id** (`println!`, `write_cmd.rs:305`) | "Added string …" + dup note (if any) |
 | `secrets` | JSON or text report (data) | — |
 | `emit-hasm` (no `-o`) | HASM text (data) | — |
 | `emit-hasm` (`-o`) | — | (nothing; writes file silently — see below) |
@@ -172,27 +196,34 @@ Per-command reality:
 
 **Status ownership is now entirely in the CLI layer (Q5 resolved).** Library patch
 functions no longer `eprintln!`: `patch_string_operand` *returns* `(bytes, status, warning)`
-and `run_patch_operand` prints them (`write_cmd.rs:200`, `:202`); the `retarget_string`
-cross-kind warning (`write_cmd.rs:264`) and the `add_string` duplicate note
-(`write_cmd.rs:301`) are recomputed and printed by their CLI handlers. Programmatic callers
+and `run_patch_operand` prints them (`write_cmd.rs:201`, `:203`); the `retarget_string`
+cross-kind warning (`write_cmd.rs:261`) and the `add_string` duplicate note
+(`write_cmd.rs:299`) are recomputed and printed by their CLI handlers. Programmatic callers
 of the library functions get no unsolicited stderr. (Q5 is a write-register design decision —
 see `../06_write/RISKS.md` — reached here because it settled *who* owns this surface's output.)
 
 **A wrong INFO line, not just a missing one (R20 — fixed):** the modern-write note printed by
 every write command used to tell the user to build
-`scripts/build/build_hermes_v98_toolchain.sh`, a file that has never existed in this repo. It
-was the most frequently emitted sentence the tool produces and it sent people nowhere. It now
-names `scripts/build_hermes_vm.ps1` and `tests/vm_verify.rs`, and states the real constraint
-(only v98 and v99 modern layouts are known; anything else is refused). docs/USAGE.md's
-"cannot be verified" section is rewritten to match. The discipline point survives the fix:
-**stderr text ages exactly like prose docs, and nothing tests it** — the same reason F3's
-stdout bug survived. If the stdout/stderr contract ever gets a test (R17), the note's
-existence claims are worth asserting too.
+`scripts/build/build_hermes_v98_toolchain.sh`, a file that did not exist in this repo when the
+note was written. It was the most frequently emitted sentence the tool produces and it sent
+people nowhere. It now names `scripts/build_hermes_vm.ps1` and
+`crates/hbc-decomp/tests/vm_verify.rs`, and states the real constraint (only v98 and v99 modern
+layouts are known; anything else is refused). docs/USAGE.md's "cannot be verified" section is
+rewritten to match. **Since then upstream has added a script by the old name** (`e8cd694`,
+2026-09-21): it fetches a v98 `hermes-ios` toolchain from Maven and builds a VM runner, and is
+macOS-only. That does not reopen R20 — the note no longer names it, and `build_hermes_vm.ps1`
+remains the route on this (Windows) side — but "has never existed" is no longer true, and the
+test comment in `stdout_contract.rs` still says it. The discipline point survives the fix:
+**stderr text ages exactly like prose docs** — the same reason history-F3's stdout bug
+survived. The note's existence claims are now asserted (see the end of this section).
 
 **Remaining inconsistency (an INFO-line gap, part of R18):** `emit-hasm -o` prints no
 confirmation, while every other `-o` writer emits an INFO status. The shared `write_output`
 helper *does* print "Wrote … (N lines, KiB)" — but `run_emit_hasm` uses a bare `std::fs::write`
-(`write_cmd.rs:143`) and bypasses it. Fix alongside R18's prefix formalization.
+(`write_cmd.rs:152`) and bypasses it. Fix alongside R18's prefix formalization. Two upstream read
+commands break the split the other way, putting status on **stdout**: `cascade extract -o` prints
+"N candidates written to …" (`cascade_cmd.rs:52`), and `bindiff` without `--json` prints its
+"Loading …" / "Comparing functions..." progress there (`bindiff_cmd.rs:56-68`; `--json` is clean).
 
 **Guidance for new commands:** a command that yields a machine value (a new id, an offset)
 puts *only* that value on stdout, like `add-string`; a command that only transforms a file into
@@ -202,11 +233,11 @@ puts *only* that value on stdout, like `add-string`; a command that only transfo
 checks that `add-string` puts a bare parseable id on stdout, that file-transforming commands
 leave stdout empty, that `emit-hasm` without `-o` writes HASM to stdout, that discarding
 stderr does not change stdout, and that failures keep stdout clean. It also asserts that the
-file paths named in the modern-write note exist in the repo — a dead reference is what R20
-was. Writing it required fixing a long-standing stack overflow in unoptimized CLI builds; see
-finding F9 (`../06_write/reference/HARNESSES_AND_HISTORY.md`).
+`.ps1`/`.rs` file paths named in the modern-write note exist in the repo — a dead reference is
+what R20 was. Writing it required fixing a long-standing stack overflow in unoptimized CLI
+builds; see history finding F9 (`../06_write/reference/HARNESSES_AND_HISTORY.md`).
 
-**Exit codes** are uniform: handlers return `Result`, errors bubble to `main` which returns
-`Box<dyn Error>` → non-zero exit with the error Debug-printed. Keep new commands on this
-path (no `process::exit`, no `unwrap`/`panic` on user input).
+**Exit codes** are uniform: handlers return `Result<(), Box<dyn Error>>` up to `run()`; the
+worker thread in `main` prints `Error: {e:?}` to stderr and exits 1 (a panic exits 101). Keep
+new commands on this path (no `process::exit` in handlers, no `unwrap`/`panic` on user input).
 

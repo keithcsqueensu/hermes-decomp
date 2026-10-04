@@ -19,10 +19,26 @@ this pass.
 |---|---|---|---|
 | unit tests (`#[cfg(test)]`) | our own expectations | — | no |
 | `tests/vm_verify.rs` | **a real Hermes VM** — does the patched image run and print the right thing | `HERMES_VM_V96` / `_V98` / `_V99` | skips |
-| `tests/upstream_pin.rs` | **the upstream headers** — `FUNC_HEADER_FIELDS` and `BytecodeList.def` | `HERMES_SRC_V96` / `_V97` / `_V98` / `_V99` | skips |
+| `tests/upstream_pin.rs` | **the upstream headers** — `FUNC_HEADER_FIELDS`, `BytecodeList.def`, the `BytecodeOptions` bits, the debug-info shapes | `HERMES_SRC_V96` / `_V97` / `_V98` / `_V99` | skips |
 | `tests/corpus.rs` | **a production bundle**, plus `hbcdump` as a second disassembler | `HBC_CORPUS_BUNDLE`, `HBC_CORPUS_LIMIT`, `HERMES_HBCDUMP_V96` | skips |
 | `hbc-decomp-cli/tests/stdout_contract.rs` | **the process boundary** — real stdout, stderr, exit codes | — | no |
 | `commit_image` (`serialize.rs`) | **the bytes themselves** — the model is re-derived from them | — | no, always on |
+| `tests/debug_info_guard.rs`, `tests/debug_relocation.rs` | **the fixture's own source lines** — `locations.debug.js`, built `-g3`; relocation asserts each location still names the instruction it named before | — | no |
+| `corpus_fixture_present` tests (`write/mod.rs`) | **`hermesc` output** — compiled corpus files under `examples/react-native/v<N>/`, generated, not tracked | `HBC_CORPUS_OPTIONAL` | **fails** when absent, unless opted out |
+| `hbc-decomp-cli/tests/e2e_corpus.rs` | **a child process + `node`'s parser** — every corpus file decompiles in its own process, exits 0 inside 60 s, and parses; plus the tracked `tests/fixtures/jsx_cycle_v*.hbc` | `HBC_CORPUS_OPTIONAL` | corpus half fails when absent, unless opted out; tracked half always runs |
+| `scripts/build/roundtrip.sh` | **`node` running the original snippet** — its stdout against our decompiled output's | `roundtrip_known_failures.tsv`, exact in both directions | local gate (`gates.sh`), not CI |
+| `scripts/build/syntax_check.mjs` | **`node`'s module parser** over a whole decompiled bundle | per-bundle ceiling in `syntax_baseline.tsv` | local gate; a bundle not on the machine is skipped |
+
+The read-side suites — `read_robustness.rs`, `read_diagnostics.rs`, `debug_locations.rs`,
+`bytecode_options.rs` — are catalogued where their findings live: `../../01_read/RISKS.md` and
+`../../01_read/unmodeled_regions/PLAN.md` (P1, P5). The last four rows test the decompiler as
+much as the write path; they are here because this is the only harness catalogue.
+
+`scripts/build/gates.sh` runs every local gate in one command — `cargo fmt --check`, `cargo
+clippy --workspace --all-targets -D warnings`, `cargo test --workspace`, a release build, the
+round trip, then the parse check (`--quick` skips the last). The corpus those rows read is built
+from the tracked snippets by `scripts/build/fetch_hermesc.sh` then `build_corpus.sh`
+(`build_hermesc_from_source.sh` for HBC ~40–58, which have no prebuilt `hermesc`).
 
 ```powershell
 # One-time: build the VMs (and the fixtures and hbcdump they need).
@@ -53,7 +69,16 @@ the one place nobody would look.
 CI (`.github/workflows/test.yml`) runs the suite unconfigured, then provisions the four
 upstream checkouts with `scripts/fetch_pinned_hermes.py` — ~4 MB and a few seconds, because it
 is a blobless sparse fetch by the sha each table records — and re-runs `upstream_pin` under
-`HBC_REQUIRE_ORACLES=src`. `vm_verify` and `corpus` stay opt-in there.
+`HBC_REQUIRE_ORACLES=src`. `vm_verify` and `corpus` stay opt-in there. `.github/workflows/build.yml`
+is the other half: fmt and clippy as a lint job, then `cargo test --workspace --release` on
+Linux, macOS and Windows under `HBC_CORPUS_OPTIONAL=1`, because the generated corpus is never on a
+runner.
+
+⚠️ **`test.yml`'s unconfigured step does not set `HBC_CORPUS_OPTIONAL`**, so since
+`corpus_fixture_present` started failing on a missing fixture (`197b243`) that step fails on every
+runner — 13 write-module tests panic with "corpus fixture missing" (run 37163482195, `main`
+@ `81c4e2a`) — and the strict `upstream_pin` step after it never runs. Its own name ("the
+unconfigured path stays green") is the claim it falsifies.
 
 ### What each is good at, and what it cannot see
 
@@ -68,10 +93,18 @@ is a blobless sparse fetch by the sha each table records — and re-runs `upstre
   opcode the compiler actually emits. The bundle is third-party and not committed, so this
   suite is the most likely to be silently skipped.
 - **`stdout_contract`** is the only thing that observes the tool the way a script does. It is
-  also the only harness that needs no external artifact, so it is the one that will still be
-  running in five years.
+  also one of the few harnesses that need no external artifact (the debug suites and
+  `e2e_corpus`'s tracked half are the others), so it is one that will still be running in five
+  years.
 - **`commit_image`** is not a test but a structural guarantee, which is stronger: I1 cannot
   be violated because the model is no longer independently maintained.
+- **The generated corpus** (`corpus_fixture_present`, `e2e_corpus`, `roundtrip.sh`) is the only
+  thing that covers every HBC version a prebuilt `hermesc` exists for (~59 up) with real
+  compiler output — but as the
+  decompiler's oracle, not the write path's: of the write ops, only the in-module tests that read
+  a corpus file touch it, and none of it runs a patched image. Its failure mode is the inverse of
+  the env-gated suites': absent, it fails rather than skips, so a checkout without it has to say
+  `HBC_CORPUS_OPTIONAL` out loud.
 
 ### Two design notes that are load-bearing
 
@@ -120,7 +153,20 @@ external (Copilot) review.
 > output on that engine. Everything it found is recorded above as R8/R9/R15/R19/R20/R21 and
 > finding F7; no fix has been made yet.
 
+> **Update (upstream v0.2.4 merge and the gates, `b4f2797`..`45d97df`).** Behaviourally the
+> write path did not move. Every `patch/*.rs`, `serialize.rs` and `header_write.rs` change in
+> that range is `cargo fmt` reflow or a clippy fix (`45d97df` says "No behaviour change"); the
+> one substantive write-side change is the HASM assembler (`hasm/parse.rs`: `b26ea89` stopped
+> it eating the first letter of a mnemonic, `8e985fe` added its tests). What did change is the
+> test surface — `corpus_fixture_present` turned silent skips into failures (`197b243`) — see
+> Test harnesses.
+
 ### Findings
+
+> **Two F-series.** F1–F10 below are this file's *git-history* findings, cited elsewhere as
+> "history F3", "history F9" and so on. They are not the read-hardening findings F1–F14 shared by
+> the read/ir/pipeline/frontends registers (`../../README.md` § The finding index). Neither series
+> is renumbered.
 
 - **F1 — `7fa1bfc` "Fix Copilot review findings from PR #3" (four bugs in one commit).**
   Areas: `patch-operand` (`operands.rs`), `retarget-string` (`strings.rs`), CLI
@@ -130,10 +176,10 @@ external (Copilot) review.
   2. `patch_string_operand` `FunctionRelative` didn't bound-check `insn_offset <
      bytecode_size` → could patch outside the function body (now `operands.rs:122`).
   3. `retarget_string`'s overflow test had a dead branch `off == 0x800000` (unreachable
-     after the 23-bit mask); the real sentinel is `len == 0xff` (now `strings.rs:258`).
+     after the 23-bit mask); the real sentinel is `len == 0xff` (now `strings.rs:257`).
   4. CLI `run_retarget_string` indexed `file.strings[fid]`/`[tid]` **before**
      `retarget_string` validated the ids → panic on a bad `--from-id`/`--to-id` (now
-     reads after validation via `.get()`, `write_cmd.rs:245`).
+     reads after validation via `.get()`, `write_cmd.rs:246`).
   **Implies:** the recurring real-world bug class on this write path is **missing input
   validation before a raw write** (id-in-range, offset-in-bounds) and **trusting a masked
   field as a sentinel** (I8). Corroborates I8/I11. Every new op must validate
@@ -146,7 +192,7 @@ external (Copilot) review.
 
 - **F3 — `316741f` "Fix add-string stdout: emit bare numeric id".** `add-string` originally
   printed `"added string id {id}"` to **stdout**, defeating programmatic consumption; fixed
-  to emit the bare id on stdout, human text on stderr (`write_cmd.rs:307`). **Implies:** the
+  to emit the bare id on stdout, human text on stderr (`write_cmd.rs:305`). **Implies:** the
   stdout=data / stderr=human rule was itself a *bug fix*, not a designed-in convention — so a
   new command will not inherit it by default. New commands must consciously put only a machine
   value on stdout.
@@ -221,7 +267,7 @@ external (Copilot) review.
   Second, when a gap in coverage persists across several passes with no clear reason, suspect
   a mechanical blocker rather than lack of will.
 
-- **F10 — a table claiming a provenance it did not have.** `Bytecode99.json` records
+- **F10 — a table claiming a provenance it did not have.** `Bytecode99.json` recorded
   `GitCommitHash: 913d31acd…`, and the opcodes it contains had already been deleted upstream
   at that commit. The pin was decorative: written once, never checked, and wrong.
   **Implies:** recorded provenance is worth nothing without something that verifies it. When

@@ -8,7 +8,8 @@
 > map, that one is the risk register.
 
 Files: `file/` (`structure.rs`, `parser/*`), `format.rs`, `opcode.rs`, `disasm.rs`,
-`io.rs`, `modern_layout.rs`, `constants.rs`, `inspect.rs`, plus generated code from `build.rs`.
+`io.rs`, `modern_layout.rs`, `debug.rs`, `error.rs`, `constants.rs`, `inspect.rs`, plus
+generated code from `build.rs`.
 
 ---
 
@@ -26,14 +27,14 @@ degradation is recorded as a structured `Diagnostic` instead of being swallowed.
 
 | Type | Where | Role |
 |---|---|---|
-| `BytecodeFile` | `file/structure.rs:182` | top-level parsed model: header, all section vectors, `diagnostics`, `unresolved_string_ids`, original `raw_bytes` |
+| `BytecodeFile` | `file/structure.rs:186` | top-level parsed model: header, all section vectors, `diagnostics`, `unresolved_string_ids`, original `raw_bytes` |
 | `BytecodeHeader` | `format.rs:250` | decoded fixed header; version-gated fields are `Option<u32>`; carries both layouts + `options_raw` |
 | `BytecodeOptions` / `CjsModuleForm` | `format.rs:92`, `:207` | decodes the version-keyed `options` byte; the CJS bit selects which of two indistinguishable module-table forms the file holds |
 | `HeaderLayout {Legacy, Modern}` / `FunctionHeaderLayout {Legacy16, Modern12}` | `format.rs:238`, `:244` | the two on-disk shapes |
 | `FunctionHeader` (`Legacy`/`Modern`) | `format.rs:331` | per-function metadata + flag accessors (`is_overflowed`, `prohibit_invoke`…) |
-| `Diagnostic` / `DebugInfoStatus` | `file/structure.rs:117`, `:70` | the "this read is not what it looks like" enums |
-| `Instruction` + `Operand`/`OperandType`/`OperandValue` | `file/structure.rs:250`, `opcode.rs:52,8,24` | decoded instruction model |
-| `BytecodeFormat` / `InstructionDef` | `opcode.rs:93`, `:77` | per-version opcode table |
+| `Diagnostic` / `DebugInfoStatus` | `file/structure.rs:118`, `:71` | the "this read is not what it looks like" enums |
+| `Instruction` + `Operand`/`OperandType`/`OperandValue` | `file/structure.rs:255`, `opcode.rs:53,8,24` | decoded instruction model |
+| `BytecodeFormat` / `InstructionDef` | `opcode.rs:93`, `:78` | per-version opcode table |
 | `ByteReader` | `io.rs:3` | the cursor all parsing runs through — LE reads, LEB128, bounds-checked `read_exact`, `align`, `capacity_hint` |
 
 ## Data flow
@@ -51,9 +52,14 @@ Entry point `BytecodeFile::parse_auto(bytes)` (`file/parser/mod.rs:15` → `pars
    identifier hashes → small/overflow string tables → string storage), then
    layout-specific buffers (`parse_legacy_buffers` uses array/objValue buffers;
    `parse_modern_buffers` uses literalValue/shape tables), then trailing sections (regexp,
-   CJS, function-source) in `parse_trailing_and_build` (`parsing.rs:308`).
+   CJS, function-source) in `parse_trailing_and_build` (`parsing.rs:343`).
 4. Remaining bytes become `instructions`; the tail is split into
-   `bytecode`/`function_info`/`debug_info`/`footer` pseudo-sections.
+   `bytecode`/`function_info`/`debug_info`/`footer` pseudo-sections (`push_tail_sections`).
+5. Still in `parse_trailing_and_build`: decode the string table, read each function's
+   `DebugOffsets` (`parse_debug_offsets`), decode the debug-info section
+   (`try_parse_debug_info` → `debug_info_status`), read exception handlers, then run the
+   integrity checks (`file_length`, SHA-1 footer via `write::footer::verify_footer`) that
+   seed `diagnostics`.
 
 **Instruction decoding is deferred**: `decode_function_instructions` (`instructions.rs:6`)
 slices a function body by header offset/size and reads opcode-by-opcode on demand.
@@ -66,7 +72,7 @@ Version gating is by constant: `LEGACY_BIGINT_MIN_VERSION=87`,
 
 An `Instruction` is `{offset, opcode:u8, operands:Vec<Operand>, length}`. Decoding looks up
 `format.definitions[opcode]` (a dense vec indexed by the opcode byte) and reads each
-declared `OperandType` off the `ByteReader` (`opcode.rs:58` `OperandType::read`).
+declared `OperandType` off the `ByteReader` (`opcode.rs:59` `OperandType::read`).
 
 Per-version tables are **JSON, embedded at build time**: `build.rs` scans
 `resources/bytecode/Bytecode<N>.json` and generates `format_json_for_version()` /
@@ -75,7 +81,8 @@ inflates them, filling gaps with `<invalid>` defs. A version with no exact table
 `for_version_or_latest` (`opcode.rs:186`, nearest ≤ version) routed through
 `BytecodeFile::resolve_format` (`file/parser/mod.rs:46`), which records
 `Diagnostic::OpcodeTableSubstituted` because a wrong table silently mis-decodes. `build.rs`
-also embeds per-version `Builtins<N>.json` and an FNV build fingerprint used for cache-keying.
+also embeds per-version `resources/builtins/Builtins<N>.json` and an FNV build fingerprint
+used for cache-keying.
 
 ## Disassembly
 
@@ -93,7 +100,7 @@ resolves string-id operands (`UInt*S`) against the string table to inline quoted
 - **Degrade-and-report, never crash.** `Diagnostic` covers footer SHA-1 mismatch, length
   mismatch, layout fallback, opcode-table substitution, invalid string storage, unreadable
   debug info; `warnings()`/`is_clean()` surface them. The lazy `unresolved_string_ids`
-  counter (`structure.rs:219`) is the strongest signal of wrong-offset decoding (~93K hits
+  counter (`structure.rs:223`) is the strongest signal of wrong-offset decoding (~93K hits
   when BigInt was once parsed before the array buffer).
 - **Section order is load-bearing** — misordering shifts every later offset and corrupts
   literal string-ids.
@@ -126,6 +133,8 @@ resolves string-id operands (`UInt*S`) against the string table to inline quoted
 | `format.rs` | header/function-header structs, `BytecodeOptions`, `CjsModuleForm`, flags, layout enums |
 | `opcode.rs` | operand/instruction-def types, `BytecodeFormat` JSON loader + version fallback, builtins |
 | `modern_layout.rs` | version-keyed Modern (v97+) large-header byte layout (allow-listed v98/v99) |
+| `debug.rs` | debug-info section decode: `DebugLayout::for_version`, `DebugInfo::parse_with_status` → `DebugInfoStatus`, `try_parse_debug_info`; the formats and per-region status are owned by `../plan_guides/01_read/unmodeled_regions/PLAN.md` |
+| `error.rs` | the crate-wide `Error` / `Result` |
 | `disasm.rs` | text disassembly of decoded instructions |
 | `io.rs` | `ByteReader` — bounds-checked LE/LEB128 cursor |
 | `constants.rs` | JS reserved words / transformation-method lists (used by later naming passes) |

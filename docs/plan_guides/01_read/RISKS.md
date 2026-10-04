@@ -339,7 +339,7 @@ and well-commented, but reported as absence rather than as a limitation.
 
 **Credit where due:** DI3 in `unmodeled_regions/PLAN.md` ("the header parser is version-blind")
 is **fixed** — `parse` now takes a version and `parse_header` branches on `DebugLayout`. That
-plan document is stale on this point and should be updated.
+plan document has since been updated and marks DI3 ✅ fixed.
 
 **Fix.** Return the reason. An enum, or a `debug_info_status: &'static str` on `BytecodeFile`,
 surfaced by `hermes-decomp debug` and MCP `debug_info` — the latter currently reports only
@@ -438,8 +438,11 @@ because the modern header's field mapping puts an impossible size in an early fi
 concern is real only for modern files, where both layouts do run to completion — but modern
 files are not what this repo handles, and the absolute cost (≈20 ms on 16 MB) does not justify
 restructuring. F1 is a correctness argument for changing `parse_auto`, not a performance one.
+(Moot since F1 shipped: the version-implied layout is tried first and the other only when it
+fails, so a clean file is parsed once.)
 
-**Exception handlers are in bounds.** `parse_exception_handlers` (`parsing.rs:398`) never
+**Exception handlers are in bounds.** `parse_exception_handlers` (`parsing.rs:398`; `:606` at
+`81c4e2a`) never
 validates `start`/`end`/`target` against the function body, which reads like an obvious gap.
 **[measured]** on the Equinox bundle: 1,544 functions carry 2,438 handlers; **0** have
 `start > end`, **0** fall outside their own body (the offsets are function-relative), and **0**
@@ -458,8 +461,10 @@ Also solid, and worth not re-litigating:
   `MAX_PARAM_LINK_ITERATIONS`, `MAX_MODULE_NAME_ITERATIONS`, `MAX_REEXPORT_ITERATIONS`,
   `MAX_PARENT_CHAIN_DEPTH`, `MAX_WRAPPER_CHAIN_DEPTH`, `MAX_INLINE_BODY_PASSES`) — the
   analysis layer *is* bounded; it is only the IR tree walk (F9) that is not.
-- The CLI's `warn_layout_mismatch` (`helpers.rs:42`), which is exactly the diagnostic F1 asks
-  for, applied to the manual-override case. F1 is asking to extend it to the automatic one.
+- The CLI's `warn_layout_mismatch` (`helpers.rs:42`; `:57` at `81c4e2a`), which is exactly the
+  diagnostic F1 asks for, applied to the manual-override case. F1 is asking to extend it to the
+  automatic one — done: the automatic case is `Diagnostic::LayoutFallback`, printed by the
+  CLI's `warn_diagnostics` (same file).
 
 ---
 
@@ -540,6 +545,13 @@ overflow detection at release speed, which is what makes it affordable to extend
 This belongs in CI. It is the assertion that the read path's robustness is a property and not
 an accident, and it is the harness that catches the next F7 before a user does.
 
+> **Where it runs now.** CI (`.github/workflows/build.yml`) runs it at the 750-flip default as
+> part of `cargo test --workspace --release` — and **release**, with no workspace profile
+> enabling `overflow-checks`, so CI catches panics but *not* an F7-class integer overflow,
+> which wraps there. The debug run that does catch overflow is the local gate,
+> `scripts/build/gates.sh` (`cargo test --workspace`). Both harnesses read only the tracked
+> `tests/fixtures/*.hbc`, so `HBC_CORPUS_OPTIONAL` (which CI sets) does not skip them.
+
 ### A2 — layout disagreement (F1)
 
 For each fixture, flip one bit anywhere **except** bytes 0..12 (magic and version, so the
@@ -554,4 +566,8 @@ The bundle-backed numbers used:
 C:\apks\equinox\com.equinoxfitness.equinox_11.39.0\hermes_bundle\assets\index.android.bundle.backup
 ```
 
-passed via a `BENCH_HBC` env var so the tests skip cleanly when it is absent.
+passed via a `BENCH_HBC` env var so the tests skip cleanly when it is absent. That was the
+ad-hoc harness's variable and is not in the tree; the committed bundle-backed test
+(`overflowed_legacy_headers_report_themselves_as_overflowed`, as `tests/corpus.rs`) reads the
+bundle from `HBC_CORPUS_BUNDLE` through the shared oracle gate in `tests/common/mod.rs`, where
+`HBC_REQUIRE_ORACLES=corpus` turns the skip into a failure.

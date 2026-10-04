@@ -4,10 +4,14 @@
 > wrong JavaScript. *Delegates* the phase's *description* — the F/W stage catalogue, the pass
 > families, the `Codegen` `with_*` context — to `../../arch_guides/04_TRANSFORMS_CODEGEN.md`.
 
-Status: **no open findings.** No robustness finding from the read hardening pass landed on this
-stage, and no version-drift hazard of the write path's kind lives here. This register exists as
-the stage's vertebra on the spine; the notes below are the standing hazards to respect when
-adding a pass, not open defects.
+Status: **no open defects; one watch item** (re-audited against HEAD 81c4e2a). No robustness
+finding from the read hardening pass landed on this stage, and no version-drift hazard of the
+write path's kind lives here. This register exists as the stage's vertebra on the spine; the
+notes below are the standing hazards to respect when adding a pass, plus one structural
+weakness — the ESM rendered-line repair — that is not a known bug but is where the next one is
+most likely. One adjacent open item lives next door: the ordering file these hazards point at
+(`pipeline/stages.rs`) has drifted from the executed order — `../05_pipeline/RISKS.md`
+§ Stage labels.
 
 ---
 
@@ -34,6 +38,35 @@ wrong" checklist:
 - **Render recursion is bounded, but only at render time.** Codegen routes through the same
   `DepthGuard` the IR uses (F9, `../02_ir/RISKS.md`); a new recursive emitter that bypasses it
   reopens the stack-overflow hole.
+- **Passes run more than once, on differently-spelled input.** JSX, short-circuit, slot-fill
+  folding, inlining and loop folding each run per-function *and* again in the whole-program
+  W16 stages, after naming has turned registers into named bindings. A matcher that only
+  recognises the register spelling silently does nothing on the later runs.
+- **Lifts must fail closed.** The HBC ≥ 97 generator lift (`try_reconstruct_generator_v98`)
+  and the v98/Babel destructuring matchers return the body unchanged on any shape mismatch.
+  That is load-bearing: the dead-store/dead-temp cleanups that follow cannot follow data flow
+  through a raw resume machine's label/status slots, and once deleted live code (the
+  `piloteAuthHeaders` header build) when handed one — see the comment at the lift call in
+  `pipeline/context/transforms_phase.rs`. A new lift that returns a partial rewrite reopens it.
+- **Dead-code removal needs the descendant keep-set.** After closure resolution a captured
+  slot is a plain name in each body, so a single-body pass sees a store nobody reads.
+  Removal passes take `names_used_by_descendants` / `captured_by_descendants` as a keep-set
+  (`*_keeping` variants); a new one that skips it drops stores nested functions read.
+
+## Watch item — ESM repair works on rendered text
+
+Not a known defect; registered because it is the stage's least-structured surface.
+`codegen/esm_gen.rs` and `esm_imports.rs` grew (net ~+1.4K lines since 2026-08-28) a suite of
+passes that keep a module parseable — import consolidation/dedupe, export/import/declaration
+collision resolution, alias and `let X;` hoist de-duplication, `undeclared_assignments` — and
+they operate on **rendered lines** (`Vec<String>`), recognising `import`/`export`/`let`/
+`function` heads and identifiers by string matching (`parse_import_line`, `declared_name`,
+`replace_word`), not on IR. Inlined descendant bodies arrive only as strings too, which is why
+`with_nested_writes` exists. The failure mode is the usual one for this stage —
+plausible-but-wrong JS, or a rename applied inside a string literal or a nested scope — and it
+is guarded only by unit tests on hand-written lines (`esm_gen.rs` tests, `codegen/tests.rs`).
+If it bites, the structural fix is to make the collision/dedupe decisions on IR before
+`generate_esm_module` renders, leaving text passes for formatting only.
 
 ## Related open work elsewhere
 

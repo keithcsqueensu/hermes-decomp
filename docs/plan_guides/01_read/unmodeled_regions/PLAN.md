@@ -54,10 +54,10 @@ something with meaning attached, not merely into a `Vec`. "Emit" means `create` 
 |---|---|---|---|---|
 | function headers, exception handlers | ✅ | ✅ | ✅ | resize of a handler-bearing function is refused (Q3/Q4) |
 | string table, storage, kinds, identifier hashes | ✅ | ✅ | ✅ | packing — `../../06_write/string_packing/PLAN.md` |
-| array / literal-value / object key + value buffers | ✅ | ✅ decoded to `LiteralValue` (`parser/buffer.rs`) | ❌ empty only | write side only |
-| bigint table + storage | ✅ | ✅ resolved by id (`parser/helpers.rs:8`) | ❌ empty only | write side only |
-| object shape table | ✅ `ShapeTableEntry` | ✅ shape lookup (`parser/mod.rs:40`) | ❌ empty only | write side only; **v98+ only** |
-| function source table | ✅ pairs | ✅ dumped and resolved (`inspect.rs:248`) | ❌ empty only | write side only |
+| array / literal-value / object key + value buffers | ✅ | ✅ decoded to `LiteralValue` (`file/parser/buffer.rs`) | ❌ empty only | write side only |
+| bigint table + storage | ✅ | ✅ resolved by id (`file/parser/helpers.rs:7`, `bigint_at`) | ❌ empty only | write side only |
+| object shape table | ✅ `ShapeTableEntry` | ✅ shape lookup (`file/parser/mod.rs:62`, `shape_at`) | ❌ empty only | write side only; **v98+ only** |
+| function source table | ✅ pairs | ✅ dumped and resolved (`inspect.rs:143`) | ❌ empty only | write side only |
 | CJS module table | ✅ pairs | ✅ labelled by `options` bit 1 (`inspect.rs`) | ❌ empty only | write side only; OB2 closed by P5 |
 | `options` byte | ✅ as a `u8` | ✅ `BytecodeOptions`, version-keyed (`format.rs`) | carried verbatim | OB1 closed by P5 |
 | **RegExp table + storage** | table ✅, storage ❌ raw | ❌ | ❌ empty only | P3 |
@@ -66,7 +66,8 @@ something with meaning attached, not merely into a `Vec`. "Emit" means `create` 
 The two bolded rows are the read-side gaps that remain; everything else on the list is a
 write-side gap
 only, and none of them can be *emitted* today. `create` writes a zero count for every one
-(`serialize.rs:246-254`), which is honest for a minimal image and is exactly why `create` is a
+(`write/serialize.rs:242-256` for the legacy header, `write_modern_header` (`write/header_write.rs:57`) for the
+modern one), which is honest for a minimal image and is exactly why `create` is a
 smoke-test emitter rather than a serializer.
 
 ---
@@ -158,7 +159,19 @@ So debug info is not opaque — it is *partly* parsed, at *one* version, with th
 carries line numbers and the index into it both missing. Three consequences follow; two are
 live defects.
 
-### DI1 — debug-driven variable naming is dead code
+> **Superseded since this was written; the table is kept as the starting point.** The header is
+> version-keyed (`DebugLayout`, `debug.rs:99`; DI3), the streams are decoded
+> (`parse_location_stream`, `debug.rs:350`; P1), and `DebugOffsets` is read per function
+> (`parse_debug_offsets`, `file/parser/parsing.rs:540`; P1). The scope-descriptor /
+> textified-callee / string-table trio is still v96-only, now *deliberately*
+> (`DebugLayout::has_lexical_regions`). RegExp storage is still raw (`inspect.rs:110`).
+
+### DI1 — debug-driven variable naming is dead code — ✅ **fixed by P1**
+
+> **Fixed by P1**, and not the way this section implies: the scope link is
+> `DebugOffsets.scopeDescData`, not the stream — see P1's correction 1. Both consumers now call
+> `DebugInfo::variable_map_for_function` (`pipeline/ir_gen.rs:312`, `pipeline/mod.rs:158`). The
+> names still reach no decompiled output; that is P1b. The narrative below is kept as written.
 
 `DebugInfo::source_locations` is declared (`debug.rs:29`) and read by two call sites —
 `pipeline/ir_gen.rs:289` and `pipeline/mod.rs:127` — both of which do the same thing:
@@ -176,7 +189,12 @@ always `None`, and `build_variable_map(None)` returns an empty map unconditional
 unreachable through this path. Recovering real local-variable names from a debug-built bundle
 is a feature that looks implemented and has never once produced a name.
 
-### DI2 — a size-changing edit silently invalidates debug info *(proposed R24)*
+### DI2 — a size-changing edit silently invalidates debug info *(proposed R24)* — ✅ **fixed by P0 + P2**
+
+> **Fixed since this was written.** P0 refuses a wholesale resize of a debug-bearing function
+> (the guard sits in `patch_function_body`, `write/patch/functions.rs:69`); P2 relocates the
+> stream for an insertion (`write/patch/debug_reloc.rs`). The grep below no longer comes back
+> empty. The narrative is kept as written.
 
 This is the one that matters. A location stream stores **bytecode addresses within a
 function**, accumulated as deltas (`current_.address += addressDelta` **[source]**). On a
@@ -242,7 +260,8 @@ v98 / v99:
 ```
 
 The interior offsets are relative to the **start of the debug data**, not to the section.
-`debug.rs:100-107` computes `data_start` that way and gets it right — for v96.
+`debug.rs:100-107` computed `data_start` that way and got it right — for v96. It is now
+`layout.header_size + …` (`debug.rs:249`), right at every modelled version.
 
 ### DI3 — the header parser is version-blind — ✅ **fixed**
 
@@ -300,8 +319,10 @@ re-derive it.
 
 ### Location stream — **three incompatible encodings** **[source]**
 
-Every stream begins with three SLEB128s: `functionIndex`, absolute `line`, absolute `column`.
-Then entries repeat until `addressDelta == -1`. The entry body is where the versions diverge:
+Every stream begins with SLEB128s `functionIndex`, absolute `line`, absolute `column` — and, at
+v98/v99, a fourth, absolute `envIdx` (pinned per checkout by `debug_info_shapes_match_upstream`,
+which is how this line was found to undercount; v97's prologue is not modelled). Then entries
+repeat until `addressDelta == -1`. The entry body is where the versions diverge:
 
 | | v96 | v97 | v98 / v99 |
 |---|---|---|---|
@@ -313,7 +334,7 @@ Then entries repeat until `addressDelta == -1`. The entry body is where the vers
 | conditional fields | `[stmtΔ]` | `[stmtΔ]` | `[stmtΔ]`, `[envIdxΔ]` |
 | bit 0 clear means | n/a | skip this entry, **stream continues** | same |
 
-Three details that will bite anyone who skims this:
+Four details that will bite anyone who skims this:
 
 1. **`scopeAddress` exists only at v96.** It is the field DI1's consumers want. At v97+ the
    per-location scope link is gone from this stream — v97 moved it to `lexicalData`, v98+
@@ -539,7 +560,7 @@ unaffected; and a file with no debug section is unaffected. All five run at v96,
 
 **Shipped as** `DebugLayout::for_version` + `StreamEncoding` in `debug.rs` (an allow-list of
 96 / 98 / 99, refusing the rest the way `ModernLayout` does), `parse_debug_offsets` in the
-parser, and `DebugInfo::variable_map_for_function`. Pinned by
+parser (`file/parser/parsing.rs`), and `DebugInfo::variable_map_for_function`. Pinned by
 `debug_info_shapes_match_upstream` in `tests/upstream_pin.rs`, which derives the header size,
 the `DebugOffsets` field count, the stream prologue length and the line-delta shift from each
 checkout — and was checked by breaking each of them and watching it fail. Asserted by
@@ -621,20 +642,26 @@ environment and 1 if it does not. The discriminator is whether `F`'s body contai
 | `readsAll` | no | 0 | 1 | 22 → 16 | same |
 
 **Why it is not shipped, which is a real blocker rather than an effort estimate.** The
-rendered name `closure_N` is *load-bearing for other analyses*: seventeen sites across ten
-files test or parse that spelling, including `analysis/metro/propagation`, which recovers a
-slot id by `strip_prefix("closure_")`. Substituting a debug name before those run would break
+rendered name `closure_N` is *load-bearing for other analyses*: a few dozen sites across the
+crate re-derive the slot from that spelling (the census lives in
+`../../03_analysis/closure_model/PLAN.md` § 2), and some recover a slot id by
+`strip_prefix("closure_")` — `analysis/metro/propagation` among them **[code]**. Substituting a debug name before those run would break
 Metro module analysis.
 
 The blocker is **not** that there is nowhere to put the name — it is that the thing to attach
-it to has already been destroyed. `resolve_closures` (`analysis/closure/mod.rs:139,217`,
-reached from `pipeline/ir_gen.rs:244` and `pipeline/context/closures.rs:40`) lowers
-`ClosureVar { level, slot }` to `Variable(String)` at stage W6, and `ClosureInfo::get_slot_name`
-is what renders that string — it is the incumbent namer, not an unused hook. After W6 a debug
-name and a placeholder are both just strings, distinguishable only by spelling. So print-time
+it to has already been destroyed. `resolve_closures` (`analysis/closure/mod.rs:187,270`,
+reached from `pipeline/ir_gen.rs:262`, and as `resolve_closures_recording` from
+`pipeline/context/closures.rs:41`) lowers `Binding::ClosureVar { level, slot }` to
+`Binding::Variable(String)` at stage W6, and `ClosureInfo::get_slot_name`
+(`analysis/closure/info/naming.rs:36`) is what renders that string — it is the incumbent namer,
+not an unused hook. After W6 a debug name and a placeholder are both just strings,
+distinguishable only by spelling. (`resolve_closures_recording` does now keep a
+baked-name → `(level, slot)` record, `ClosureContext::baked_captures`, for the W13 ancestor-inherit
+pass; but it is keyed *by* the string and does not reach codegen — it narrows the problem, it
+does not remove it.) So print-time
 substitution cannot work as originally sketched here: `Codegen` does carry injected analysis
 context (`import_map`, `dep_names`, `dep_ids`, `inline_bodies`, with a `with_*` builder
-pattern at `transforms/codegen/mod.rs:193`), and a `with_variable_names` would be routine —
+pattern at `transforms/codegen/mod.rs:310`), and a `with_variable_names` would be routine —
 but by then there is no `ClosureVar` left to key it on. Likewise `var_naming` already renames
 captures beyond registers (`rename_closure_variables_cross_function`,
 `rename_closures_from_definitions`); it does so **by string**, which is the same problem one
@@ -645,7 +672,8 @@ provenance, so a name Hermes itself recorded has no way to outrank one inferred 
 **See `../../03_analysis/closure_model/PLAN.md`** — that is where this belongs, it is justified without debug
 info (94,453 rendered placeholders per Equinox run), and P1b becomes a short consequence of
 its K1/K3 rather than a project. Two of its findings are P1b's own, arrived at early: the `h`
-above is a bit the IR builder already observes and discards, and the slot→name map this phase
+above is a bit the IR builder now computes (to shift environment levels) but does not carry
+past itself (closure_model K1), and the slot→name map this phase
 would produce is currently consumed as a *register*→name map.
 
 **And the payoff is small**: Hermes names only captured variables, and only in files built with
@@ -877,7 +905,7 @@ emitter **[compiler]**:
 
 - **Every section is padded to `BYTECODE_ALIGNMENT` before it is written**, by the serializer
   itself (`pad(BYTECODE_ALIGNMENT)` opens each `visit*`, `BytecodeStream.cpp:255-341`). Our
-  parser's align-*after* in `track_section` (`parsing.rs:51`) is the same rule seen from the
+  parser's align-*after* in `track_section` (`file/parser/parsing.rs:45`) is the same rule seen from the
   other side, which is why section walking has never desynchronised. Function info uses a
   different constant, `INFO_ALIGNMENT`.
 - **`DebugOffsets` is written iff the function's `hasDebugInfo` flag is set**, and stripping

@@ -18,7 +18,8 @@ or the shipped Equinox v96 bundle (see `../01_read/RISKS.md` for the bundle iden
 
 > **Fixed.** New `ir::depth` module: a thread-local RAII `DepthGuard` with
 > `MAX_RENDER_DEPTH = 512`, applied at the three recursive renderers — `format_expr`
-> (every other formatter in that file routes through it), `Codegen::generate_expr`, and
+> (every other formatter in that file routes through it), `Codegen::generate_expr` (the
+> guard sits in its body, `generate_expr_at_depth`), and
 > `Codegen::generate_statements` for block nesting. Past the bound they emit
 > `/* hbc-decomp: nesting exceeds MAX_RENDER_DEPTH */` rather than descending:
 > greppable, syntactically inert, and not silent. 512 is ~6x the deepest expression
@@ -29,9 +30,19 @@ or the shipped Equinox v96 bundle (see `../01_read/RISKS.md` for the bundle iden
 > which renders a 50,000-deep tree on a deliberately 2 MiB thread. The `Drop`-recursion
 > caveat is unchanged and documented in the module: a guard in a renderer cannot help
 > with it, which is the other half of why the stack matters.
+>
+> Since then the calling-thread half has its own mitigation: `run_with_large_stack`
+> (`lib.rs`, `LARGE_STACK_SIZE` = 64 MiB, the same as the pool) runs a closure on a fresh
+> large-stack thread. The `.hdcache` decode in `build_cached` goes through it, and the MCP
+> tool bodies run on `run_scoped_with_large_stack` (`hbc-decomp-mcp/src/server/mod.rs`),
+> since a tokio worker's ~2 MB stack overflows in structure recovery and codegen on a real
+> bundle. Held by a 50,000-deep recursion test of `run_with_large_stack` in that file.
+> The upstream merge also put a per-`Codegen` counter, `MAX_EXPR_DEPTH = 4096`
+> (`transforms/codegen/expr_gen.rs`), in front of `generate_expr_at_depth`; the shared
+> 512 thread-local bound always trips first, so it is a backstop, not a second limit.
 
 
-`lib.rs:38-52` configures a 64 MB Rayon stack with a comment saying the default 2 MB
+`lib.rs:37-52` configures a 64 MB Rayon stack with a comment saying the default 2 MB
 "overflows and aborts the process on large real-world bundles". That is the mitigation: a
 bigger stack, applied to one thread pool.
 
@@ -58,11 +69,12 @@ So: **not a live problem for real React Native bundles** (60× headroom), and tr
 reachable on a crafted or generated one. This is an RE tool pointed at unknown APKs, so
 "crafted input" is the job description, not an edge case.
 
-Two related notes. `configure_thread_pool()` is called from `main.rs:48` (CLI) and from
-`build_with_options` (`context/mod.rs:56`) — but **not** from `hermes-mcp`'s `main`, and
-`build_cached` returns early on a cache hit *before* reaching it. Today nothing breaks,
-because the rayon work in `rendering.rs:102,157` is only reached via paths that also build the
-pipeline. It is an invariant with no assertion and no test, one refactor away from being false.
+Two related notes (as found; the first is closed by the Fixed note above). `configure_thread_pool()`
+is called from `main.rs:75` (CLI) and from `build_with_options` (`context/mod.rs:66`) — but
+**not** (then) from `hermes-mcp`'s `main`, and `build_cached` returns early on a cache hit
+*before* reaching it. Nothing broke, because the rayon work in `context/rendering.rs:237,312`
+is only reached via paths that also build the pipeline. It was an invariant with no assertion
+and no test, one refactor away from being false.
 And `Drop` of a deeply nested `Box<Expression>` chain is itself recursive, so a depth guard in
 `Display` alone is not sufficient.
 

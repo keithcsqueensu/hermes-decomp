@@ -8,8 +8,9 @@
 > `../plan_guides/README.md`. This guide is a pointer with a table, not a second copy (the
 > plan-guides' one-home-per-fact rule applies across folders too).
 
-Files: `write/` — `encode.rs`, `serialize.rs`, `create.rs`, `footer.rs`, `header_write.rs`,
-`reloc.rs`, `hasm/*`, `patch/*`.
+Files: `write/` — `mod.rs`, `encode.rs`, `serialize.rs`, `create.rs`, `footer.rs`,
+`header_write.rs`, `reloc.rs`, `hasm/*`, `patch/*`. The CLI front end is
+`hbc-decomp-cli/src/commands/write_cmd.rs`.
 
 ---
 
@@ -36,21 +37,22 @@ Two properties define it, and both are the reason the plan_guides exist:
 | Concern | File(s) | Notes |
 |---|---|---|
 | **Encode** | `encode.rs` | decoded instructions → raw bytecode bytes (`encode_instruction`, `encode_function_body`) |
-| **Serialize** | `serialize.rs` | full `.hbc` image; primary path is identity re-emit from `raw_bytes` (preserves unmodeled regions) |
+| **Module root** | `mod.rs` | re-exports the public write API; test-only `corpus_fixture_present` (corpus tests fail unless `HBC_CORPUS_OPTIONAL`) |
+| **Serialize** | `serialize.rs` | full `.hbc` image; primary path is identity re-emit from `raw_bytes` (preserves unmodeled regions). `commit_image` is every patch op's single exit: finalize, then re-parse to re-derive the model |
 | **Create** | `create.rs` | minimal valid `.hbc` from scratch (`create_minimal`, `CreateOptions`) |
 | **Footer** | `footer.rs` | SHA-1 over all preceding bytes — refreshed after any edit |
-| **Header write** | `header_write.rs` | binary writers for HBC headers (legacy layout) |
-| **Relocation** | `reloc.rs` | helpers after size-changing edits; most reloc currently lives in `patch::patch_function_bytes` — see `../plan_guides/06_write/relocation/PLAN.md` |
+| **Header write** | `header_write.rs` | binary writers for HBC file/function headers, plus the read/shift helpers for small-header offsets and packed large-header pointers (legacy and modern) |
+| **Relocation** | `reloc.rs` | only a placeholder `RelocPlan` and an `apply_reloc` that refuses; the real splice-and-shift is hand-rolled in `patch::patch_function_bytes` and the string paths — see `../plan_guides/06_write/relocation/PLAN.md` |
 | **HASM** | `hasm/{mod,parse,emit}.rs` | our disasm dialect: `emit` text ← bytecode, `parse` text → instructions, assemble into a patched image |
-| **Patch** | `patch/mod.rs` + submodules | edit an existing image, split by concern (below) |
+| **Patch** | `patch/mod.rs` + submodules | edit an existing image, split by concern (below); `PatchOptions` (incl. `allow_stale_debug_info`) |
 
 `patch/` submodules:
 
 | File | Edit |
 |---|---|
-| `patch/strings.rs` | string-table entries: same-length in place, or grow/shrink with a full table + storage rebuild and tail relocation |
-| `patch/operands.rs` | a single string-id operand in one instruction — no body rebuild; validates shape, read-back verifies |
-| `patch/functions.rs` | whole function bodies: same-size in place; different-size splices the code section, shifts later offsets, fixes the debug-info offset |
+| `patch/strings.rs` | string-table entries: same-length in place, or grow/shrink with a full table + storage rebuild and tail relocation; append (`add_string`); repoint an entry at another's storage (`retarget_string`) |
+| `patch/operands.rs` | a single string-id operand in one instruction, addressed by `OperandTarget` (absolute offset or function + insn offset) — no body rebuild; validates shape, read-back verifies |
+| `patch/functions.rs` | whole function bodies: same-size in place; different-size splices the code section, shifts later offsets, fixes the debug-info offset; refuses a resize of a function with handlers or (unless opted out) debug info |
 | `patch/inject.rs` | inject a stub into a body: a runtime no-op pad, or a `print(<name>)` entry-logging prologue |
 | `patch/debug_reloc.rs` | keep a function's debug line table correct across an *insertion* (the R24 relocation) |
 

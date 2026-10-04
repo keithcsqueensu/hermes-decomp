@@ -34,9 +34,9 @@ plan_guides/
     RISKS.md                  register (points to the closure model)
     closure_model/PLAN.md     the decompiler's closure / env-slot model
   04_transforms/
-    RISKS.md                  register (audited; no open risks today)
+    RISKS.md                  register (no open defects; one watch item + standing hazards)
   05_pipeline/
-    RISKS.md                  F8, F13 — the cache
+    RISKS.md                  F8, F13 — the cache; open: cascade vs. the cache, stage-label drift
   06_write/
     RISKS.md                  invariants, design limits, risk register (R1–R28 bar the four
                               CLI-surface rows R17/R18/R20/R22, now in 07_frontends), open Qs, open work
@@ -70,7 +70,9 @@ read/ir/pipeline/frontends registers. The write path numbers its durable hazards
 its resolved design decisions **Q1–Q9**, and its invariants **I1–I13**. Most live in
 `06_write/RISKS.md`; the four CLI-surface risks **R17, R18, R20, R22** were relocated to
 `07_frontends/RISKS.md` (the CLI is a frontend — those risks are about how a write is *presented*,
-not how bytes are mutated), keeping their numbers. Where each lives:
+not how bytes are mutated), keeping their numbers. One collision to know about:
+`06_write/reference/HARNESSES_AND_HISTORY.md` numbers its git-history findings **F1–F10** in a
+separate series — "history F3" or "history F9" is not the read-pass F3 or F9 below. Where each lives:
 
 | ID | Stage register | ID | Stage register |
 |---|---|---|---|
@@ -103,7 +105,7 @@ is worth keeping, because it is also the failure mode — see § Splitting.
 | `06_write/string_packing/PLAN.md` | write register, design limits | how string storage is laid out and could be repacked | researched; P0 worth doing regardless |
 | `06_write/relocation/PLAN.md` | write register, design limits | the absolute-offset surface; splice-and-shift | P0–P2 specified, ~1 day; P3 on a named trigger |
 | `01_read/unmodeled_regions/PLAN.md` | relocation P3 | per-region read / interpret / emit status + formats | P0, P1, P2, P5 shipped; P1b, P3, P4, P4a, P6 open |
-| `03_analysis/closure_model/PLAN.md` | unmodeled-regions P1b | the decompiler's closure / env-slot model | K1–K4 specified, none shipped |
+| `03_analysis/closure_model/PLAN.md` | unmodeled-regions P1b | the decompiler's closure / env-slot model | K1–K4 specified, none shipped as specified; C3 fixed upstream, K1's bit computed in the IR builder but not carried |
 
 Two edges cross stages and are the ones people trip on:
 

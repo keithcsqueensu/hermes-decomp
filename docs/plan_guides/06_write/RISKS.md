@@ -22,6 +22,8 @@ code and the docs disagree, the disagreement is called out — the code is descr
 actually behaves. File:line references are to the state of the tree when this was written
 (a working tree that has implemented the Q3/Q4 guard, Q5, Q6, Q8, Q9 and added the first
 independent tests for `functions.rs`/`inject.rs`); re-check them if the code has moved.
+Every in-repo `file:line` below was last re-derived against `81c4e2a` (2026-10-03); refs
+inside a "Previously:" / "original evidence" passage are deliberately left as they were.
 
 Scope: the read/decompile path is out of scope except where a write op depends on it
 (`decode_function_instructions`, `disassemble_function`).
@@ -108,15 +110,15 @@ missing VM into a failure rather than a skip (R21). `n/a` means the command prod
 
 | Command | Modern-aware | CI test | VM | Status | Notes |
 |---|---|---|---|---|---|
-| `add-string` | Yes | Yes (v98) | ✅ ran | ✅ | full modern branch (`strings.rs:544`) |
+| `add-string` | Yes | Yes (v98) | ✅ ran | ✅ | full modern branch (`strings.rs:541`) |
 | `patch-string` same-length | Layout-agnostic | Yes (v96) | ✅ ran | ✅ | in-place; `locate_string_bytes` via sections |
 | `patch-string` resize | Yes | Yes (v96 grow) | ✅ grow **+ shrink** | ✅ | modern debug-off=108 confirmed **[source]**; shrink was a listed gap, now measured |
 | `patch-string` ASCII→UTF-16 | Yes | Yes (v96) | ✅ ran (`élan`) | ✅ | I7 forced-resize path, measured on modern |
-| `patch-string --old` (replace) | Yes | Yes (v96) | ✅ ran | ✅ | by-value lookup tested (`strings.rs:860`) |
+| `patch-string --old` (replace) | Yes | Yes (v96) | ✅ ran | ✅ | by-value lookup tested (`strings.rs:857`) |
 | `retarget-string` | Layout-agnostic | Yes (v96) | ✅ ran | ✅ | small table + id hash only; refuses overflow |
 | `patch-operand` | Layout-agnostic | Yes (v96) | ✅ ran | ✅ | + Q9 property-name warning |
 | `asm` / `patch-function` | Yes | Yes (v96 + v98) | ✅ identity round-trip | ✅ | the Q3/Q4 gate in front of it is now correct on every supported layout |
-| `asm-check` (`run_roundtrip_check`) | Yes | No | ✅ `OK` on v99 | ⚪ | still no test (`write_cmd.rs:410`) |
+| `asm-check` (`run_roundtrip_check`) | Yes | No | ✅ `OK` on v99 | ⚪ | still no test (`write_cmd.rs:407`) |
 | `inject-stub` | Yes | Yes (v96 + v98 + v99) | ✅ ran | ✅ | was 🔴 on v99: shifted a body without relocating handlers, because the guard in front of it read the wrong byte. Fixed via `ModernLayout`; both guard directions now tested on real fixtures |
 | `create` | Yes | Yes (v96 + v98 + v99) | ✅ ran | ✅ | was 🔴 on v99: emitted a 37-byte large header, so the engine read `flags` from the wrong byte and refused to call the global. `create_minimal_runs_on_vm` now asserts the output executes |
 | `emit-hasm` | read-only | Yes (v96, v98 fixture) | n/a | ✅ | one emit→parse→assemble round-trip |
@@ -130,7 +132,9 @@ Note what this table still does not show. Every "CI test" here is against a thre
 fixture. The inputs that actually break things — overflowed string entries, UTF-16 storage,
 real exception tables, the long tail of opcodes — appear only in production bundles and are
 covered separately by `tests/corpus.rs`. A ✅ here means "the op works on a small image", not
-"the op works".
+"the op works". And "CI test: Yes" means a test *exists*, not that CI *runs* it: many of the
+unit tests behind this column read the untracked generated corpus and skip in CI — see Test
+matrix gaps.
 
 ### Open questions / decisions
 
@@ -164,6 +168,8 @@ harness gate.
   upstream checkouts provisioned by `scripts/fetch_pinned_hermes.py` and the pin strict. What is
   left is the two oracles a public runner cannot cheaply have: a per-version Hermes build
   (`vm_verify`) and the production bundle (`corpus`). Both are infrastructure, not code.
+  ⚠️ **Currently regressed:** `test.yml` is red on `main` and its strict pin step is skipped —
+  a one-line workflow fix; see R21.
 - **One relocation primitive, and an honest `apply_reloc`** → R26. Three hand-rolled copies of
   "splice a region, shift every offset past it", plus a stub that promises a fourth and cannot
   work. Small and self-contained, and a prerequisite for `string_packing/PLAN.md` P1, which
@@ -202,7 +208,8 @@ harness gate.
 - **CLI argument-resolution coverage** → R17, relocated to `../07_frontends/RISKS.md` § CLI
   output surface along with the stdout/stderr contract. Tracked there, not here.
 - **Remaining unit-test gaps** (identifier-resize hash refresh, HASM error paths + handler
-  round-trip) → Test matrix gaps.
+  round-trip, and 22 corpus-reading unit tests that still pass by doing nothing when the
+  corpus is absent) → Test matrix gaps.
 - **Hardening actions** (each lowers one risk's residual) → the register's `Hardening` column.
 
 ---
@@ -262,7 +269,7 @@ headers, exception tables, debug info) and `SwitchImm` jump tables are 4-aligned
 v99; note `SwitchImm` is spelled `UIntSwitchImm` from v99, which also adds a `StringSwitchImm`
 and a matching `numStringSwitchImms` file-header field — neither affects alignment). **Size
 deltas must be a multiple of 4.** `patch_function_body` (`functions.rs:18`) and
-`build_log_entry` (`inject.rs:90`) pad with 1-byte `AsyncBreakCheck`; string-region
+`build_log_entry` (`inject.rs:101`) pad with 1-byte `AsyncBreakCheck`; string-region
 rebuilds pad storage to `%4`. A new resize op that emits a non-4-aligned delta silently
 misaligns every downstream large header. **As of Q8, the pad paths hard-error** when
 padding is required but the version lacks `AsyncBreakCheck` (rather than silently
@@ -278,10 +285,10 @@ relocation models exist and must not be confused:
   - **Function-body growth** (`functions.rs`): only offsets `>= threshold`
     (`abs_off + old_size`, the end of the patched body) shift; the patched function's own
     offset is unchanged but its size field is rewritten (`resize_overflowed_function`,
-    `functions.rs:277`).
+    `functions.rs:321`).
 
 **I7 — String encoding is chosen by content, never carried from the old flag.**
-`needs_utf16 = value.bytes().any(|b| b > 0x7f)` (`strings.rs:366`, `:623`). Pure-ASCII →
+`needs_utf16 = value.bytes().any(|b| b > 0x7f)` (`strings.rs:360`, `:621`). Pure-ASCII →
 one byte per char, length in bytes; otherwise UTF-16LE, length in **code units**. Patching
 an ASCII entry to hold `é`/`€`/astral chars must flip it to UTF-16 (regression-tested).
 
@@ -289,9 +296,11 @@ an ASCII entry to hold `é`/`€`/astral chars must flip it to UTF-16 (regressio
 overflowed entry stores the overflow-table index in the offset field and `0xff` in the
 length field; the real 32-bit offset+length live in the 8-byte overflow-table slot. The
 `offset == 0x800000` check that appears in `locate_string_bytes`/`read_all_string_locs`
-(`strings.rs:44`, `:124`) is **dead** — the offset field is masked to 23 bits
+(`strings.rs:44`, `:123`) is **dead** — the offset field is masked to 23 bits
 (`0x7f_ffff`) and can never equal `0x800000`. `retarget_string` correctly checks only
-`len == 0xff` (`strings.rs:258`); a regression test guards this (`strings.rs:~1124`). New
+`len == 0xff` (`strings.rs:257`); a regression test guards this
+(`retarget_string_overflow_entry_refused`, `strings.rs:1149` — corpus-dependent, so it is a
+silent no-op wherever the corpus is not built; see Test matrix gaps). New
 overflow logic must key on `len == 0xff`, and encode overflow when `off >= 0x80_0000 ||
 len_field >= 0xff`.
 **[source] Confirmed upstream at v99**, which settles it beyond inference:
@@ -303,20 +312,20 @@ is never a read-side sentinel anywhere in Hermes. F1's finding #3 was exactly ri
 
 **I9 — Identifier hashes track identifier text and must be refreshed on any text change.**
 Jenkins one-at-a-time over UTF-16 code units, seed 0 (`hermes_identifier_hash`,
-`strings.rs:162`; verified against hermesc). `update_identifier_hash` (`strings.rs:188`)
+`strings.rs:161`; verified against hermesc). `update_identifier_hash` (`strings.rs:187`)
 covers same-length patch, resize, and retarget; `add_string` appends a fresh hash.
 Identifier index = count of identifiers with lower string id (`identifier_index`,
-`strings.rs:174`). A new op that alters an identifier's value without refreshing its hash
+`strings.rs:173`). A new op that alters an identifier's value without refreshing its hash
 breaks every property lookup that hashes to it.
 
 **I10 — String ids are append-only and stable.** `add_string` gives the new entry
-`id = old string_count` and never renumbers (`strings.rs:544`); every instruction operand
+`id = old string_count` and never renumbers (`strings.rs:541`); every instruction operand
 that references an existing id stays valid. Any op that reorders or removes string entries
 violates the assumption the entire instruction stream depends on.
 
 **I11 — A string id written into an operand must fit that operand's width.**
 `patch_string_operand` rejects ids exceeding `UInt8S`/`UInt16S`/`UInt32S` capacity
-(`operands.rs:175`) and read-back-verifies the write (`operands.rs:199`). `build_log_entry`
+(`operands.rs:174`) and read-back-verifies the write (`operands.rs:202`). `build_log_entry`
 guards `print_id`/`msg_id <= u16::MAX` for short `LoadConstString`. A new op that stuffs a
 large id into a short operand needs the same guard, or the "Long" opcode variant.
 
@@ -328,8 +337,8 @@ kind anywhere but the end would need to split runs. (Interleaved runs are legal 
 format — hermesc itself emits them; see Q7.)
 
 **I13 — Encode requires exact operand arity.** `encode_instruction` errors if
-`operands.len() != def.operand_types.len()` (`encode.rs:12`). It **tolerates** an operand
-*type* mismatch (`encode.rs:24` is a no-op branch); layout is always driven by the
+`operands.len() != def.operand_types.len()` (`encode.rs:13`). It **tolerates** an operand
+*type* mismatch (`encode.rs:25` is a no-op branch); layout is always driven by the
 definition's `expected_ty`, and `write_operand` range-checks every narrowing — see Q6.
 
 ---
@@ -377,13 +386,13 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   it is R26's, not this document's — including whether the placeholder should exist at all.
   → **`relocation/PLAN.md`** owns the offset surface, the duplication and the plan.
 - **`retarget_string` refuses overflow entries** (v1 scope) and allows — but the CLI warns
-  on — a string↔identifier cross-kind retarget (`strings.rs:258`; note moved to the CLI
+  on — a string↔identifier cross-kind retarget (`strings.rs:257`; note moved to the CLI
   layer, see Q5).
 - **`create` cannot emit overflow string entries.** A string with `len >= 0xff` or
-  `offset >= 0x800000` is rejected (`serialize.rs:107`, `:246`). `create` is for minimal
+  `offset >= 0x800000` is rejected (`serialize.rs:153`, `:292`). `create` is for minimal
   images, not arbitrary tables.
 - **`inject-stub log` preconditions:** requires a `"print"` string already in the table,
-  refuses overflowed **legacy** functions (`inject.rs:134`), and needs the version to
+  refuses overflowed **legacy** functions (`inject.rs:143`), and needs the version to
   expose `GetGlobalObject`/`TryGetById`/`LoadConstUndefined`/`LoadConstString`/`Call2`.
 - ~~**Modern output cannot be verified from Rust.**~~ **REPEALED, and replaced by a working
   harness** (`tests/vm_verify.rs`, `scripts/build_hermes_vm.ps1`). The premise
@@ -392,16 +401,21 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   `hvm.exe` is a standalone command-line VM driver that takes a `.hbc` path; a
   `std::process::Command` reaches it and the crate stays pure Rust. See
   `reference/VERSION_LAYOUTS.md` (Reference VMs and toolchain). Two knock-on corrections:
-  - **USAGE.md § "Why modern output cannot be verified inside the Rust tool"** (docs/USAGE.md:150)
-    is now wrong on its central claim and on "macOS only". Rewrite it.
+  - ~~**USAGE.md § "Why modern output cannot be verified inside the Rust tool"** is now wrong
+    on its central claim and on "macOS only". Rewrite it.~~ Done: that section is gone, replaced
+    by § "Verifying patched output on a real Hermes VM" (`docs/USAGE.md:172`), built around `hvm`.
   - ~~**The `warn_modern_write` note points at a script that does not exist.**~~ Fixed: it
     now names `scripts/build_hermes_vm.ps1` and `tests/vm_verify.rs`, and both exist. It also
     now states the real constraint — only v98 and v99 modern layouts are known, anything else
-    is refused. (R20.)
+    is refused. (R20.) The once-dead name, `scripts/build/build_hermes_v98_toolchain.sh`, has
+    since been *added* by the upstream v0.2.4 merge — a macOS-only helper that pulls a v98
+    `hermesc` + VM framework from Maven — so it is no longer dead, but it is not the
+    cross-platform route either; the note is right to name the `.ps1`.
 - **`create` produces a single global function** with hardcoded shape (legacy: flags
-  `0x12`, frame 2, param 1 — `serialize.rs:179`; modern: `ProhibitNone` overflowed global
-  — `serialize.rs:313`). It is a smoke-test artifact, not a general emitter. **At v99 it is
-  also not executable** — see `reference/VERSION_LAYOUTS.md` § The v99 delta.
+  `0x12`, frame 2, param 1 — `serialize.rs:225`; modern: `ProhibitNone` overflowed global
+  — `serialize.rs:364`). It is a smoke-test artifact, not a general emitter. ~~**At v99 it is
+  also not executable**~~ — it was (see `reference/VERSION_LAYOUTS.md` § The v99 delta); fixed
+  with R15, and `create_minimal_runs_on_vm` now runs its output on every fixture version.
   ⚠️ That legacy `0x12` includes `FLAG_HAS_DEBUG_INFO` on an image that carries **no debug
   section at all** (`debug_info_offset == 0`), while the modern path emits `0x22` and does not
   claim it. Found by R24's guard, which had to be keyed on the section as well as the flag to
@@ -486,7 +500,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R# | Hazard | § | Inherent | Residual | Mitigation (in tree) | Hardening (todo + open decision) |
 |---|---|---|---|---|---|---|
 | R1 | Chaining a 2nd op on stale `file.sections` (I2) | string/fn | M×H | ⬜ **fixed** | `commit_image` re-derives the whole model (including `sections`) from the finalized bytes, so a second op cannot see a stale layout. Pinned by `chained_size_changing_ops_need_no_reparse`, which runs three chained size-changing ops with no re-parse and requires the output to execute on a real VM | — (fixed). **Decision taken** (was: refresh vs dirty-guard): refresh. The guard would have removed the footgun; the refresh removes the *class*, and costs one parse per op (~40ms on a 5MB bundle) that I2 already told callers to pay. |
-| R2 | Overflow entry encode/decode (I8) | string | M×H | 🟩 | create/retarget refuse overflow; **now exercised against 1,449 real overflowed entries** by `tests/corpus.rs`, which re-implements the `len == 0xff` sentinel independently and requires it to agree with the header count | One `is_overflow_entry`/`encode_overflow_entry` keyed on `len == 0xff`, used by every string path; delete the dead `off == 0x800000` branches (`strings.rs:44`, `:124`). Downgraded from 🟧 because the *detection* rule is now verified against production data; **encoding** an overflow entry is still unbuilt and untested (`create` refuses it). |
+| R2 | Overflow entry encode/decode (I8) | string | M×H | 🟩 | create/retarget refuse overflow; **now exercised against 1,449 real overflowed entries** by `tests/corpus.rs`, which re-implements the `len == 0xff` sentinel independently and requires it to agree with the header count | One `is_overflow_entry`/`encode_overflow_entry` keyed on `len == 0xff`, used by every string path; delete the dead `off == 0x800000` branches (`strings.rs:44`, `:123`). Downgraded from 🟧 because the *detection* rule is now verified against production data; **encoding** an overflow entry is still unbuilt and untested (`create` refuses it). |
 | R3 | Legacy `debug_info_offset` position mis-gated | string/create | L×H | 🟧 | `legacy_debug_info_offset_pos` centralizes it | Round-trip assert after create/resize: reparse and check `debug_info_offset` + gated section sizes match intent (shared with R14). |
 | R4 | `string_kinds` / id-hash desync (I9/I12) | string | L×H | 🟩 | append-only path handled; Q7; model can no longer drift from the bytes (R5) | Assert identifier hashes against `hbcdump`'s printed values (`i3[…] #CE5FC8AC: risky`) rather than against our own Jenkins implementation — the corpus harness has the plumbing for it. |
 | R5 | Structured model ↔ bytes drift (I1) | all | M×M | ⬜ **fixed** | `commit_image` re-derives the model by reparsing, so the two cannot disagree. The debug assertion that preceded it found *every* op partly stale on its first run — see `reference/HARNESSES_AND_HISTORY.md` § Git history findings F8 | — (fixed). The remaining hand-sync code inside the ops is now redundant rather than load-bearing; harmless, but do not add more. |
@@ -502,7 +516,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R15 | Modern large-header field order in `create` | create | L×H | ⬜ **fixed** | `build_minimal_modern` writes fields at `ModernLayout` offsets and sets `PROHIBIT_NONE` at `large_flags_pos()`. `create_minimal_runs_on_vm` asserts the output **executes** on the matching engine for every fixture version | — (fixed with R8) |
 | R16 | `create` writes a zero `source_hash` | create | L×L | 🟩 | fine for minimal images | **Decision:** compute the real `source_hash` vs keep zero and document created files as "unsigned at source". Minor; only once `create` backs a real emitter. |
 | R19 | Bundled `Bytecode*.json` and the header-struct code are pinned to **different** Hermes commits, and neither pin is checked | all | M×H | ⬜ **fixed** | Three layers now. (1) `tests/upstream_pin.rs` re-derives both from a checkout and fails when either disagrees — it found the v99 drift, then v97's two tables. (2) `GitCommitHash` is parsed into `BytecodeFormat` and `tables_record_the_commit_they_came_from` requires the configured checkout to *be* that commit, so “wrong checkout” and “upstream moved” are now different failures with different messages. (3) `scripts/gen_bytecode_table.py` re-derives a table from a checkout | The presence and shape of `GitCommitHash` is asserted with **no env var set**, so an unconfigured run is no longer entirely silent. The content comparison is still gated on a checkout — that residue is R21, not R19. |
-| R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` (v96/v98/v99) and asserts stdout + exit code; `tests/corpus.rs` sweeps a production bundle; `tests/upstream_pin.rs` re-derives the format from upstream. Verified to fail on every defect they were written for. **The gate is now closeable, and partly closed**: `HBC_REQUIRE_ORACLES` (`tests/common/mod.rs`) promotes any absent oracle from a printed `[skip]` to a failure naming the variable to set, and a set-but-wrong path is an error in every mode; `.github/workflows/test.yml` runs the suite at all (CI previously only built binaries) and re-runs `upstream_pin` with all four checkouts provisioned by `scripts/fetch_pinned_hermes.py` under `HBC_REQUIRE_ORACLES=src` | Residual 🟧 for what is still opt-in — `vm_verify` and `corpus`. Their oracles are a per-version Hermes build and a third-party bundle, so neither fits cheaply on a public runner, and a green CI run still does not mean "the output executed on a real engine". The standing work is a runner that has the builds — self-hosted, or a cached per-version build job — setting `HBC_REQUIRE_ORACLES=vm`. Note what the CI job does *not* buy: the pins are fixed commits, so it catches our encoded format drifting from the commit it claims, not upstream moving. |
+| R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` (v96/v98/v99) and asserts stdout + exit code; `tests/corpus.rs` sweeps a production bundle; `tests/upstream_pin.rs` re-derives the format from upstream. Verified to fail on every defect they were written for. **The gate is now closeable, and partly closed**: `HBC_REQUIRE_ORACLES` (`tests/common/mod.rs`) promotes any absent oracle from a printed `[skip]` to a failure naming the variable to set, and a set-but-wrong path is an error in every mode; `.github/workflows/test.yml` runs the suite at all (CI previously only built binaries) and re-runs `upstream_pin` with all four checkouts provisioned by `scripts/fetch_pinned_hermes.py` under `HBC_REQUIRE_ORACLES=src`. Since the upstream v0.2.4 merge, `build.yml` also lints (`cargo fmt --check`, `cargo clippy -D warnings`) and runs `cargo test --workspace --release` on four platforms with `HBC_CORPUS_OPTIONAL=1`; locally, `scripts/build/gates.sh` adds a release build, the `roundtrip.sh` corpus and the parse check. ⚠️ **`test.yml` is nonetheless red on `main`:** its no-oracle step does not set `HBC_CORPUS_OPTIONAL`, so the 13 unit tests gated by `corpus_fixture_present` (`write/mod.rs`) panic on the untracked corpus (CI run 37163482195: 491 passed, 13 failed), and the strict `upstream_pin` step after it is skipped — the format pin is **not currently enforced** by CI | **First, the regression:** set `HBC_CORPUS_OPTIONAL=1` on `test.yml`'s first step (or build the corpus there), then confirm the strict pin step is green — the last time it ran (2026-09-16, the v0.2.3 merge) it failed in `debug_info_shapes_match_upstream`, and whether that still holds is unchecked. Then: residual 🟧 for what is still opt-in — `vm_verify` and `corpus`. Their oracles are a per-version Hermes build and a third-party bundle, so neither fits cheaply on a public runner, and a green CI run still does not mean "the output executed on a real engine". The standing work is a runner that has the builds — self-hosted, or a cached per-version build job — setting `HBC_REQUIRE_ORACLES=vm`. Note what the CI job does *not* buy: the pins are fixed commits, so it catches our encoded format drifting from the commit it claims, not upstream moving. |
 | R23 | An op's output is only ever checked against our own model | all | M×H | 🟩 | Three independent oracles now exist: a real VM (does it run), upstream headers and `BytecodeList.def` (does our format model match theirs), and `hbcdump` (does a second implementation read the same instructions) | Keep reaching for an external oracle when adding a check. The three findings this pass — stale model, opcode drift, debug stack overflow — were each invisible to a test written against our own assumptions, and each fell out immediately once something else was asked. |
 | R24 | A size-changing edit silently invalidates a function's debug info | fn/inject | M×M | ⬜ **fixed** | **Neither silent nor invalid any more: an insertion is relocated, a wholesale replacement is refused.** `inject-stub` shifts the affected addresses (`write/patch/debug_reloc.rs`, P2) — one SLEB128 delta, because every later entry is relative to it — and re-points the debug region when that changes length. `asm`/`patch-function` still refuse, because a replaced body has no old-address-to-new-address mapping to follow; that is a capability gap, not a correctness one. Previously: **guarded** (P0 of `../01_read/unmodeled_regions/PLAN.md`, `tests/debug_info_guard.rs`): `patch_function_body` refuses a size-changing edit to a function with `FLAG_HAS_DEBUG_INFO` when the file actually has a debug section, with `--allow-stale-debug-info` / `PatchOptions::allow_stale_debug_info` as the explicit opt-out. Keyed on the section as well as the flag because `create` sets the flag on an image with no debug info at all. Refusing by default is free on real targets: **0 of the Equinox bundle's 62,909 functions carry the flag** [measured]. Previously: nothing. Location streams store bytecode addresses *within* a function as SLEB128 deltas; a resize shifts `debug_info_offset` (the section) and rewrites nothing inside it, so every location past the edit point maps to the wrong instruction. No error, no warning | — (fixed). Two residuals worth naming rather than hiding: a wholesale body replacement still cannot keep its line table, by nature rather than by omission; and both the guard and the relocation key on `FLAG_HAS_DEBUG_INFO`, so a file whose functions carry debug info the flag does not admit to would slip past — unmeasured, and unlikely, since the flag is what upstream's own serializer writes the region from |
 | R25 | The debug-info reader is hardcoded to the v96 header shape | all | M×M | ⬜ **fixed** | `DebugLayout::for_version` keys the header size (28 B at v96, 16 at v98+), whether the lexical sub-regions exist, and which of the two location-stream encodings applies; unmodelled versions yield no debug info rather than a mis-ruled read. `debug_info_shapes_match_upstream` derives all four quantities from each checkout and fails if any drifts — verified by breaking each in turn. Previously: `DebugInfo::parse` takes no version (`debug.rs:88`) and `parse_header` reads seven `u32`s unconditionally (`debug.rs:148`), but `DebugInfoHeader` is **28 B at v96, 20 B at v97, 16 B at v98/v99** — upstream deleted the scope-descriptor, textified-callee and string-table offsets. On a modern file it reads 12 bytes too many and computes `data_start` from the wrong base | — (fixed). The old claim that this was "never exercised because every fixture lacks debug info" was backwards: every fixture *has* debug info, so the wrong-sized read ran on every parse and was merely unasserted. Confirmed before the fix by compiling one source at three versions: 5 scope descriptors and an 8-entry debug string table at v96, zeros at v98/v99 |
@@ -537,7 +551,8 @@ L
 Reading it: **nothing sits at high/high, and the 🟥 column is empty.** R21 came down when the
 gate became closeable — CI runs the suite and enforces the format pins, and any oracle can be
 declared mandatory — but it stays 🟧 at medium/high for the half a public runner cannot have:
-no VM runs in CI, so a green run still does not mean "the output executed". The debug-info
+no VM runs in CI, so a green run still does not mean "the output executed". (As of `81c4e2a`
+the pin enforcement is itself broken by a workflow regression — see R21's row.) The debug-info
 cluster closed over three phases: R24 (guard, then relocation for insertions), R25 (the reader
 keyed to the version) and R28 (names resolved as offsets where the code read indices, found on
 the way). What is left there is a capability gap — a replaced body cannot keep its line
@@ -574,7 +589,7 @@ testing nothing.
   `tests/corpus.rs`; *encoding* one is still unimplemented.
 - **R3 · Header field positions.** String counts sit at fixed offsets `[44..64]` shared across
   layouts, but `debug_info_offset` differs: **modern fixed at byte 108**, **legacy computed
-  by `legacy_debug_info_offset_pos`** (`strings.rs:294`), which itself depends on
+  by `legacy_debug_info_offset_pos`** (`strings.rs:292`), which itself depends on
   version-gated fields (bigint present? function_source present?). A wrong legacy position
   writes garbage into a random header field with no immediate error.
 - **R4 · `string_kinds` runs (I12)** and **identifier ordering/hash (I9).** Inserting rather
@@ -589,14 +604,15 @@ testing nothing.
 ### New function ops
 - **R7 · Alignment (I5).** Any body whose new length isn't `%4`-aligned relative to the old must
   be padded; the existing pad trick inserts `AsyncBreakCheck` *before the terminator*
-  (`functions.rs:54`) so the function still ends on a terminator. When padding is required
+  (`functions.rs:88`) so the function still ends on a terminator. When padding is required
   but the version has no `AsyncBreakCheck`, it now **hard-errors** (Q8) instead of shipping
   a misaligned delta — residual risk retired (⬜).
 - **R8 · Overflowed functions.** Must relocate the small-header pointer **and** the large
-  header's internal fields (`resize_overflowed_function`, `functions.rs:277`). Legacy large
-  header: body offset, size, info fields rewritten in the `slot..slot+16` copy
-  (`functions.rs:219`); modern reads the packed pointer via `read_modern_large_pointer`
-  (`functions.rs:287`). These magic offsets are v98-shaped; a version whose large header
+  header's internal fields (`resize_overflowed_function`, `functions.rs:321`). The packed
+  pointer is read and shifted in the small-header slot (`slot..slot+16` legacy,
+  `slot..slot+12` modern via `read_modern_large_pointer`, `functions.rs:336`–`:344`); the large
+  header's body offset, size (legacy `+8`) and legacy info offset (`+16`) are then rewritten
+  in place (`functions.rs:357`–`:376`). These magic offsets are v98-shaped; a version whose large header
   differs will be silently mis-patched. **This happened** — v99's large header is 36 bytes,
   not 37. The packed-pointer read and the 8×`u32` prefix survived; the trailing `u8` block and
   the derived `info_offset` did not. **Fixed:** these are no longer magic offsets; they come
@@ -634,12 +650,13 @@ testing nothing.
 
 ### Stub / inject work
 - **R11 · Register/cache reservation must persist and be enough.** `log_frame_size` bumps frame
-  by `max(4)+8` and reserves one read-cache slot (`inject.rs:19`, `:36`). Legacy edits the
+  by `max(4)+8` and reserves one read-cache slot (`inject.rs:23`, `:37`). Legacy edits the
   struct then relies on the resize path rewriting the full header; modern edits raw header
-  bytes *before* the splice via `reserve_modern_log_regs` (`inject.rs:28`) at magic offsets
-  (small: frame byte `+8`, cache byte `+9`, `inject.rs:61`; large: frame `+28`, cache `+32`,
-  `inject.rs:56`). A stub needing more registers must widen this, and the magic offsets are
-  version-fragile.
+  bytes *before* the splice via `reserve_modern_log_regs` (`inject.rs:32`) — small header:
+  frame byte `+8`, cache byte `+9` (`inject.rs:72`, still literals); large header: frame at
+  `MODERN_LARGE_FRAME_SIZE` (`+28`) and cache at `layout.large_read_cache_size_pos()` (`+32`),
+  `inject.rs:66`, both taken from `ModernLayout` since R11 was fixed. A stub needing more
+  registers must widen this.
 - **R12 · Hardcoded opcode operand shapes.** `build_log_entry` bakes in `TryGetById reg,reg,u8
   cache,u16 string` and `Call2 reg,reg,reg,reg`. Opcode *availability* is checked; operand
   *layout* is assumed constant across versions.
@@ -647,7 +664,7 @@ testing nothing.
   prologue into an existing body — hence the Q3/Q4 guard covers `inject-stub` too (it funnels
   through `patch_function_body`).
 - **R13 · `NopPad` insertion point.** Inserts `AsyncBreakCheck` before the last `Ret`, or at the
-  end if there is none (`inject.rs:232`). "At the end" is only safe if the function already
+  end if there is none (`inject.rs:260`). "At the end" is only safe if the function already
   ended on a terminator; a function ending in a fallthrough would gain a reachable no-op
   (usually fine) but the assumption should be stated.
 - **R7 · `AsyncBreakCheck` no longer silently skipped (Q8).** If the version lacks it and padding
@@ -671,7 +688,7 @@ testing nothing.
   piece of luck in this whole finding.
 - **No overflow support (design limit above).** A create variant taking large tables must
   add overflow encoding first.
-- **R16 · `create` now emits `warn_modern_write`** (`write_cmd.rs:403`) and still sets a zero
+- **R16 · `create` now emits `warn_modern_write`** (`write_cmd.rs:400`) and still sets a zero
   `source_hash` — fine for minimal images, but a variant meant for real use should reconsider
   the latter.
 
@@ -693,10 +710,28 @@ stderr — no) stays an Open question here, since it is a decision about the lib
 
 Per command, cases that are **absent** from the current tests (derived from the `#[cfg(test)]`
 modules). Everything listed below is unit-level; the integration harnesses that sit
-alongside it are described under `reference/HARNESSES_AND_HISTORY.md` § Test harnesses. An earlier pass
-added CI tests to `functions.rs` (8), `inject.rs` (5), `operands.rs` (7), `strings.rs` (25)
-that build a real image with `create_minimal` (rather than skipping on a missing fixture) —
-several formerly-missing cases are now **covered** and marked so below.
+alongside it are described under `reference/HARNESSES_AND_HISTORY.md` § Test harnesses. The
+unit-test totals are `functions.rs` 8, `inject.rs` 5, `operands.rs` 7, `strings.rs` 25 (plus
+`hasm/parse.rs` 7, new from upstream) — several formerly-missing cases are now **covered** and
+marked so below. But not all of them run everywhere; what decides it is the input:
+
+> ⚠️ **Which unit tests actually run (re-derived at `81c4e2a`).** Three kinds:
+> - **Self-contained** — build their image with `create_minimal` (the `--old` replace tests,
+>   the Q9 warn tests, the alignment/Q8/handler-guard tests, the `LogEntry` tests). Run in CI.
+> - **Corpus, gated by `corpus_fixture_present`** (`write/mod.rs`, from upstream v0.2.4) — 13
+>   tests across `serialize`, `encode`, `footer`, `emit`, `strings`, `functions`, `inject` that
+>   read the generated corpus under `examples/react-native/` (rebuilt by
+>   `scripts/build/fetch_hermesc.sh` + `build_corpus.sh`, untracked). Missing corpus **fails**
+>   unless `HBC_CORPUS_OPTIONAL` is set, which `build.yml` does and `test.yml` does not (R21).
+> - **Corpus, still gated by a bare `Path::exists()`** — **22 tests that silently pass when the
+>   corpus is absent**, i.e. in CI and on every fresh clone: all 7 `retarget_string_*` and all 9
+>   `add_string_*` tests in `strings.rs`, 5 of the 7 in `operands.rs` (every one but the Q9
+>   pair), and `functions.rs::debug_info_offset_shifts_on_grow`. Upstream's change converted
+>   only the tests it knew about. These include the `len == 0xff` overflow-refusal guard (I8)
+>   and the only modern `add_string` unit test. The fix is mechanical — route them through
+>   `corpus_fixture_present`. `vm_verify.rs` does run `add_string` / `retarget_string` on the
+>   tracked `tests/fixtures/*.hbc` in CI, but with no VM it asserts only that the op does not
+>   error — none of the specific properties those unit tests check.
 
 > ⚠️ **The gap this list did not have a row for — now largely closed.** Every test in
 > the `#[cfg(test)]` modules asserts that output *reparses*. Not one asserts that it
@@ -740,7 +775,8 @@ several formerly-missing cases are now **covered** and marked so below.
 - **`footer`** (`footer.rs`): fixture match + rehash-identity. Still missing: `rehash_footer`
   on a `< 20`-byte buffer; `verify_footer` on a truncated/short image.
 - **`functions`** (`functions.rs`): **now covered** — grow, shrink, alignment-pad, modern-v98
-  overflowed resize, `debug_info_offset` shift (fixture-gated), the handler-size-change
+  overflowed resize, `debug_info_offset` shift (corpus-dependent, and a silent skip without
+  it — above), the handler-size-change
   rejection guard, and the Q8 missing-`AsyncBreakCheck` hard error. Still missing: a function
   **with a real exception-handler table** exercised through actual bytecode — **this is the
   test whose absence hid R9**, because the guard test sets the flag synthetically and so
@@ -760,7 +796,8 @@ several formerly-missing cases are now **covered** and marked so below.
   (e.g. `CreateRegExp`); the **width-overflow rejection** (id larger than operand width);
   `UInt16S`/`UInt32S` operands; **modern v98**.
 - **`strings`** (`strings.rs`): broad — same-length, grow-resize, packed→resize, ascii→utf16,
-  retarget (6 cases), add_string (10 cases incl. modern v98), and **now `patch_string_replace`
+  retarget (7 cases), add_string (9 cases incl. modern v98) — all 16 of those a silent skip
+  without the corpus, see above — and **now `patch_string_replace`
   (`--old`)**: same-length, grow, and not-found error. Still missing as *tests*: **shrink**
   resize; **resize of an identifier** (hash refresh under the resize path, as opposed to
   same-length/retarget); **patch/resize on modern** (only `add_string` is modern-tested); a
@@ -770,12 +807,16 @@ several formerly-missing cases are now **covered** and marked so below.
   into tests, not investigating. The identifier-hash gap is the one with no evidence either
   way, and `hbcdump` prints identifier hashes directly (`i3[…] #CE5FC8AC: risky`), so it can be
   asserted against the engine's own value rather than against our reimplementation of Jenkins.
-- **`hasm` emit/parse** (`emit.rs`, `parse.rs`): one v96 emit→parse→assemble round-trip.
+- **`hasm` emit/parse** (`emit.rs`, `parse.rs`): one v96 emit→parse→assemble round-trip
+  (corpus-gated). **Now covered:** offset-prefix stripping — seven `parse.rs` tests from
+  upstream (`b26ea89`, `8e985fe`), written for the bug where a leading run of hex letters was
+  eaten as an offset (`CreateEnvironment` → `reateEnvironment`, 83 of 290 mnemonics), checked
+  both at the helper and through `parse_hasm_function` on files with and without offsets.
   Still missing: **modern v98** round-trip; **all parser error paths** (unknown mnemonic,
   wrong operand count, string-not-in-table, unknown label, `Addr8`-out-of-range);
-  comment/offset-prefix stripping; multi-function `parse_hasm`; and **exception-handler
+  comment stripping; multi-function `parse_hasm`; and **exception-handler
   preservation** (`HasmFunction.exception_handlers` is never populated — see Q4).
-- **`asm-check` / `run_roundtrip_check`** (`write_cmd.rs:410`): no test.
+- **`asm-check` / `run_roundtrip_check`** (`write_cmd.rs:407`): no test.
 - **CLI handlers** (`write_cmd.rs`): argument-resolution coverage (`--at` vs
   `--function`+`--insn-offset` precedence, `--string` vs `--string-id`, `--from`/`--to`
   value→id lookup) and the stdout/stderr contract are tracked as **R17** in
@@ -791,15 +832,15 @@ Decisions a future impl agent must not guess at.
   `50cdbf8`'s commit message (finding F6) and the code + `create_minimal_v98_parses`. The
   docs are now brought into line in this pass: `USAGE.md` says create emits "legacy layout
   for v96 and lower and modern layout for v97 and newer"; the `warn_modern_write` note text
-  says the same (`write_cmd.rs:25`) and is now emitted by `create` too (`write_cmd.rs:403`);
+  says the same (`write_cmd.rs:19`) and is now emitted by `create` too (`write_cmd.rs:400`);
   the stale `build_minimal_legacy` guard message now reads "v97 and newer use modern layout
-  (build_minimal_modern)" (`serialize.rs:94`). Nothing left to decide.
+  (build_minimal_modern)" (`serialize.rs:142`). Nothing left to decide.
 - **Q2 — ✅ Modern small-header body-offset field: 24 or 25 bits? RESOLVED — no-op.** The
   24-bit and 25-bit masks cover *different* fields, and both are correct:
   `read_modern_large_pointer` reads the **overflowed** packed large-header pointer, whose
   offset portion is 24 bits (`function_name << 24 | offset & 0x00ff_ffff`, per parser);
   `shift_modern_small_header_offset` (`header_write.rs:113`) and `resize_modern_small`
-  (`functions.rs:246`) shift the **non-overflowed** body-offset field, which is 25 bits (per
+  (`functions.rs:290`) shift the **non-overflowed** body-offset field, which is 25 bits (per
   parser Modern12 bitfield map `offset : (0, 25)`). No non-overflowed read uses 24 bits, so
   there is no single-field inconsistency to align. The `header_write.rs` comment was corrected
   in an earlier pass to say so explicitly.
@@ -812,7 +853,7 @@ Decisions a future impl agent must not guess at.
 - **Q3 — 🟡 Exception-handler tables on size-changing edits: interim guard shipped; 🔵 full
   relocation planned.** Contract chosen: handler `start`/`end`/`target` are **body-relative**
   (0-based, `end` exclusive; confirmed — `decode_function_instructions` emits 0-based offsets
-  and the CFG compares handler offsets directly against them, `jump_analysis.rs:134`). They are
+  and the CFG compares handler offsets directly against them, `jump_analysis.rs:152`). They are
   safe under a pure *string-region* growth (the whole tail shifts uniformly, offsets stay
   relative) but **not** under a body-internal size change (`patch-function`/`asm`/`inject`).
   Interim resolution: `patch_function_body` (`functions.rs:43`) **rejects any size-changing
@@ -859,13 +900,13 @@ Decisions a future impl agent must not guess at.
   braces one: if the guard is ever lifted, the patched program must still take its catch path.
 - **Q5 — ✅ Should library patch functions write to stderr at all? RESOLVED — no.** All three
   library `eprintln!`s were removed. `patch_string_operand` now *returns* `(bytes, status,
-  warning)`, which `run_patch_operand` prints (`operands.rs`, `write_cmd.rs:200`/`:202`). The
+  warning)`, which `run_patch_operand` prints (`operands.rs`, `write_cmd.rs:201`/`:203`). The
   `retarget_string` cross-kind warning and the `add_string` duplicate note are recomputed and
   printed by their CLI handlers (`run_retarget_string`, `run_add_string`). CLI output is
   byte-identical to before; programmatic callers get no unsolicited stderr. Status ownership
   now lives entirely in the CLI layer.
 - **Q6 — ✅ `encode_instruction` operand-type tolerance: RESOLVED — no-op branch; safe.** The
-  `if op.ty != *expected_ty { … }` block at `encode.rs:24` is **empty**. Encoding is always
+  `if op.ty != *expected_ty { … }` block at `encode.rs:25` is **empty**. Encoding is always
   driven by the definition's `expected_ty`, so the decoded instruction's own `op.ty` tag is
   intentionally ignored. The only "tolerance" with effect is in `write_operand`, which accepts
   several `OperandValue` variants for a given width **but range-checks every narrowing** and
@@ -877,7 +918,7 @@ Decisions a future impl agent must not guess at.
   `string-kinds` table has **four interleaved runs** — `Identifier×255, String×15013,
   Identifier×50267, String×33382` — i.e. hermesc emits `String → Identifier` transitions and
   multiple non-contiguous identifier regions, and the VM loads them. The identifier hash table
-  is indexed by *running identifier count* (`identifier_index`, `strings.rs:174`; I9/I12),
+  is indexed by *running identifier count* (`identifier_index`, `strings.rs:173`; I9/I12),
   which is arrangement-independent. `add_string`'s trailing Identifier run is exactly the shape
   hermesc already ships. Residual: inference from production layout, not a direct VM run of
   `add_string`'s specific output — but the resulting layout is structurally identical to
@@ -888,20 +929,20 @@ Decisions a future impl agent must not guess at.
   (`BytecodeList.def:687`), so the top of that range is confirmed against the engine and not
   just against our own bundled tables. Every version the write path realistically
   targets (≥76; Equinox is v96) has it, so the padding path is normally taken. **IMPLEMENTED:**
-  the silent skip in `patch_function_body` (`functions.rs:54`) and `build_log_entry`
-  (`inject.rs:90`) is now a hard `Error::Write` **only on the path where padding is actually
+  the silent skip in `patch_function_body` (`functions.rs:92`) and `build_log_entry`
+  (`inject.rs:208`) is now a hard `Error::Write` **only on the path where padding is actually
   required** (size delta not `%4`, or injected prologue not `%4`, and no `AsyncBreakCheck`
   available). The no-pad-needed path is unchanged. Covered by
   `missing_asyncbreakcheck_pad_is_hard_error` (v56).
 - **Q9 — ✅ `patch-operand` semantic (kind) validation: RESOLVED — warn only.**
-  `patch_string_operand` (`operands.rs:234`) returns an optional warning (printed by
+  `patch_string_operand` (`operands.rs:242`) returns an optional warning (printed by
   `run_patch_operand`; the library stays silent, per Q5) when a `*ById`-family opcode's
   property-name operand is repointed at a **non-identifier** string. **Warning, never error** —
   the edit still applies. Detection: `def.name.contains("ById") && !new_is_identifier`. This
   substring test is exact and version-independent: across **every bundled opcode table
   (v40–99)**, every opcode whose name contains `ById` has exactly one string operand — the
   property name — and nothing else matches. Full family (scanned from
-  `resources/bytecode/Bytecode*.json`): `GetById`/`GetByIdShort`/`GetByIdLong`/
+  `crates/hbc-decomp/resources/bytecode/Bytecode*.json`): `GetById`/`GetByIdShort`/`GetByIdLong`/
   `GetByIdWithReceiverLong` (v98–99); `TryGetById`/`TryGetByIdLong`; `PutById`/`PutByIdLong`
   (v40–96) and the `PutByIdLoose*`/`PutByIdStrict*` split (v97–99); `TryPutById*` (same split
   at v97); `PutNewOwnById*`/`PutNewOwnNEById*` (v45–97) and `PutOwnById*` (v40–44);
@@ -985,36 +1026,36 @@ guard). Ships in two phases because the two op families differ fundamentally in 
 information is available.
 
 **Handler-table layout (derived from the parser — do not re-guess).**
-- Presence is gated by `flags & FLAG_HAS_EXCEPTION_HANDLER` (bit 3, `format.rs:16`; the
-  parser's own gate, `parsing.rs:362`). Detection must key on this bit, NOT `info_offset
+- Presence is gated by `flags & FLAG_HAS_EXCEPTION_HANDLER` (bit 3, `format.rs:33`; the
+  parser's own gate, `parsing.rs:621`). Detection must key on this bit, NOT `info_offset
   != 0` (that over-rejects debug-only legacy functions and every overflowed modern one — Q4).
-- **Location** is `aligned = (info_offset + 3) & !3` (`parsing.rs:371`).
-  - *Legacy:* `info_offset` is a real field — bits 64..88 of a non-overflowed small header
-    (`function.rs:53`), or `large_header + 16` for an overflowed one (`function.rs:170`).
+- **Location** is `aligned = (info_offset + 3) & !3` (`parsing.rs:630`).
+  - *Legacy:* `info_offset` is a real field — bits 64..89 of a non-overflowed small header
+    (`function.rs:55`), or `large_header + 16` for an overflowed one (`function.rs:194`).
     It points into the FunctionInfo region, which sits after all code.
   - *Modern:* `info_offset` is **not stored** — `parse_large_header_modern` computes it as
-    the 4-byte-aligned position immediately after the large header's fields
-    (`function.rs:207–212`). ⚠️ **Do not take 37 from that function.** It is 8×u32 + 5×u8 = 37
-    only at v97/v98; at v99 it is 8×u32 + 4×u8 = **36**, and `parse_large_header_modern` is
-    itself the code R8 is fixing. Take the size from R8's descriptor, which is keyed to the
-    version — and note the VM's own arithmetic is literally
+    the 4-byte-aligned position immediately after the large header's fields, now via
+    `layout.info_offset_for` (`function.rs:260`–`:265`). It is 8×u32 + 5×u8 = 37 only at
+    v98; at v99 it is 8×u32 + 4×u8 = **36** — which is why the size must come from R8's
+    descriptor (done: that is what `info_offset_for` reads), never a literal. Note the VM's
+    own arithmetic is literally
     `buf += smallHeader.getLargeHeaderOffset(); buf += sizeof(FunctionHeader); align(buf);`
     **[source]**, so "size of the large header for this version, then align to 4" is the exact
     contract, with no separate stored offset to reconcile.
-- **Table format** (`parsing.rs:378–406`): `count: u32`, then `count` entries of
+- **Table format** (`parsing.rs:637–673`): `count: u32`, then `count` entries of
   `{ start: u32, end: u32, target: u32 }`, 12 bytes each. Total table size = `4 + count*12`.
   Table size does not change under relocation (I5 stays satisfied).
 - **`start`/`end`/`target` are body-relative** (0-based within the function body; `end`
   exclusive). Confirmed: `decode_function_instructions` emits 0-based offsets
   (`instructions.rs:33,54,59`) and the CFG compares handler offsets directly against them
-  (`jump_analysis.rs:134–141`, `ir_builder.rs:107`).
+  (`jump_analysis.rs:152–157`, `ir_builder.rs:140–146`).
 
 **How offsets adjust for a size delta.** The general rule for a **single-point insertion** of
 `L` bytes at body offset `P`: every body-relative offset `>= P` shifts by `+L`; offsets `< P`
 are unchanged. Apply per handler field independently to `start`/`end`/`target`.
 - `inject-stub LogEntry` front-inserts a prologue at `P = 0`, so **all** entries shift by
   `+L` (L = prologue length in bytes — already 4-aligned by the Q8 path).
-- `inject-stub NopPad` inserts `L = 1..4` bytes before the last `Ret` (`inject.rs:232`), so
+- `inject-stub NopPad` inserts `L = 1..4` bytes before the last `Ret` (`inject.rs:260`), so
   `P` = that instruction's body offset; only entries at or past `P` shift. (Straddling case
   is an unknown — below.)
 - `patch-function` / `asm` replace the **whole body** with an arbitrary new instruction
@@ -1024,8 +1065,8 @@ are unchanged. Apply per handler field independently to `start`/`end`/`target`.
 
 Note the table's **location** already relocates today: `patch_function_bytes` copies the
 FunctionInfo region verbatim in the tail splice, and the info pointer is shifted by the
-existing overflowed/legacy relocation (`resize_overflowed_function`,
-`shift_legacy_small_header_offsets`, `functions.rs`). Q3's *new* work is rewriting the entry
+existing overflowed/legacy relocation (`resize_overflowed_function` in `functions.rs`,
+`shift_legacy_small_header_offsets` at `header_write.rs:131`). Q3's *new* work is rewriting the entry
 **values**.
 
 **Phase 1 — inject-stub (single-point insertion). Feasible now.**
@@ -1035,11 +1076,16 @@ existing overflowed/legacy relocation (`resize_overflowed_function`,
   (`inject_stub`/`build_log_entry` compute `(P, L)` and request the relocation);
   `patch_function_body` gains an internal way to carry `(P, L)` from an insertion-style caller
   (e.g. a private `patch_function_body_inserted(P, L, …)` or an options field) so the
-  arbitrary-resize callers do NOT trigger it.
+  arbitrary-resize callers do NOT trigger it. **Precedent now in tree:** R24's P2 already does
+  exactly this plumbing for the line table — `inject_stub` computes the single insertion point
+  (`insert_at`) for both stub kinds and, after `patch_function_body`, hands `(insert_at, delta)`
+  to `debug_reloc::relocate_locations_for_insertion` before a second `commit_image`
+  (`inject.rs:244`–`:323`). Handler relocation can ride the same `(P, L)` rather than invent a
+  second channel.
 - After the splice, for the patched function: locate its handler table via the shifted info
   pointer (reuse the read paths in `header_write.rs`/`functions.rs`), read `count`, and for
-  each 12-byte entry conditionally add `shift` to `start`/`end`/`target`. Update the in-memory
-  `file.exception_handlers` to match (I1).
+  each 12-byte entry conditionally add `shift` to `start`/`end`/`target`. Then end through
+  `commit_image`, which re-derives `file.exception_handlers` from the bytes (I1) — no hand sync.
 - Remove the Q4 guard *only for the insertion path*; arbitrary resize still rejected.
 
 **Phase 2 — patch-function / asm (whole-body). Depends on Q4 HASM handler syntax.**
@@ -1051,9 +1097,10 @@ existing overflowed/legacy relocation (`resize_overflowed_function`,
   instead of copying the stale one.
 - Only after this can the Q4 guard be removed for `patch-function`/`asm`.
 
-**Invariants that apply.** I1 (sync `file.exception_handlers` after the byte edit), I2 (do the
-relocation inside the single resize op, on `rebuilt`, before returning — never chain on a
-stale `file`), I3/I4 (route the result through `finalize_raw_image`; keep the double-hash), I5
+**Invariants that apply.** I1 (end with `commit_image`, so `file.exception_handlers` is
+re-derived rather than synced by hand), I2 (do the relocation on the op's own buffer before
+committing — chaining on the committed `file` is safe now, but the relocation must see the
+spliced bytes), I3/I4 (`commit_image` routes through `finalize_raw_image`; keep the double-hash), I5
 (table size is unchanged, so 4-alignment holds), I6 (entry *location* already shifts with the
 tail; this adds the entry *value* shift).
 
