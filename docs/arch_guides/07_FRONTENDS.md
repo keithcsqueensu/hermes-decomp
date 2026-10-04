@@ -102,11 +102,12 @@ write_router()`). State is a `Mutex<Option<LoadedFile>>`. Every tool body that g
 `with_file` / `with_file_mut` runs `catch_tool_panic` inside `run_scoped_with_large_stack` (a
 scoped 64 MiB thread — tokio workers' ~2 MB overflows on real bundles); `lock()` recovers from
 poisoning; read tools answer through `text_result`, which applies `cap_text` at
-`MAX_RESPONSE_BYTES` (256 KiB). `load_file` parses outside `with_file`, on its own
-`hbc_decomp::run_with_large_stack` thread, and reports any `resolve_format` opcode-table
-substitution and integrity warnings in its response. `decompile_all` is the one read tool not
-under `cap_text`: it is filtered (`modules` id ranges, `module_name` / `exclude_module_name`
-globs, `from_module` + `module_depth`) and bounded by `max_chars` (default 2,000,000) through
+`MAX_RESPONSE_BYTES` (256 KiB), and so do the write tools. `load_file` parses outside
+`with_file`, on its own `hbc_decomp::run_with_large_stack` thread under `catch_tool_panic`, and
+reports any `resolve_format` opcode-table substitution and integrity warnings in its response.
+`decompile_all` is the one tool not under `cap_text`: it is filtered (`modules` id ranges,
+`module_name` / `exclude_module_name` globs, `from_module` + `module_depth`) and bounded by
+`max_chars` (default `MAX_RESPONSE_BYTES`; a caller may ask for more) through
 `server/bounds.rs::truncate_at_line`, returning a second JSON block with the truncation summary.
 
 - **Read (21 tools):** `load_file`, `file_info`, `decompile_function`,

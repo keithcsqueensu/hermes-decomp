@@ -32,19 +32,21 @@ identity). The CLI-surface risks below carry their own residual.
 > `decompile_all` is bounded separately (upstream v0.2.4's design, which replaced this fork's
 > original refusal above 2,000 functions in the `b4f2797` merge): it takes module filters
 > (`modules`, `module_name` / `exclude_module_name`, `from_module` + `module_depth`) and a
-> `max_chars` cap, default 2,000,000, cut at a line boundary by `server/bounds.rs::truncate_at_line`
+> `max_chars` cap (default now `MAX_RESPONSE_BYTES`, see below), cut at a line boundary by `server/bounds.rs::truncate_at_line`
 > with an in-band `// truncated: …` marker and a second JSON block reporting `truncated`,
 > `total_chars`, `kept_chars`. So the unfiltered call no longer refuses: on the 41 MB bundle it
-> returns ~2 MB (≈5%) of the answer, flagged as truncated. The earlier measured run — `dump
+> returns the first 256 KiB of the answer, flagged as truncated. The earlier measured run — `dump
 > kind=strings` capped with `this response was 5382496 bytes` — still describes the cap; the
 > `decompile_all` refusal it also recorded no longer exists. Held by four `cap_text` tests
 > (including the multibyte-boundary case) and six `bounds.rs` tests (four on `truncate_at_line`).
 >
-> **Residual.** The bound is per-tool, not global. `decompile_all`'s 2,000,000-char default is
-> ~8× the 256 KiB cap every other read tool gets, and the seven `tools_write.rs` tools return
-> `CallToolResult` directly, outside `cap_text` — `emit_hasm` is one function, but `secrets`
-> builds its report over the whole string table with no limit. Not re-measured on the Equinox
-> bundle since the merge.
+> **The two gaps the merge left are closed.** `decompile_all`'s default `max_chars` was
+> 2,000,000, ~8× the cap every other tool gets; it is now `MAX_RESPONSE_BYTES` (256 KiB), and a
+> caller that wants more passes `max_chars` explicitly (pinned by
+> `decompile_all_defaults_to_the_response_cap`). The seven `tools_write.rs` tools returned
+> `CallToolResult` directly, outside `cap_text` — `secrets` reported over the whole string table
+> with no limit — and now answer through `text_result` like the read tools. Not re-measured on
+> the Equinox bundle since.
 
 
 **[measured]** on the Equinox bundle:
@@ -84,10 +86,12 @@ explicit `"… truncated, N of M shown, pass offset=N"` tail, and a hard refusal
 > normal tool call still returns its normal error, and
 > `catch_tool_panic_converts_a_panic_into_one_failed_call`.
 >
-> **Residual.** `load_file` does not go through `with_file`: it parses on
-> `hbc_decomp::run_with_large_stack`, which *resumes* a panic on the calling thread, with no
-> `catch_tool_panic` around it. The lock is taken only after parsing, so such a panic cannot
-> poison the mutex — but it escapes the tool as a panic rather than as one failed call.
+> **`load_file` is covered too.** It does not go through `with_file`: it parses on
+> `hbc_decomp::run_with_large_stack`, which *resumes* a panic on the calling thread, and had no
+> `catch_tool_panic` around it, so a parse panic escaped as a panic rather than one failed call
+> (the lock is taken only after parsing, so it could not poison the mutex). The parse now runs
+> inside `catch_tool_panic`; a previously loaded file is replaced only on success, so the
+> message's "still available" holds.
 
 
 Below is the finding as written (2026-08-28); line refs re-derived at HEAD.

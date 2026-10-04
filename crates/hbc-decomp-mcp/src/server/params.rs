@@ -38,13 +38,16 @@ pub struct DecompileAllParams {
     #[serde(default = "default_module_depth")]
     pub module_depth: usize,
     #[schemars(
-        description = "Maximum characters returned (default: 2000000). Longer output is cut at a line boundary and flagged as truncated"
+        description = "Maximum characters returned (default: 262144, the 256 KiB cap every other tool has). Ask for more explicitly; longer output is cut at a line boundary and flagged as truncated"
     )]
     #[serde(default = "default_max_chars")]
     pub max_chars: usize,
 }
 
-pub const DEFAULT_MAX_CHARS: usize = 2_000_000;
+// The same ceiling every other tool's response gets (`MAX_RESPONSE_BYTES`). It
+// was 2,000,000, which made the one tool that can emit tens of megabytes the one
+// with the loosest default. A caller that wants more passes `max_chars` itself.
+pub const DEFAULT_MAX_CHARS: usize = super::MAX_RESPONSE_BYTES;
 
 fn default_max_chars() -> usize {
     DEFAULT_MAX_CHARS

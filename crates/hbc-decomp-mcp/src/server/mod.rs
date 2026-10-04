@@ -145,7 +145,7 @@ pub(crate) fn cap_text(body: String) -> String {
 /// This does **not** catch stack overflow, which aborts and cannot be caught —
 /// that is what the depth bound in `hbc_decomp::ir::depth` and the large worker
 /// stack in `main` are for.
-fn catch_tool_panic<F, T>(f: F) -> Result<T, McpError>
+pub(crate) fn catch_tool_panic<F, T>(f: F) -> Result<T, McpError>
 where
     F: FnOnce() -> Result<T, McpError>,
 {
@@ -315,6 +315,13 @@ mod tests {
         let out = cap_text(body);
         assert!(out.contains("TRUNCATED"));
         // Getting here at all means no char-boundary panic.
+    }
+
+    // decompile_all's own bound must not default looser than every other tool's.
+    #[test]
+    fn decompile_all_defaults_to_the_response_cap() {
+        let p: super::params::DecompileAllParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(p.max_chars, MAX_RESPONSE_BYTES);
     }
 }
 

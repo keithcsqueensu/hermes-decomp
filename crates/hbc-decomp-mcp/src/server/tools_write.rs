@@ -1,7 +1,7 @@
 // Write path and RE MCP tools (secrets, frida, patch, inject, create).
 
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock};
+use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router, ErrorData as McpError};
 
 use hbc_decomp::{
@@ -12,7 +12,7 @@ use hbc_decomp::{
 };
 
 use super::params::*;
-use super::HermesService;
+use super::{text_result, HermesService};
 
 #[tool_router(router = write_router, vis = "pub(crate)")]
 impl HermesService {
@@ -26,7 +26,7 @@ impl HermesService {
         self.with_file(|loaded| {
             let hits = scan_secrets(&loaded.file, &[]);
             let report = format_secrets_report(&hits, !params.show_full);
-            Ok(CallToolResult::success(vec![ContentBlock::text(report)]))
+            text_result(report)
         })
     }
 
@@ -40,7 +40,7 @@ impl HermesService {
         self.with_file(|loaded| {
             let text = emit_hasm_function(&loaded.file, &loaded.format, params.function_id)
                 .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
-            Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
+            text_result(text)
         })
     }
 
@@ -64,11 +64,11 @@ impl HermesService {
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
             std::fs::write(&params.output_path, &out)
                 .map_err(|e| McpError::internal_error(format!("write: {e}"), None))?;
-            Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+            text_result(format!(
                 "Patched string → {} ({} bytes)",
                 params.output_path,
                 out.len()
-            ))]))
+            ))
         })
     }
 
@@ -101,10 +101,10 @@ impl HermesService {
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
             std::fs::write(&params.output_path, &out)
                 .map_err(|e| McpError::internal_error(format!("write: {e}"), None))?;
-            Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+            text_result(format!(
                 "Injected {} stub into function {} → {}",
                 params.kind, params.function_id, params.output_path
-            ))]))
+            ))
         })
     }
 
@@ -129,12 +129,12 @@ impl HermesService {
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
             std::fs::write(&params.output_path, &out)
                 .map_err(|e| McpError::internal_error(format!("write: {e}"), None))?;
-            Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+            text_result(format!(
                 "Assembled function {} → {} ({} bytes)",
                 params.function_id,
                 params.output_path,
                 out.len()
-            ))]))
+            ))
         })
     }
 
@@ -153,12 +153,12 @@ impl HermesService {
         .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
         std::fs::write(&params.output_path, &out)
             .map_err(|e| McpError::internal_error(format!("write: {e}"), None))?;
-        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+        text_result(format!(
             "Created minimal HBC v{} → {} ({} bytes)",
             params.version,
             params.output_path,
             out.len()
-        ))]))
+        ))
     }
 
     #[tool(
@@ -194,13 +194,13 @@ impl HermesService {
                 std::fs::write(dir.join(name), body)
                     .map_err(|e| McpError::internal_error(format!("write {name}: {e}"), None))?;
             }
-            Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+            text_result(format!(
                 "Wrote Frida hooks for module {} ({} exports: {}) → {}",
                 bundle.module_id,
                 bundle.exports.len(),
                 bundle.exports.join(", "),
                 params.output_dir
-            ))]))
+            ))
         })
     }
 }

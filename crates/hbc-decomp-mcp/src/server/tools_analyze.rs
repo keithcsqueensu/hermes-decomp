@@ -19,22 +19,28 @@ impl HermesService {
         &self,
         Parameters(params): Parameters<LoadFileParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Parsing does not go through with_file, so it gets its own large stack.
+        // Parsing does not go through with_file, so it gets its own large stack, and
+        // its own panic catch: the read path is pointed at malformed input by design.
+        // A previously loaded file is replaced only on success, so it stays usable.
         let path = params.path.clone();
         let (bytes, file, format) = hbc_decomp::run_with_large_stack(move || {
-            let bytes = std::fs::read(&path)
-                .map_err(|e| McpError::internal_error(format!("Failed to read file: {e}"), None))?;
-            let mut file = BytecodeFile::parse_auto(&bytes)
-                .map_err(|e| McpError::internal_error(format!("Failed to parse HBC: {e}"), None))?;
-            // `resolve_format` records a diagnostic when a *different* version's
-            // opcode table is substituted. This used to be `let (format, _)`, so an
-            // agent reading this response had no way to know its decode came from the
-            // wrong table -- which does not fail, it just yields correct-looking
-            // JavaScript with the wrong instructions in it.
-            let format = file
-                .resolve_format()
-                .map_err(|e| McpError::internal_error(format!("Unsupported version: {e}"), None))?;
-            Ok::<_, McpError>((bytes, file, format))
+            super::catch_tool_panic(|| {
+                let bytes = std::fs::read(&path).map_err(|e| {
+                    McpError::internal_error(format!("Failed to read file: {e}"), None)
+                })?;
+                let mut file = BytecodeFile::parse_auto(&bytes).map_err(|e| {
+                    McpError::internal_error(format!("Failed to parse HBC: {e}"), None)
+                })?;
+                // `resolve_format` records a diagnostic when a *different* version's
+                // opcode table is substituted. This used to be `let (format, _)`, so an
+                // agent reading this response had no way to know its decode came from the
+                // wrong table -- which does not fail, it just yields correct-looking
+                // JavaScript with the wrong instructions in it.
+                let format = file.resolve_format().map_err(|e| {
+                    McpError::internal_error(format!("Unsupported version: {e}"), None)
+                })?;
+                Ok::<_, McpError>((bytes, file, format))
+            })
         })?;
 
         let mut info = format!(
@@ -144,7 +150,7 @@ impl HermesService {
     }
 
     #[tool(
-        description = "Decompile the bundle with the full pipeline (IPA, closures, ESM), grouped by Metro module. Filtered and bounded: select modules with modules (id ranges), module_name / exclude_module_name (globs) or from_module + module_depth (dependency subtree), and cap the output with max_chars (default 2000000). Output above the cap is cut at a line boundary and a second block reports truncated, total_chars and kept_chars. Without a filter, orphan functions are included."
+        description = "Decompile the bundle with the full pipeline (IPA, closures, ESM), grouped by Metro module. Filtered and bounded: select modules with modules (id ranges), module_name / exclude_module_name (globs) or from_module + module_depth (dependency subtree), and cap the output with max_chars (default 262144, the 256 KiB cap the other tools have; ask for more explicitly). Output above the cap is cut at a line boundary and a second block reports truncated, total_chars and kept_chars. Without a filter, orphan functions are included."
     )]
     fn decompile_all(
         &self,
