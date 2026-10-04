@@ -46,14 +46,11 @@ the whole-program path.
 
 Two nested sequences, documented authoritatively (and non-executably) in `stages.rs`.
 
-> **Drift — read before trusting `stages.rs`.** `stages.rs` has not changed since the W/F
-> numbering was written, but the executable order has: the whole-program driver now runs
-> ~15 passes that `stages.rs` does not list, and the inline `// STAGE` comments reuse IDs with
-> different meanings (`W4b` in both `context/mod.rs` and `context/naming.rs`; `W12`–`W15` in
-> `naming.rs` ≠ `W12`–`W15` in `stages.rs`/`transforms_phase.rs`; `W16e` in both
-> `transforms_phase.rs` and `context/mod.rs`; `F26` twice in `ir_gen.rs`). Below, a stage
-> named by a label that is not in `stages.rs` is qualified by its file. Tracked as an open
-> risk in `../plan_guides/05_pipeline/RISKS.md` § Stage labels.
+`stages.rs` lists every stage in run order, and its test
+(`stage_markers_are_listed_and_unique`) fails if a `// STAGE <id>:` marker in the pipeline is
+missing from it or used twice. It had drifted badly before that test existed; see
+`../plan_guides/05_pipeline/RISKS.md` § Stage labels. Stages inserted later carry sub-labels
+(W4a, W11b, F5a, F25b) so existing numbers keep their meaning.
 
 **Per-function — `ir_gen.rs:generate_ir`, F1–F26:**
 - **F1** IR build (bytecode → CFG) via `IRBuilder::build_function`.
@@ -62,17 +59,16 @@ Two nested sequences, documented authoritatively (and non-executably) in `stages
   `options.propagate`.
 - **F4** `simplify_statements` per block — gated on `simplify`.
 - **F5** structure recovery: `StructureAnalysis::analyze` → `to_statements` →
-  `fold_builtin_guards` (HBC ≥ 97 `f.call === functionPrototypeCall` diamonds), immediately
-  followed by for-of (modern + `detect_legacy_for_of`)/for-in/iterator-destructuring
-  detection (**before** inlining folds iterator registers).
+  `fold_builtin_guards` (HBC ≥ 97 `f.call === functionPrototypeCall` diamonds).
+- **F5a** for-of (modern + `detect_legacy_for_of`)/for-in/iterator-destructuring detection,
+  **before** inlining folds the iterator registers away.
 - **F6–F25** (all gated on `simplify`): statement optimize → expression inline → logic
   transform → concat propagation → pattern detect → class detect → object/array literals →
   default params → spread/rest → destructuring → generator/async detect → yield-to-await →
   cleanup (basic + advanced) → chain access → ternary return → advanced logic simplify →
   CommonJS export / name inference → register naming (`apply_register_naming`, merges
   debug-info names) → semantic variable naming → `fold_slot_index_fills` → final
-  `simplify_statements` → `convert_while_true_loops` / `fold_guarded_loops` (`stages.rs`
-  counts the loop folds in F25; the inline comment in `ir_gen.rs` mislabels them F26).
+  `simplify_statements` (F25) → **F25b** `convert_while_true_loops` / `fold_guarded_loops`.
 - **F26** closure resolution: `resolve_closures` if `perform_resolve`, a `ClosureContext` is
   provided, and the function has slots. The whole-program path passes `perform_resolve =
   false` and resolves later (W6/W9).
@@ -81,30 +77,30 @@ Two nested sequences, documented authoritatively (and non-executably) in `stages
 - **W1** closure context; **W2** Metro detection (`build_metro_registry`, on **raw** IR);
   **W3–W4** optimized IR generation (parallel) + closure analyze/insert
   (`generate_all_optimized_ir`).
-- **W4b** (`context/mod.rs`) — only when `options.cascade` is set: `apply_cascade_artifact`
+- **W4a** — only when `options.cascade` is set: `apply_cascade_artifact`
   loads a proposal artifact, verifies it against the bytecode (`crate::cascade::verify`) and
   applies the confirmed names to `all_ir` before naming, so they flow into IPA like any name
   the bytecode gave. A read/parse failure warns and names nothing.
-- **W5–W11** naming/IPA/closures (`run_naming_pipeline`), preceded by two ground-truth
-  module-naming passes (`naming.rs` W4a `fileFinishedImporting("…")` paths, W4b source files
-  baked into function names): module-name propagation (W5a–f), closure resolution, Metro
-  export analysis, then `naming.rs` W7b (single-export and function-table module names,
-  `naming/module_table_names.rs`) and W7c (`finalize_module_specifiers`), 6-phase IPA
+- **W4b–W11e** naming/IPA/closures (`run_naming_pipeline`): two ground-truth module-naming
+  passes (**W4b** `fileFinishedImporting("…")` paths, **W4c** source files baked into function
+  names), module-name propagation (W5a–f), closure resolution, Metro export analysis, then
+  **W7b** (single-export and function-table module names, `naming/module_table_names.rs`) and
+  **W7c** (`finalize_module_specifiers`), 6-phase IPA
   (with `deep`: export keys fed into the callee index; factory params named from Metro
-  roles), IPA re-resolve, closure property/definition naming. Then `naming.rs`'s own
-  tail: "W12" late `dependencyMap` rewrite, "W13"/"W13c" ancestor-name inherit + capture
-  sync, "W14" fixed-point IPA/naming loop (`deep` only), "W15" content-hashed module names
-  (`stable` only).
+  roles), IPA re-resolve, closure property/definition naming. Then the naming tail:
+  **W11a** late `dependencyMap` rewrite, **W11b**/**W11c** ancestor-name inherit + capture
+  sync, **W11d** fixed-point IPA/naming loop (`deep` only), **W11e** content-hashed module
+  names (`stable` only).
 - **W12–W16** transform pipeline (`run_transform_pipeline`): strip-this, inlining (parallel,
   keeping names nested functions read), async detect + yield-to-await, async-wrapper
   unwrap, post-IPA transforms; then `transforms_phase.rs` W16a2 loop folds, W16a3 second
   JSX pass, W16b generator-wrapper collapse — which itself runs W16c HBC ≥ 97 generator
   lift (fail-closed: an unlifted machine is kept as decoded), an async re-scan, W16d v98 +
-  Babel array destructuring and a second short-circuit pass, a third JSX pass (labelled
-  "W16e" there), re-inlining and `repair_switch_clobbers` — then W16f object-key closure
-  naming and `hoist_repeated_closures`.
-- Worklet source recovery; parent→children inversion; **W16e** (`context/mod.rs`) import
-  hoisting (`hoist_module_loaders`).
+  Babel array destructuring and a second short-circuit pass, W16e a third JSX pass,
+  re-inlining and `repair_switch_clobbers` — then W16f object-key closure naming and W16g
+  `hoist_repeated_closures`.
+- Worklet source recovery; parent→children inversion; **W16h** import hoisting
+  (`hoist_module_loaders`).
 - **W17** inline-body rendering (`build_all_inline_bodies`): pass 1 renders every body,
   later passes re-render only parents whose referenced bodies changed, until body holes stop
   decreasing (capped at 64 passes and a byte budget); bodies referenced but missing from
@@ -190,7 +186,7 @@ timed phase and print elapsed seconds on drop.
 | `assembly_mode` | forces absolute offsets + `include_offsets` |
 | `deep` | whole-program only: export keys in the IPA callee index + the fixed-point naming loop (`naming.rs` "W14") |
 | `stable` | whole-program only: content-hashed names for still-unnamed modules (`naming.rs` "W15") |
-| `cascade: Option<PathBuf>` | whole-program only: proposal artifact applied at W4b (`crate::cascade`) |
+| `cascade: Option<PathBuf>` | whole-program only: proposal artifact applied at W4a (`crate::cascade`) |
 
 `build_with_options` honours only `assembly_mode`, `include_offsets`, `deep`, `stable` and
 `cascade` from the caller and forces the rest to `optimized()`. Presets: `optimized()` (all
@@ -204,11 +200,11 @@ propagate/simplify off).
 | `mod.rs` | re-exports; `DecompileOptionsV2`; single-function path; `apply_register_naming` |
 | `decompiler.rs` | `Decompiler` façade |
 | `ir_gen.rs` | `generate_ir` (F1–F26); `build_closure_context_from_file` (parallel); yield→await |
-| `stages.rs` | non-executable authoritative doc of W1–W17 / F1–F26 (lags the code — see § The stage spine) |
+| `stages.rs` | non-executable authoritative doc of W1–W17 / F1–F26, with sub-labels; a test keeps it in step with the `// STAGE` markers |
 | `batch.rs` | `decompile_all/filtered_v2[_cached]`, `render_bundle`, `ModuleFilter`, `analyze_module` |
 | `cache.rs` | `build_cached`, `CACHE_VERSION`, `default_cache_path`, `binary_fingerprint`, snapshot serde |
 | `progress.rs` | stderr `status` / `Phase` |
-| `context/mod.rs` | `PipelineContext` + `build_with_options` (W1–W17 driver); `apply_cascade_artifact` (W4b) |
+| `context/mod.rs` | `PipelineContext` + `build_with_options` (W1–W17 driver); `apply_cascade_artifact` (W4a) |
 | `context/ir_build.rs` | `build_metro_registry`, `generate_all_optimized_ir` (W2–W4) |
 | `context/naming.rs` | `run_naming_pipeline` (W4a–W11 + its own "W12"–"W15" tail) |
 | `context/naming/module_table_names.rs` | name still-unnamed modules from the function table (W7b) |

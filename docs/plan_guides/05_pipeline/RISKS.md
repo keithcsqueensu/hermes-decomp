@@ -4,17 +4,17 @@
 > result that looks valid. Two findings, **F8** (the cache `options_key` was hand-synced to
 > two fields) and **F13** (cache temp-file race, and the 134 MB unauthenticated cache),
 > split here from the read-path hardening review because both live in `pipeline/cache.rs`;
-> plus two unnumbered open items found later (the `cascade` option vs. the cache, and
-> `stages.rs` drift).
+> plus two unnumbered items found later (the `cascade` option vs. the cache, and
+> `stages.rs` drift, now fixed).
 > *Delegates* the pipeline's *description* — the F/W stage spine, `PipelineContext`, the cache
 > key design — to `../../arch_guides/05_PIPELINE.md`, and the upstream framing of the F-series
 > to `../01_read/RISKS.md`. Finding numbers are shared across the stage registers and indexed
 > in `../README.md`; F8 and F13 keep theirs.
 
 Status: ✅ fixed (F8; F13's race). F13's size/trust notes are documentation items, recorded
-not changed. Two **open** items found since, unnumbered (the F-series belongs to the read
-pass): the `cascade` option vs. the cache, and stage labels drifting from `stages.rs` — both
-at the end. Evidence tag **[measured]** means reproduced against the shipped Equinox v96
+not changed. Two items found since, unnumbered (the F-series belongs to the read pass), both
+at the end: the `cascade` option vs. the cache (**open**), and stage labels drifting from
+`stages.rs` (✅ fixed, and now test-guarded). Evidence tag **[measured]** means reproduced against the shipped Equinox v96
 bundle (see `../01_read/RISKS.md` for its identity).
 
 ---
@@ -109,25 +109,24 @@ the guard lives in the library rather than one frontend; or (b) key on the artif
 (hash the file into the header) *and* add `cascade_names` to the snapshot, bumping
 `CACHE_VERSION`. (a) is a few lines and matches "the cache is an optimization".
 
-## Open — stage labels drifting from `stages.rs`
+## Stage labels drifting from `stages.rs` — ✅ fixed
 
-> **Open.** `stages.rs` exists to pin the order; it is now the part that drifted.
+> **Fixed.** `stages.rs` lists every stage in run order again, and
+> `stages.rs::tests::stage_markers_are_listed_and_unique` fails if a `// STAGE <id>:` marker in
+> `ir_gen.rs` or `context/{mod,naming,transforms_phase}.rs` is missing from it or used twice.
+> Verified to fail on both: a reused label and an unlisted one.
 
-`pipeline/stages.rs` is unchanged since the W/F numbering was written, while the executable
-order (`context/{mod,naming,transforms_phase}.rs`, `ir_gen.rs`) grew ~15 passes it does not
-list, and the inline `// STAGE` comments reuse IDs with different meanings: `W4b` names both
-the cascade apply (`context/mod.rs`) and source-file module naming (`naming.rs`); `naming.rs`
-labels its tail `W12`–`W15` (dependencyMap rewrite, ancestor inherit, deep loop, stable
-names), which in `stages.rs` and `transforms_phase.rs` are strip-this / inlining / async /
-unwrap; `W16e` is both the third JSX pass (`transforms_phase.rs`) and import hoisting
-(`context/mod.rs`); `ir_gen.rs` labels both the final loop folds and closure resolution F26.
-The ordering contract that `../04_transforms/RISKS.md` asks every new pass to respect is
-therefore stated in a file that no longer describes the order, and a grep for a stage ID can
-land on the wrong pass.
+**What it was.** `stages.rs` had not changed since the W/F numbering was written, while the
+executed order grew ~15 passes it did not list, and the inline markers reused IDs with different
+meanings: `W4b` named both the cascade apply and source-file module naming; `naming.rs` labelled
+its tail `W12`–`W15`, which in `stages.rs` are strip-this / inlining / async / unwrap; `W16e` was
+both the third JSX pass and import hoisting; `ir_gen.rs` labelled both the loop folds and closure
+resolution F26. The ordering contract `../04_transforms/RISKS.md` asks every new pass to respect
+was stated in a file that no longer described the order.
 
-**Fix.** Bring `stages.rs` up to the executed order without renumbering the existing W/F IDs:
-give the unlisted passes sub-IDs under the stage they follow (`W7b`, `W16a2`, … as the code
-already does) and rename the colliding inline labels (`naming.rs`'s tail, the second `W16e`,
-`W4b`, the loop-fold "F26") to unique ones. `../../arch_guides/05_PIPELINE.md` § The stage
-spine describes the executed order meanwhile and qualifies colliding labels by file.
+**How it was fixed, without renumbering.** Every ID `stages.rs` already defined keeps its
+meaning. The collisions and unlisted passes took sub-labels where they run: cascade apply
+**W4a**, ground-truth module naming **W4b**/**W4c**, the naming tail **W11a**–**W11e**,
+`hoist_repeated_closures` **W16g**, import hoisting **W16h**, loop/iterator recovery **F5a**,
+loop folds **F25b**. The pre-existing sub-labels (`W7b`, `W7c`, `W16a2`–`W16f`) are now listed.
 

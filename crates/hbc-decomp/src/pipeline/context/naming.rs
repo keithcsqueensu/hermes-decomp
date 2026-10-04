@@ -17,7 +17,7 @@ impl PipelineContext {
         deep: bool,
         stable: bool,
     ) -> crate::analysis::GlobalAnalysis {
-        // STAGE W4a: name modules from `fileFinishedImporting("…/Foo.tsx")`.
+        // STAGE W4b: name modules from `fileFinishedImporting("…/Foo.tsx")`.
         // Some apps record the source path as a string
         // literal in the factory. That path is ground truth and overwrites a
         // heuristic factory/export name such as `clear`.
@@ -34,7 +34,7 @@ impl PipelineContext {
             log::debug!("[pipeline] module naming from fileFinishedImporting: {named_ffi} named");
         }
 
-        // STAGE W4b: name modules from the source file encoded in their function
+        // STAGE W4c: name modules from the source file encoded in their function
         // names. Hermes bakes `<fn>_<package>_<file>Ts<N>` (or `<file>Tsx<N>`) into
         // the name table for library and worklet functions, so the source file, which
         // IS the module, is recoverable ground truth. Runs before propagation so the
@@ -228,7 +228,7 @@ impl PipelineContext {
             log::debug!("[pipeline] closure definition naming: {def_renames} variables renamed");
         }
 
-        // STAGE W12: dependencyMap[N] → absolute module IDs.
+        // STAGE W11a: dependencyMap[N] → absolute module IDs.
         // After resolve_closures AND closure naming: heavily-indexed captures are
         // renamed to `dependencyMap` / `dependencyMap2` only in W10, so this must
         // run last among the naming stages.
@@ -244,7 +244,7 @@ impl PipelineContext {
             t.elapsed()
         );
 
-        // STAGE W13: Inherit ancestor slot names for baked `closure_{level}_{slot}`
+        // STAGE W11b: Inherit ancestor slot names for baked `closure_{level}_{slot}`
         // captures. resolve_closures froze these when the ancestor slot was still
         // Unknown; by now the ancestor slots are named (module names, stable captures),
         // so a descendant capture inside a `.then()`/`.catch()` callback inherits the
@@ -256,7 +256,7 @@ impl PipelineContext {
                 "[pipeline] ancestor closure inherit: {inherited} references renamed ({:.2?})",
                 t.elapsed()
             );
-            // STAGE W13c: every capture takes the name its owner binds now.
+            // STAGE W11c: every capture takes the name its owner binds now.
             let t = std::time::Instant::now();
             let synced = transforms::sync_capture_names(all_ir, ctx);
             log::debug!(
@@ -265,7 +265,7 @@ impl PipelineContext {
             );
         }
 
-        // STAGE W14 (deep mode only): converge naming to a fixed point. The closure and
+        // STAGE W11d (deep mode only): converge naming to a fixed point. The closure and
         // ancestor renames above improved the names inside `all_ir`, so a second IPA over
         // the now-better-named bodies reads hints that were generic on the first pass (a
         // call argument that was `r5` or `closure_1_9` may now be `email`). Re-run IPA and
@@ -329,7 +329,7 @@ impl PipelineContext {
             log::debug!("[pipeline] deep naming convergence: {:.2?}", t.elapsed());
         }
 
-        // STAGE W15 (stable mode): give every still-unnamed module a name derived
+        // STAGE W11e (stable mode): give every still-unnamed module a name derived
         // from a hash of its stable content (string constants, property keys,
         // function names) instead of the volatile Metro id, so the same module keeps
         // the same name across builds. Rename the baked `module_{id}` body variables

@@ -9,8 +9,8 @@ finding from the read hardening pass landed on this stage, and no version-drift 
 write path's kind lives here. This register exists as the stage's vertebra on the spine; the
 notes below are the standing hazards to respect when adding a pass, plus one structural
 weakness — the ESM rendered-line repair — that is not a known bug but is where the next one is
-most likely. One adjacent open item lives next door: the ordering file these hazards point at
-(`pipeline/stages.rs`) has drifted from the executed order — `../05_pipeline/RISKS.md`
+most likely. The ordering file these hazards point at (`pipeline/stages.rs`) had drifted from
+the executed order; it is back in step and test-guarded — `../05_pipeline/RISKS.md`
 § Stage labels.
 
 ---

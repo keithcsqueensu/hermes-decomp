@@ -62,8 +62,7 @@ understand the crate. Each stage is a guide:
 The **pipeline guide (05)** is the one to read first if you only read one — it owns the
 stage ordering (`pipeline/stages.rs` documents F1–F26 per-function and W1–W17
 whole-program), and the ordering is a load-bearing contract, not an implementation detail.
-`stages.rs` currently lags the code (about 15 passes unlisted, some stage labels reused); guide
-05 says where, and its spine follows what actually runs.
+A test keeps `stages.rs` in step with the `// STAGE` markers in the code.
 
 ## The guides
 
@@ -93,8 +92,8 @@ Four ideas recur in every layer; they are the crate's design DNA.
    after IPA so a single pass never both discovers a name and consumes it (W8→W9). The same
    split is the core doctrine of the write path (`../plan_guides`).
 4. **Ordering is a contract.** `pipeline/stages.rs` is a non-executable file that exists
-   only to pin F/W stage dependencies and prevent silent reordering bugs. A contract only
-   holds while it is kept: see guide 05's drift note.
+   only to pin F/W stage dependencies and prevent silent reordering bugs. It once drifted
+   from the code; its own test now fails when a stage marker is missing or reused.
 
 ## Cross-cutting infrastructure
 

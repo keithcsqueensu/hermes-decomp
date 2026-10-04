@@ -109,7 +109,7 @@ pub fn generate_ir(
         stmts
     };
 
-    // Reconstruct for-of / for-in loops from the iterator protocol right after
+    // STAGE F5a: Reconstruct for-of / for-in loops from the iterator protocol right after
     // structure recovery, BEFORE inlining folds the iterator registers away
     // (later detect_patterns can no longer see `iter = src[Symbol.iterator]()`).
     let statements = if options.recover_structures {
@@ -242,8 +242,8 @@ pub fn generate_ir(
         // STAGE F25: Final Simplification
         crate::transforms::simplify_statements(&mut statements);
 
-        trace_supers("before F26", &statements);
-        // STAGE F26: Bottom-tested `while (true) { …; if (EXIT) break; }` -> `do…while`,
+        trace_supers("before F25b", &statements);
+        // STAGE F25b: Bottom-tested `while (true) { …; if (EXIT) break; }` -> `do…while`,
         // then fold Hermes' guarded do-while shape back into a natural `for`/`while`.
         // Runs last, on fully-named statements, once cleanup has produced the clean
         // trailing `if (EXIT) break;` shape.

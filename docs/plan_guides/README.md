@@ -36,7 +36,7 @@ plan_guides/
   04_transforms/
     RISKS.md                  register (no open defects; one watch item + standing hazards)
   05_pipeline/
-    RISKS.md                  F8, F13 — the cache; open: cascade vs. the cache, stage-label drift
+    RISKS.md                  F8, F13 — the cache; cascade vs. the cache; stage labels (fixed)
   06_write/
     RISKS.md                  invariants, design limits, risk register (R1–R28 bar the four
                               CLI-surface rows R17/R18/R20/R22, now in 07_frontends), open Qs, open work

@@ -156,7 +156,7 @@ impl PipelineContext {
             }
         }
 
-        // hermesc creates a non-escaping function declaration afresh at every
+        // STAGE W16g: hermesc creates a non-escaping function declaration afresh at every
         // call site. Give each such function one declaration in the scope the
         // sites share, so the text of a module grows with its source and not
         // with its call sites.

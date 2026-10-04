@@ -99,7 +99,7 @@ impl PipelineContext {
         let mut all_ir = Self::generate_all_optimized_ir(file, format, &options, &mut closure_ctx);
         phase.finish();
 
-        // STAGE W4b: Apply the names a proposal artifact carries, for the ones this
+        // STAGE W4a: Apply the names a proposal artifact carries, for the ones this
         // bytecode confirms. Runs before naming so a confirmed name reaches the call
         // resolution index and the rendered bodies like any name the bytecode gave.
         let cascade_names = match &options.cascade {
@@ -107,7 +107,7 @@ impl PipelineContext {
             None => BTreeMap::new(),
         };
 
-        // STAGE W5-W11: Name resolution (module names, closures, exports, IPA)
+        // STAGE W4b-W11e: Name resolution (module names, closures, exports, IPA)
         let phase = super::progress::Phase::start("naming / IPA / closures");
         let mut global_analysis = Self::run_naming_pipeline(
             &mut all_ir,
@@ -146,7 +146,7 @@ impl PipelineContext {
             }
         }
 
-        // STAGE W16e: Hoist eager inline module loads (importDefault(N)/require(N)
+        // STAGE W16h: Hoist eager inline module loads (importDefault(N)/require(N)
         // repeated at every use site) into one module-level binding, which the ESM
         // classifier then lifts into an import. Runs before inline body rendering so
         // the rewritten descendant bodies are the ones rendered.
