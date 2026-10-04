@@ -3,7 +3,7 @@
 //! Every case here used to resolve to a value indistinguishable from success:
 //! a file decoded under the layout its version contradicts, a stale SHA-1 footer,
 //! a truncated image, a debug section this build cannot read. See
-//! `docs/READ_PATH_GUIDE.md` F1, F5, F6, F10, F11.
+//! `docs/plan_guides/01_read/RISKS.md` F1, F5, F6, F10, F11.
 
 mod common;
 use common::Oracle;

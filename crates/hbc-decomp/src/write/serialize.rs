@@ -108,7 +108,7 @@ pub fn finalize_raw_image(mut buf: Vec<u8>) -> Result<Vec<u8>> {
 // ("re-parse before chaining") is now enforced by construction instead of by
 // remembering. The tests that carefully re-parsed between ops no longer have to.
 //
-// Cost is one parse per write op: ~40ms on the 5MB Equinox bundle, and nothing
+// Cost is one parse per write op: ~40ms on the 16.8 MB Equinox bundle, and nothing
 // measurable on the fixtures. Callers were already told to pay it (I2) -- this
 // just stops them having to remember.
 pub fn commit_image(file: &mut BytecodeFile, buf: Vec<u8>) -> Result<Vec<u8>> {
@@ -343,7 +343,7 @@ pub fn build_minimal_modern(
     // and 36 on the other and the flags byte lands in a different place. Writing
     // the v98 shape into a v99 file put `flags` one byte past where the engine
     // reads it, which made every created v99 image throw at entry (ProhibitInvoke
-    // read as 0 = ProhibitCall). Hence the descriptor. See WRITE_PATH_GUIDE R15.
+    // read as 0 = ProhibitCall). Hence the descriptor. See plan_guides/06_write/RISKS.md R15.
     let layout = crate::modern_layout::ModernLayout::for_version(version)?;
     let large_header_pos = buf.len() as u32;
     let mut large = vec![0u8; layout.large_size()];

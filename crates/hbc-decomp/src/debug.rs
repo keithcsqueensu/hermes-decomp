@@ -15,7 +15,7 @@
 //
 // Derived from upstream's own serializer and deserializer, not from a spec:
 // `lib/BCGen/HBC/DebugInfo.cpp` (`DebugInfoGenerator::appendSourceLocations`) and
-// `FunctionDebugInfoDeserializer`. See `docs/UNMODELED_REGIONS_PLAN.md`.
+// `FunctionDebugInfoDeserializer`. See `docs/plan_guides/01_read/unmodeled_regions/PLAN.md`.
 
 use crate::error::Result;
 use crate::file::DebugInfoStatus;

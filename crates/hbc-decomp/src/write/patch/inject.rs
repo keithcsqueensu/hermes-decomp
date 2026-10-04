@@ -38,7 +38,7 @@ fn reserve_modern_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<
         return Err(Error::Write("inject log: read cache full".into()));
     }
     let new_frame = log_frame_size(frame_now);
-    // Version-keyed large-header layout (WRITE_PATH_GUIDE R8/R11). The eight u32
+    // Version-keyed large-header layout (plan_guides/06_write/RISKS.md R8/R11). The eight u32
     // fields are the same in every supported modern version, so frame_size and
     // read_cache_size happen not to have moved -- but go through the descriptor
     // so that stays a checked fact rather than a lucky constant.
@@ -392,7 +392,7 @@ mod tests {
 
     // The two tests above are fixture-gated and skip in CI. The tests below build
     // a real legacy image with `create_minimal`, exercising the legacy LogEntry
-    // branch and its precondition errors that WRITE_PATH_GUIDE flags as untested.
+    // branch and its precondition errors that plan_guides/06_write/RISKS.md flags as untested.
     use crate::write::create::{create_minimal, CreateOptions};
 
     fn make_legacy(strings: Vec<String>) -> (BytecodeFile, BytecodeFormat) {

@@ -8,7 +8,7 @@
 //! than an accident. The sweep that first ran it (260,000 mutants over 13
 //! fixtures) found exactly one reachable panic: an unchecked `u32 + u32` on the
 //! register counts of a *large* modern function header, where both fields come
-//! straight out of the file. See `docs/READ_PATH_GUIDE.md` F7.
+//! straight out of the file. See `docs/plan_guides/01_read/RISKS.md` F7.
 //!
 //! Run it in **debug** to catch integer overflow -- release builds wrap silently,
 //! which is how that one hid. `HBC_FUZZ_FLIPS` raises the per-fixture bit-flip

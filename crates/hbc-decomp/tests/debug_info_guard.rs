@@ -6,7 +6,7 @@
 //! still decodes and still terminates. That is R24, and it is the exception-handler
 //! defect (R9) in a second structure; the difference was only that one had a guard.
 //!
-//! These tests are the acceptance criteria from `docs/UNMODELED_REGIONS_PLAN.md` P0.
+//! These tests are the acceptance criteria from `docs/plan_guides/01_read/unmodeled_regions/PLAN.md` P0.
 //!
 //! ## Why a separate fixture
 //!

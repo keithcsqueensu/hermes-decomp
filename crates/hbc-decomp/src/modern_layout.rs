@@ -2,7 +2,7 @@
 // version.
 //
 // The out-of-line "large" function header is NOT a single layout across all of
-// v97+, and treating it as one is what R8/R9/R15 in docs/WRITE_PATH_GUIDE.md
+// v97+, and treating it as one is what R8/R9/R15 in docs/plan_guides/06_write/RISKS.md
 // were about. Upstream `FUNC_HEADER_FIELDS` (Hermes' BytecodeFileFormat.h) has
 // changed shape twice inside the "modern" era, and *without a version bump*
 // both times, so the version integer alone is a weak selector. This descriptor

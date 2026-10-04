@@ -32,7 +32,7 @@ pub fn patch_function_body(
 
     // A size-changing edit shifts every body-relative offset. Exception-handler
     // tables (start/end/target) are body-relative and are NOT relocated yet
-    // (WRITE_PATH_GUIDE Q3), so refuse to resize a function that declares one rather than
+    // (plan_guides/06_write/RISKS.md Q3), so refuse to resize a function that declares one rather than
     // ship stale handler offsets. Keyed on the parser's own "has handlers" gate,
     // FLAG_HAS_EXCEPTION_HANDLER (bit 3) — this is precise for both layouts and,
     // unlike `info_offset != 0`, does not over-reject debug-only legacy functions
@@ -44,7 +44,7 @@ pub fn patch_function_body(
                 return Err(Error::Write(format!(
                     "function {function_id} has an exception-handler table; \
                      size-changing edits are not supported (handler offsets are \
-                     body-relative and would be left stale). See WRITE_PATH_GUIDE Q3."
+                     body-relative and would be left stale). See plan_guides/06_write/RISKS.md Q3."
                 )));
             }
         }
@@ -193,7 +193,7 @@ pub fn patch_function_bytes(
     let modern = header_size == 12;
     // Version-keyed byte layout of the out-of-line large header. Resolved once so
     // an unsupported modern version fails here rather than mis-encoding silently
-    // (WRITE_PATH_GUIDE R8/R15).
+    // (plan_guides/06_write/RISKS.md R8/R15).
     let layout = if modern {
         Some(crate::modern_layout::ModernLayout::for_version(
             file.header.version,
@@ -408,7 +408,7 @@ mod tests {
     // The fixture-based test above silently skips without a checked-in .hbc. The
     // tests below build a real image with `create_minimal`, so they run in CI and
     // exercise the grow / shrink / alignment-pad / modern-resize branches that
-    // WRITE_PATH_GUIDE flags as never independently tested.
+    // plan_guides/06_write/RISKS.md flags as never independently tested.
     use crate::write::create::{create_minimal, CreateOptions};
 
     fn make(version: u32) -> (BytecodeFile, BytecodeFormat) {

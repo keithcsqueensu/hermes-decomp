@@ -25,7 +25,7 @@ pub struct PatchOptions {
     /// Default `false` — the edit is refused, mirroring the exception-handler
     /// guard. Location streams store bytecode addresses *within* a function, so a
     /// resize silently repoints every location past the edit; see R24 and
-    /// `docs/UNMODELED_REGIONS_PLAN.md` P0. Measured: no function in the Equinox
+    /// `docs/plan_guides/01_read/unmodeled_regions/PLAN.md` P0. Measured: no function in the Equinox
     /// bundle carries `FLAG_HAS_DEBUG_INFO` (0 of 62,909), so refusing by default
     /// costs the workflow this crate exists for nothing, and fires only on
     /// debug-built bundles where it is right.

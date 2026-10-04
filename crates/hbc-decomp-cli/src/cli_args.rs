@@ -378,7 +378,7 @@ pub enum Command {
         format: FormatArgs,
         /// Proceed with a size-changing edit to a function that carries debug info,
         /// discarding that function's line numbers (they would point at the wrong
-        /// instructions afterwards). Refused by default. See WRITE_PATH_GUIDE R24.
+        /// instructions afterwards). Refused by default. See plan_guides/06_write/RISKS.md R24.
         #[arg(long)]
         allow_stale_debug_info: bool,
     },
@@ -469,7 +469,7 @@ pub enum Command {
         format: FormatArgs,
         /// Proceed with a size-changing edit to a function that carries debug info,
         /// discarding that function's line numbers (they would point at the wrong
-        /// instructions afterwards). Refused by default. See WRITE_PATH_GUIDE R24.
+        /// instructions afterwards). Refused by default. See plan_guides/06_write/RISKS.md R24.
         #[arg(long)]
         allow_stale_debug_info: bool,
     },
@@ -487,7 +487,7 @@ pub enum Command {
         format: FormatArgs,
         /// Proceed with a size-changing edit to a function that carries debug info,
         /// discarding that function's line numbers (they would point at the wrong
-        /// instructions afterwards). Refused by default. See WRITE_PATH_GUIDE R24.
+        /// instructions afterwards). Refused by default. See plan_guides/06_write/RISKS.md R24.
         #[arg(long)]
         allow_stale_debug_info: bool,
     },

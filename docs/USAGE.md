@@ -183,7 +183,7 @@ no FFI and no C++ in `build.rs` — nothing needs to link `hermesvm`.
 
 > An earlier version of this section claimed modern output could only be verified
 > from C++, on macOS, via a helper script. That was wrong on all three counts, and
-> the script it named never existed in this repo. The reasoning ("`hermesvm`
+> the script it named did not exist in this repo at the time. The reasoning ("`hermesvm`
 > exports only mangled C++/JSI symbols with no C ABI") is correct but irrelevant:
 > you do not need to *link* the VM, only to run it.
 

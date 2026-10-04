@@ -1,6 +1,6 @@
 //! P5: the `options` byte is decoded, and the CJS table is labelled by it.
 //!
-//! These are the acceptance criteria from `docs/UNMODELED_REGIONS_PLAN.md` P5,
+//! These are the acceptance criteria from `docs/plan_guides/01_read/unmodeled_regions/PLAN.md` P5,
 //! which closes OB1 (the byte was a bare `u8` nothing read) and OB2 with it (the
 //! CJS module table has two meanings and the deciding bit lives in that byte).
 //!

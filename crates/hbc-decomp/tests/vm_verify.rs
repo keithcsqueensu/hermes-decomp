@@ -2,7 +2,7 @@
 //!
 //! Every other test in this crate asserts that patched output *reparses*. That is
 //! a much weaker claim than it looks: all three defects recorded as R8/R9/R15 in
-//! docs/WRITE_PATH_GUIDE.md produced images that reparsed perfectly and were
+//! docs/plan_guides/06_write/RISKS.md produced images that reparsed perfectly and were
 //! rejected or mis-executed by the real engine. These tests close that gap by
 //! running the output on a real `hvm` binary and asserting on its stdout and exit
 //! code.
@@ -373,7 +373,7 @@ fn string_write_ops_preserve_program_behaviour() {
             &format!("str-grow-v{version}"),
         );
 
-        // Shrink -- listed as a test gap in WRITE_PATH_GUIDE until now.
+        // Shrink -- listed as a test gap in plan_guides/06_write/RISKS.md until now.
         let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
         let out = patch_string_replace(&mut file, &format, "alpha", "ab", &Default::default())
             .expect("shrink patch");

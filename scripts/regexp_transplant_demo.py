@@ -3,7 +3,7 @@
 runs verbatim in another.
 
 This is the evidence behind the **[measured]** claims in
-`docs/UNMODELED_REGIONS_PLAN.md` P4a, kept runnable so they can be re-checked
+`docs/plan_guides/01_read/unmodeled_regions/PLAN.md` P4a, kept runnable so they can be re-checked
 rather than believed. It writes no code into the crate and patches nothing you
 own: it compiles two throwaway bundles, moves the regex bytecode from one into
 the other with a plain seek-and-write, and runs both on a real Hermes VM.

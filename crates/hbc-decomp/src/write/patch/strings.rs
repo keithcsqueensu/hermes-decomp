@@ -1428,7 +1428,7 @@ mod tests {
 
     // ---- patch_string_replace (--old) tests ----
     //
-    // WRITE_PATH_GUIDE flags patch_string_replace (the by-value entry point behind the
+    // plan_guides/06_write/RISKS.md flags patch_string_replace (the by-value entry point behind the
     // CLI's --old) as having no test. These build a real image with create_minimal
     // so they run in CI.
     fn make_v96(strings: Vec<String>) -> (BytecodeFile, BytecodeFormat) {

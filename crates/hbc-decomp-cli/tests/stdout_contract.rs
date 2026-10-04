@@ -1,6 +1,6 @@
 //! The stdout/stderr split, asserted.
 //!
-//! The contract (docs/WRITE_PATH_GUIDE.md, "Stdout/stderr discipline"):
+//! The contract (docs/plan_guides/07_frontends/RISKS.md, "Stdout/stderr discipline"):
 //!
 //!   * **stdout is the requested output data, and nothing else** — the
 //!     machine-consumable result the invocation was *for*. A command that only
@@ -281,9 +281,9 @@ fn errors_use_the_exit_code_and_keep_stdout_clean() {
 }
 
 /// The modern-write note is the single most frequently emitted line the tool
-/// produces, and it spent a long time pointing users at a build script that has
-/// never existed in this repo (R20). Assert the paths it names are real, since
-/// nothing else does.
+/// produces, and it spent a long time pointing users at a build script that did
+/// not exist in this repo (R20; a macOS-only helper by that name arrived later
+/// from upstream). Assert the paths it names are real, since nothing else does.
 #[test]
 fn modern_write_note_points_at_paths_that_exist() {
     let r = run(&[
