@@ -531,14 +531,14 @@ mod tests {
 
     // A grow must shift debug_info_offset (in the header and in the model) by the
     // body delta. create_minimal images carry no debug info, so this needs a real
-    // fixture and skips when one is absent.
+    // corpus fixture (see `corpus_fixture_present`).
     #[test]
     fn debug_info_offset_shifts_on_grow() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../examples/react-native/v96/expressions/generator/bytecode.hbc"
         );
-        if !std::path::Path::new(path).exists() {
+        if !crate::write::corpus_fixture_present(path) {
             return;
         }
         let bytes = std::fs::read(path).unwrap();
@@ -558,8 +558,14 @@ mod tests {
         let first = body[0].clone();
         body.insert(0, first.clone());
         body.insert(0, first);
-        let out =
-            patch_function_body(&mut file, &format, 0, &body, &PatchOptions::default()).unwrap();
+        // hermesc gives function 0 debug info, so a wholesale replacement is refused
+        // by default (R24). This test is about the section offset moving, not about
+        // the line table surviving, so it takes the documented opt-out.
+        let opts = PatchOptions {
+            allow_stale_debug_info: true,
+            ..Default::default()
+        };
+        let out = patch_function_body(&mut file, &format, 0, &body, &opts).unwrap();
         let re = BytecodeFile::parse_auto(&out).unwrap();
         let delta = re.function_headers[0].bytecode_size_in_bytes() as i64 - old_size as i64;
         assert!(delta > 0);

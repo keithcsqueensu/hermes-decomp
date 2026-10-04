@@ -274,7 +274,7 @@ mod tests {
     // patch it, and verify the round-trip.
     #[test]
     fn patch_operand_roundtrip() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -351,7 +351,7 @@ mod tests {
     // FunctionRelative addressing mode.
     #[test]
     fn patch_operand_function_relative() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -398,7 +398,7 @@ mod tests {
     // Patching a non-string instruction should error.
     #[test]
     fn patch_operand_no_string_operand_rejected() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -446,7 +446,7 @@ mod tests {
     // not create invalid bytecode. (Copilot PR #3 finding.)
     #[test]
     fn patch_operand_nonexistent_string_id_rejected() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -495,7 +495,7 @@ mod tests {
     // outside the function. (Copilot PR #3 finding.)
     #[test]
     fn patch_operand_insn_offset_out_of_bounds_rejected() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);

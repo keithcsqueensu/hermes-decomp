@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn retarget_string_basic() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1042,7 +1042,7 @@ mod tests {
 
     #[test]
     fn retarget_string_file_size_unchanged() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1061,7 +1061,7 @@ mod tests {
 
     #[test]
     fn retarget_string_other_strings_unchanged() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1084,7 +1084,7 @@ mod tests {
 
     #[test]
     fn retarget_string_same_id_rejected() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1095,7 +1095,7 @@ mod tests {
 
     #[test]
     fn retarget_string_out_of_range_rejected() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1107,7 +1107,7 @@ mod tests {
 
     #[test]
     fn retarget_string_identifier_hash_updated() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1147,7 +1147,7 @@ mod tests {
     // (a 256-char string forces overflow), then try to retarget from/to it.
     #[test]
     fn retarget_string_overflow_entry_refused() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1171,7 +1171,7 @@ mod tests {
 
     #[test]
     fn add_string_ascii_reparses() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1190,7 +1190,7 @@ mod tests {
 
     #[test]
     fn add_string_utf16() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1205,7 +1205,7 @@ mod tests {
 
     #[test]
     fn add_string_identifier() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1231,7 +1231,7 @@ mod tests {
     // but not add a new run.
     #[test]
     fn add_string_kind_run_extends() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1260,7 +1260,7 @@ mod tests {
     // string_kind entry.
     #[test]
     fn add_string_kind_run_new() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1289,7 +1289,7 @@ mod tests {
     // Existing strings remain intact after an append.
     #[test]
     fn add_string_existing_strings_intact() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1320,7 +1320,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../examples/react-native/v98/expressions/class_basic/bytecode.hbc"
         );
-        if !std::path::Path::new(path).exists() {
+        if !crate::write::corpus_fixture_present(path) {
             return;
         }
         let (mut file, format) = load(path);
@@ -1351,7 +1351,7 @@ mod tests {
     // disassemble correctly (downstream offsets intact).
     #[test]
     fn add_string_downstream_offsets_intact() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);
@@ -1381,7 +1381,7 @@ mod tests {
     // length exceeds the small-entry 8-bit limit (0xff = 255).
     #[test]
     fn add_string_overflow_entry() {
-        if !std::path::Path::new(FIXTURE).exists() {
+        if !crate::write::corpus_fixture_present(FIXTURE) {
             return;
         }
         let (mut file, format) = load(FIXTURE);

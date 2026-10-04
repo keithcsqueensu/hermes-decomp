@@ -168,8 +168,7 @@ harness gate.
   upstream checkouts provisioned by `scripts/fetch_pinned_hermes.py` and the pin strict. What is
   left is the two oracles a public runner cannot cheaply have: a per-version Hermes build
   (`vm_verify`) and the production bundle (`corpus`). Both are infrastructure, not code.
-  ⚠️ **Currently regressed:** `test.yml` is red on `main` and its strict pin step is skipped —
-  a one-line workflow fix; see R21.
+  The regression this pass found (`test.yml` red, strict pin skipped) is fixed; see R21.
 - **One relocation primitive, and an honest `apply_reloc`** → R26. Three hand-rolled copies of
   "splice a region, shift every offset past it", plus a stub that promises a fourth and cannot
   work. Small and self-contained, and a prerequisite for `string_packing/PLAN.md` P1, which
@@ -208,8 +207,7 @@ harness gate.
 - **CLI argument-resolution coverage** → R17, relocated to `../07_frontends/RISKS.md` § CLI
   output surface along with the stdout/stderr contract. Tracked there, not here.
 - **Remaining unit-test gaps** (identifier-resize hash refresh, HASM error paths + handler
-  round-trip, and 22 corpus-reading unit tests that still pass by doing nothing when the
-  corpus is absent) → Test matrix gaps.
+  round-trip) → Test matrix gaps.
 - **Hardening actions** (each lowers one risk's residual) → the register's `Hardening` column.
 
 ---
@@ -299,8 +297,8 @@ length field; the real 32-bit offset+length live in the 8-byte overflow-table sl
 (`strings.rs:44`, `:123`) is **dead** — the offset field is masked to 23 bits
 (`0x7f_ffff`) and can never equal `0x800000`. `retarget_string` correctly checks only
 `len == 0xff` (`strings.rs:257`); a regression test guards this
-(`retarget_string_overflow_entry_refused`, `strings.rs:1149` — corpus-dependent, so it is a
-silent no-op wherever the corpus is not built; see Test matrix gaps). New
+(`retarget_string_overflow_entry_refused`, `strings.rs:1149` — corpus-dependent, and now a
+loud failure rather than a silent no-op when the corpus is absent). New
 overflow logic must key on `len == 0xff`, and encode overflow when `off >= 0x80_0000 ||
 len_field >= 0xff`.
 **[source] Confirmed upstream at v99**, which settles it beyond inference:
@@ -516,7 +514,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R15 | Modern large-header field order in `create` | create | L×H | ⬜ **fixed** | `build_minimal_modern` writes fields at `ModernLayout` offsets and sets `PROHIBIT_NONE` at `large_flags_pos()`. `create_minimal_runs_on_vm` asserts the output **executes** on the matching engine for every fixture version | — (fixed with R8) |
 | R16 | `create` writes a zero `source_hash` | create | L×L | 🟩 | fine for minimal images | **Decision:** compute the real `source_hash` vs keep zero and document created files as "unsigned at source". Minor; only once `create` backs a real emitter. |
 | R19 | Bundled `Bytecode*.json` and the header-struct code are pinned to **different** Hermes commits, and neither pin is checked | all | M×H | ⬜ **fixed** | Three layers now. (1) `tests/upstream_pin.rs` re-derives both from a checkout and fails when either disagrees — it found the v99 drift, then v97's two tables. (2) `GitCommitHash` is parsed into `BytecodeFormat` and `tables_record_the_commit_they_came_from` requires the configured checkout to *be* that commit, so “wrong checkout” and “upstream moved” are now different failures with different messages. (3) `scripts/gen_bytecode_table.py` re-derives a table from a checkout | The presence and shape of `GitCommitHash` is asserted with **no env var set**, so an unconfigured run is no longer entirely silent. The content comparison is still gated on a checkout — that residue is R21, not R19. |
-| R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` (v96/v98/v99) and asserts stdout + exit code; `tests/corpus.rs` sweeps a production bundle; `tests/upstream_pin.rs` re-derives the format from upstream. Verified to fail on every defect they were written for. **The gate is now closeable, and partly closed**: `HBC_REQUIRE_ORACLES` (`tests/common/mod.rs`) promotes any absent oracle from a printed `[skip]` to a failure naming the variable to set, and a set-but-wrong path is an error in every mode; `.github/workflows/test.yml` runs the suite at all (CI previously only built binaries) and re-runs `upstream_pin` with all four checkouts provisioned by `scripts/fetch_pinned_hermes.py` under `HBC_REQUIRE_ORACLES=src`. Since the upstream v0.2.4 merge, `build.yml` also lints (`cargo fmt --check`, `cargo clippy -D warnings`) and runs `cargo test --workspace --release` on four platforms with `HBC_CORPUS_OPTIONAL=1`; locally, `scripts/build/gates.sh` adds a release build, the `roundtrip.sh` corpus and the parse check. ⚠️ **`test.yml` is nonetheless red on `main`:** its no-oracle step does not set `HBC_CORPUS_OPTIONAL`, so the 13 unit tests gated by `corpus_fixture_present` (`write/mod.rs`) panic on the untracked corpus (CI run 37163482195: 491 passed, 13 failed), and the strict `upstream_pin` step after it is skipped — the format pin is **not currently enforced** by CI | **First, the regression:** set `HBC_CORPUS_OPTIONAL=1` on `test.yml`'s first step (or build the corpus there), then confirm the strict pin step is green — the last time it ran (2026-09-16, the v0.2.3 merge) it failed in `debug_info_shapes_match_upstream`, and whether that still holds is unchecked. Then: residual 🟧 for what is still opt-in — `vm_verify` and `corpus`. Their oracles are a per-version Hermes build and a third-party bundle, so neither fits cheaply on a public runner, and a green CI run still does not mean "the output executed on a real engine". The standing work is a runner that has the builds — self-hosted, or a cached per-version build job — setting `HBC_REQUIRE_ORACLES=vm`. Note what the CI job does *not* buy: the pins are fixed commits, so it catches our encoded format drifting from the commit it claims, not upstream moving. |
+| R21 | No VM check anywhere in CI — "reparses" is treated as "correct" | all | H×H | 🟧 | `tests/vm_verify.rs` runs each write op on a real `hvm` (v96/v98/v99) and asserts stdout + exit code; `tests/corpus.rs` sweeps a production bundle; `tests/upstream_pin.rs` re-derives the format from upstream. Verified to fail on every defect they were written for. **The gate is now closeable, and partly closed**: `HBC_REQUIRE_ORACLES` (`tests/common/mod.rs`) promotes any absent oracle from a printed `[skip]` to a failure naming the variable to set, and a set-but-wrong path is an error in every mode; `.github/workflows/test.yml` runs the suite at all (CI previously only built binaries) and re-runs `upstream_pin` with all four checkouts provisioned by `scripts/fetch_pinned_hermes.py` under `HBC_REQUIRE_ORACLES=src`. Since the upstream v0.2.4 merge, `build.yml` also lints (`cargo fmt --check`, `cargo clippy -D warnings`) and runs `cargo test --workspace --release` on four platforms with `HBC_CORPUS_OPTIONAL=1`; locally, `scripts/build/gates.sh` adds a release build, the `roundtrip.sh` corpus and the parse check. A regression found in this pass is **fixed** (`0e404d2`): `test.yml`'s no-oracle step did not set `HBC_CORPUS_OPTIONAL`, so the corpus-gated unit tests panicked (CI run 37163482195: 491 passed, 13 failed) and the strict `upstream_pin` step behind it never ran; and that step had been failing on its own since it last ran (2026-09-16), because `fetch_pinned_hermes.py`'s sparse checkout lacked `lib/BCGen/HBC/DebugInfo.cpp`, where `debug_info_shapes_match_upstream` reads v96's stream shape. Both fixed; strict mode passes 5/5 | Residual 🟧 for what is still opt-in — `vm_verify` and `corpus`. Their oracles are a per-version Hermes build and a third-party bundle, so neither fits cheaply on a public runner, and a green CI run still does not mean "the output executed on a real engine". The standing work is a runner that has the builds — self-hosted, or a cached per-version build job — setting `HBC_REQUIRE_ORACLES=vm`. Note what the CI job does *not* buy: the pins are fixed commits, so it catches our encoded format drifting from the commit it claims, not upstream moving. |
 | R23 | An op's output is only ever checked against our own model | all | M×H | 🟩 | Three independent oracles now exist: a real VM (does it run), upstream headers and `BytecodeList.def` (does our format model match theirs), and `hbcdump` (does a second implementation read the same instructions) | Keep reaching for an external oracle when adding a check. The three findings this pass — stale model, opcode drift, debug stack overflow — were each invisible to a test written against our own assumptions, and each fell out immediately once something else was asked. |
 | R24 | A size-changing edit silently invalidates a function's debug info | fn/inject | M×M | ⬜ **fixed** | **Neither silent nor invalid any more: an insertion is relocated, a wholesale replacement is refused.** `inject-stub` shifts the affected addresses (`write/patch/debug_reloc.rs`, P2) — one SLEB128 delta, because every later entry is relative to it — and re-points the debug region when that changes length. `asm`/`patch-function` still refuse, because a replaced body has no old-address-to-new-address mapping to follow; that is a capability gap, not a correctness one. Previously: **guarded** (P0 of `../01_read/unmodeled_regions/PLAN.md`, `tests/debug_info_guard.rs`): `patch_function_body` refuses a size-changing edit to a function with `FLAG_HAS_DEBUG_INFO` when the file actually has a debug section, with `--allow-stale-debug-info` / `PatchOptions::allow_stale_debug_info` as the explicit opt-out. Keyed on the section as well as the flag because `create` sets the flag on an image with no debug info at all. Refusing by default is free on real targets: **0 of the Equinox bundle's 62,909 functions carry the flag** [measured]. Previously: nothing. Location streams store bytecode addresses *within* a function as SLEB128 deltas; a resize shifts `debug_info_offset` (the section) and rewrites nothing inside it, so every location past the edit point maps to the wrong instruction. No error, no warning | — (fixed). Two residuals worth naming rather than hiding: a wholesale body replacement still cannot keep its line table, by nature rather than by omission; and both the guard and the relocation key on `FLAG_HAS_DEBUG_INFO`, so a file whose functions carry debug info the flag does not admit to would slip past — unmeasured, and unlikely, since the flag is what upstream's own serializer writes the region from |
 | R25 | The debug-info reader is hardcoded to the v96 header shape | all | M×M | ⬜ **fixed** | `DebugLayout::for_version` keys the header size (28 B at v96, 16 at v98+), whether the lexical sub-regions exist, and which of the two location-stream encodings applies; unmodelled versions yield no debug info rather than a mis-ruled read. `debug_info_shapes_match_upstream` derives all four quantities from each checkout and fails if any drifts — verified by breaking each in turn. Previously: `DebugInfo::parse` takes no version (`debug.rs:88`) and `parse_header` reads seven `u32`s unconditionally (`debug.rs:148`), but `DebugInfoHeader` is **28 B at v96, 20 B at v97, 16 B at v98/v99** — upstream deleted the scope-descriptor, textified-callee and string-table offsets. On a modern file it reads 12 bytes too many and computes `data_start` from the wrong base | — (fixed). The old claim that this was "never exercised because every fixture lacks debug info" was backwards: every fixture *has* debug info, so the wrong-sized read ran on every parse and was merely unasserted. Confirmed before the fix by compiling one source at three versions: 5 scope descriptors and an 8-entry debug string table at v96, zeros at v98/v99 |
@@ -718,20 +716,17 @@ marked so below. But not all of them run everywhere; what decides it is the inpu
 > ⚠️ **Which unit tests actually run (re-derived at `81c4e2a`).** Three kinds:
 > - **Self-contained** — build their image with `create_minimal` (the `--old` replace tests,
 >   the Q9 warn tests, the alignment/Q8/handler-guard tests, the `LogEntry` tests). Run in CI.
-> - **Corpus, gated by `corpus_fixture_present`** (`write/mod.rs`, from upstream v0.2.4) — 13
->   tests across `serialize`, `encode`, `footer`, `emit`, `strings`, `functions`, `inject` that
+> - **Corpus, gated by `corpus_fixture_present`** (`write/mod.rs`) — 35 tests across
+>   `serialize`, `encode`, `footer`, `emit`, `strings`, `operands`, `functions`, `inject` that
 >   read the generated corpus under `examples/react-native/` (rebuilt by
 >   `scripts/build/fetch_hermesc.sh` + `build_corpus.sh`, untracked). Missing corpus **fails**
->   unless `HBC_CORPUS_OPTIONAL` is set, which `build.yml` does and `test.yml` does not (R21).
-> - **Corpus, still gated by a bare `Path::exists()`** — **22 tests that silently pass when the
->   corpus is absent**, i.e. in CI and on every fresh clone: all 7 `retarget_string_*` and all 9
->   `add_string_*` tests in `strings.rs`, 5 of the 7 in `operands.rs` (every one but the Q9
->   pair), and `functions.rs::debug_info_offset_shifts_on_grow`. Upstream's change converted
->   only the tests it knew about. These include the `len == 0xff` overflow-refusal guard (I8)
->   and the only modern `add_string` unit test. The fix is mechanical — route them through
->   `corpus_fixture_present`. `vm_verify.rs` does run `add_string` / `retarget_string` on the
->   tracked `tests/fixtures/*.hbc` in CI, but with no VM it asserts only that the op does not
->   error — none of the specific properties those unit tests check.
+>   unless `HBC_CORPUS_OPTIONAL` is set, which both CI workflows do. Upstream v0.2.4 converted
+>   13; the other 22 (all `retarget_string_*` and `add_string_*`, 5 of 7 in `operands.rs`, and
+>   `debug_info_offset_shifts_on_grow`) passed silently on a bare `Path::exists()` until this
+>   pass converted them. Running them for the first time, against a v96/v98 corpus built with
+>   the local `hermesc` builds, found `debug_info_offset_shifts_on_grow` broken since R24's
+>   guard shipped (it now takes `allow_stale_debug_info`); the other 34 pass. They still run
+>   only where a corpus is built: CI opts out, so in CI they assert nothing.
 
 > ⚠️ **The gap this list did not have a row for — now largely closed.** Every test in
 > the `#[cfg(test)]` modules asserts that output *reparses*. Not one asserts that it
@@ -775,8 +770,7 @@ marked so below. But not all of them run everywhere; what decides it is the inpu
 - **`footer`** (`footer.rs`): fixture match + rehash-identity. Still missing: `rehash_footer`
   on a `< 20`-byte buffer; `verify_footer` on a truncated/short image.
 - **`functions`** (`functions.rs`): **now covered** — grow, shrink, alignment-pad, modern-v98
-  overflowed resize, `debug_info_offset` shift (corpus-dependent, and a silent skip without
-  it — above), the handler-size-change
+  overflowed resize, `debug_info_offset` shift (corpus-dependent — above), the handler-size-change
   rejection guard, and the Q8 missing-`AsyncBreakCheck` hard error. Still missing: a function
   **with a real exception-handler table** exercised through actual bytecode — **this is the
   test whose absence hid R9**, because the guard test sets the flag synthetically and so
@@ -796,8 +790,8 @@ marked so below. But not all of them run everywhere; what decides it is the inpu
   (e.g. `CreateRegExp`); the **width-overflow rejection** (id larger than operand width);
   `UInt16S`/`UInt32S` operands; **modern v98**.
 - **`strings`** (`strings.rs`): broad — same-length, grow-resize, packed→resize, ascii→utf16,
-  retarget (7 cases), add_string (9 cases incl. modern v98) — all 16 of those a silent skip
-  without the corpus, see above — and **now `patch_string_replace`
+  retarget (7 cases), add_string (9 cases incl. modern v98) — all corpus-dependent, see
+  above — and **now `patch_string_replace`
   (`--old`)**: same-length, grow, and not-found error. Still missing as *tests*: **shrink**
   resize; **resize of an identifier** (hash refresh under the resize path, as opposed to
   same-length/retarget); **patch/resize on modern** (only `add_string` is modern-tested); a

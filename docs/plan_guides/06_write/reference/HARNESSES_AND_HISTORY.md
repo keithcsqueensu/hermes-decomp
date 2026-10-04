@@ -67,18 +67,19 @@ itself a failure — a typo that quietly enforced nothing would be this same def
 the one place nobody would look.
 
 CI (`.github/workflows/test.yml`) runs the suite unconfigured, then provisions the four
-upstream checkouts with `scripts/fetch_pinned_hermes.py` — ~4 MB and a few seconds, because it
+upstream checkouts with `scripts/fetch_pinned_hermes.py` — a few MB and seconds, because it
 is a blobless sparse fetch by the sha each table records — and re-runs `upstream_pin` under
 `HBC_REQUIRE_ORACLES=src`. `vm_verify` and `corpus` stay opt-in there. `.github/workflows/build.yml`
 is the other half: fmt and clippy as a lint job, then `cargo test --workspace --release` on
 Linux, macOS and Windows under `HBC_CORPUS_OPTIONAL=1`, because the generated corpus is never on a
 runner.
 
-⚠️ **`test.yml`'s unconfigured step does not set `HBC_CORPUS_OPTIONAL`**, so since
-`corpus_fixture_present` started failing on a missing fixture (`197b243`) that step fails on every
-runner — 13 write-module tests panic with "corpus fixture missing" (run 37163482195, `main`
-@ `81c4e2a`) — and the strict `upstream_pin` step after it never runs. Its own name ("the
-unconfigured path stays green") is the claim it falsifies.
+`test.yml`'s unconfigured step sets `HBC_CORPUS_OPTIONAL` too, since `0e404d2`. Before that,
+once `corpus_fixture_present` started failing on a missing fixture (`197b243`), the step failed
+on every runner (run 37163482195, `main` @ `81c4e2a`) and the strict `upstream_pin` step after it
+never ran — which hid that the strict step was itself broken: the sparse fetch lacked
+`lib/BCGen/HBC/DebugInfo.cpp`, which `debug_info_shapes_match_upstream` reads at v96. The fetch
+now checks out both directories (~1.6 MB per version).
 
 ### What each is good at, and what it cannot see
 
