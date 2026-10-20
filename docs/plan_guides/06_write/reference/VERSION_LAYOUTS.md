@@ -145,7 +145,7 @@ that. This section is the concrete statement of R8.
 |---|---|
 | The descriptor itself | `ModernLayout` in `crates/hbc-decomp/src/modern_layout.rs` |
 | Reading a large header | `parse_large_header_modern` (`file/parser/function.rs`) |
-| Relocating one on resize | `resize_overflowed_function` (`write/patch/functions.rs`) |
+| Relocating one on resize | `relocate_overflowed` (`write/reloc.rs`; formerly `resize_overflowed_function`) |
 | Reserving stub registers | `reserve_modern_log_regs` (`write/patch/inject.rs`) |
 | Emitting one from scratch | `build_minimal_modern` (`write/serialize.rs`) |
 | Proving it against an engine | `crates/hbc-decomp/tests/vm_verify.rs` |
@@ -164,7 +164,7 @@ Reassuring, and worth stating so the fix stays small **[source]**:
   LoopDepth:2 | BytecodeSizeInBytes:14, FunctionName:8, NumberRegCount:5, NonPtrRegCount:5 |
   FrameSize:u8 | ReadCacheSize:u8 | WriteCacheSize:7+PrivateNameCacheSize:1 | flags:u8`. So
   `reserve_modern_log_regs`'s small-header offsets (frame `+8`, cache `+9`, `inject.rs:72`)
-  are still correct, and so is `resize_modern_small`'s 25-bit body-offset field.
+  are still correct, and so is the 25-bit body-offset field `relocate_modern_small` (`reloc.rs`) shifts.
 - **Q2 is confirmed verbatim.** `SmallFuncHeader(uint32_t largeHeaderOffset)` does
   `setOffset(x & 0xffffff); setFunctionName((x >> 24) & 0xff)` and reads it back as
   `(getFunctionName() << 24) | getOffset()` — the 24-bit packed pointer. The 25-bit field is
@@ -465,7 +465,7 @@ a layout drifts again), `—` blocked before it could run.
 | `patch-string --old` (replace) | **Yes** (via resize) | **Yes** (v98 + v99, `vm_verify`) | ✅ | by-value lookup then resize/same-length (`strings.rs:857`) |
 | `retarget-string` | Layout-agnostic | **Yes** (v98 + v99, `vm_verify`) | ✅ | touches small table + id hash only (`strings.rs:214`); refuses overflow |
 | `patch-operand` | Layout-agnostic | No | ✅ | decodes at offset (`operands.rs:89`) |
-| `asm` / `patch-function` | **Yes** | **Yes** (v98) | ✅ identity | `resize_modern_small` + `resize_overflowed_function` (now `ModernLayout`-driven); tested (`modern_v98_overflowed_resize_reparses`). Reachability is gated by the Q3/Q4 check, which is now correct |
+| `asm` / `patch-function` | **Yes** | **Yes** (v98) | ✅ identity | `write::reloc::relocate` (formerly `resize_modern_small` + `resize_overflowed_function`; `ModernLayout`-driven); tested (`modern_v98_overflowed_resize_reparses`). Reachability is gated by the Q3/Q4 check, which is now correct |
 | `asm-check` (`run_roundtrip_check`) | inherits `asm`/`emit-hasm` | No | ✅ `OK` | `write_cmd.rs:407`; no test |
 | `inject-stub` | **Yes** | **Yes** (v96 + v98 + v99) | ✅ | `reserve_modern_log_regs` was already correct at v99 (frame `+28`/cache `+32` never moved), now via `ModernLayout`; the failure had been upstream, in the handler guard that let it run |
 | `create` | **Yes** | **Yes** (v96 + v98 + v99) | ✅ runs | `create_minimal` dispatches to `build_minimal_modern` at v≥97; writes a `ModernLayout`-sized large header and is asserted to execute |
@@ -494,8 +494,8 @@ its 🟢s suggested. Expect the same split next time upstream reshapes something
 - **24 vs 25 bit body-offset field — resolved (Q2), not a bug, and re-confirmed at v99.** The
   24-bit mask (`read_modern_large_pointer`, `header_write.rs`) reads the **overflowed** packed
   large-header pointer (offset portion 24 bits); the 25-bit mask
-  (`shift_modern_small_header_offset`, `header_write.rs:113`; `resize_modern_small`,
-  `functions.rs:290`) shifts the **non-overflowed** body-offset field (25 bits). Different
+  (`relocate_modern_small`, `reloc.rs`; formerly `shift_modern_small_header_offset` and
+  `resize_modern_small`) shifts the **non-overflowed** body-offset field (25 bits). Different
   fields; both correct. The v99 source states both verbatim (see Q2).
 - **VM verification: built, opt-in.** The old blocker (no C ABI, macOS-only helper) was never
   real — `hvm` is a subprocess. `tests/vm_verify.rs` now runs every write op on **v96, v98 and

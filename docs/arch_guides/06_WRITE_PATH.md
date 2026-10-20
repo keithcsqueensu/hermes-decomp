@@ -42,7 +42,7 @@ Two properties define it, and both are the reason the plan_guides exist:
 | **Create** | `create.rs` | minimal valid `.hbc` from scratch (`create_minimal`, `CreateOptions`) |
 | **Footer** | `footer.rs` | SHA-1 over all preceding bytes — refreshed after any edit |
 | **Header write** | `header_write.rs` | binary writers for HBC file/function headers, plus the read/shift helpers for small-header offsets and packed large-header pointers (legacy and modern) |
-| **Relocation** | `reloc.rs` | only a placeholder `RelocPlan` and an `apply_reloc` that refuses; the real splice-and-shift is hand-rolled in `patch::patch_function_bytes` and the string paths — see `../plan_guides/06_write/relocation/PLAN.md` |
+| **Relocation** | `reloc.rs` | `relocate(file, buf, &Reloc { moved_from, delta, resized })` — the one splice-and-shift primitive: after an op replaces one region, shifts every absolute offset at or past the region's old end (body / info offsets, overflowed large-header pointers and fields, `debug_info_offset`), writes a resized body's size, and refuses a non-4-aligned delta or a value that does not fit its header field. `patch_function_bytes`, `patch_string_resize` and `add_string` all go through it — see `../plan_guides/06_write/relocation/PLAN.md` |
 | **HASM** | `hasm/{mod,parse,emit}.rs` | our disasm dialect: `emit` text ← bytecode, `parse` text → instructions, assemble into a patched image |
 | **Patch** | `patch/mod.rs` + submodules | edit an existing image, split by concern (below); `PatchOptions` (incl. `allow_stale_debug_info`) |
 
@@ -64,7 +64,7 @@ the plan guides, which have their own index (`../plan_guides/README.md`):
 | Question | Guide |
 |---|---|
 | Write-path invariants, hazards, op inventory, risk register | `../plan_guides/06_write/RISKS.md` |
-| The absolute-offset surface; splice-and-shift; should `RelocPlan` exist | `../plan_guides/06_write/relocation/PLAN.md` |
+| The absolute-offset surface; splice-and-shift; the structured rebuild (P3) | `../plan_guides/06_write/relocation/PLAN.md` |
 | Per-region read/interpret/emit status; how each unmodeled region serializes | `../plan_guides/01_read/unmodeled_regions/PLAN.md` |
 | How string storage is laid out and could be repacked (no dedup today) | `../plan_guides/06_write/string_packing/PLAN.md` |
 | The decompiler's closure/env-slot model (read-side, but chained here) | `../plan_guides/03_analysis/closure_model/PLAN.md` |

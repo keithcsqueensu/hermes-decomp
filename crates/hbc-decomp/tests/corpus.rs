@@ -37,7 +37,10 @@ mod common;
 use common::Oracle;
 
 use hbc_decomp::write::patch::PatchOptions;
-use hbc_decomp::{add_string, encode_function_body, retarget_string, BytecodeFile, BytecodeFormat};
+use hbc_decomp::{
+    add_string, encode_function_body, patch_function_bytes, retarget_string, BytecodeFile,
+    BytecodeFormat, FunctionHeader,
+};
 
 fn corpus() -> Option<(Vec<u8>, PathBuf)> {
     let path = common::oracle_path(Oracle::Corpus, None, |p| p.is_file(), "an existing file")?;
@@ -317,6 +320,139 @@ fn appending_a_string_shifts_every_function_offset_uniformly() {
         "  {} functions all shifted by {}",
         after.function_headers.len(),
         deltas.keys().next().unwrap()
+    );
+}
+
+/// A header with everything a relocation may change blanked out: the body
+/// offset, the info offset and the body size. What is left must never move.
+fn fixed_fields(h: &FunctionHeader) -> String {
+    match h.clone() {
+        FunctionHeader::Legacy(mut l) => {
+            (l.offset, l.info_offset, l.bytecode_size_in_bytes) = (0, 0, 0);
+            format!("{l:?}")
+        }
+        FunctionHeader::Modern(mut m) => {
+            (m.offset, m.info_offset, m.bytecode_size_in_bytes) = (0, 0, 0);
+            format!("{m:?}")
+        }
+    }
+}
+
+fn info_offset(h: &FunctionHeader) -> u32 {
+    match h {
+        FunctionHeader::Legacy(l) => l.info_offset,
+        FunctionHeader::Modern(m) => m.info_offset,
+    }
+}
+
+// R26 -- the string paths and the body path relocate through one primitive, and
+// this is the assertion three hand-written copies could never make: the same
+// delta, spliced at two different points, must move every header past both
+// points identically. It also pins P2: a body resize rewrites only the offset
+// and size bits, so no other decoded field of any header may change.
+#[test]
+fn a_string_append_and_a_body_grow_relocate_identically() {
+    let (bytes, _) = corpus_or_skip!();
+    let before = BytecodeFile::parse_auto(&bytes).expect("corpus parses");
+    let format = BytecodeFormat::for_version(before.header.version).expect("opcode table");
+
+    let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
+    let (by_string, _) = add_string(
+        &mut file,
+        &format,
+        "HBC_CORPUS_RELOC_PROBE",
+        false,
+        &PatchOptions::default(),
+    )
+    .expect("add_string on the corpus");
+    let by_string = BytecodeFile::parse_auto(&by_string).unwrap();
+    let delta =
+        by_string.function_headers[0].offset() as i64 - before.function_headers[0].offset() as i64;
+    assert!(delta > 0 && delta % 4 == 0, "string append delta {delta}");
+
+    // Grow the earliest body that has room, so nearly every header is past both
+    // splice points. The padding is never executed; only the headers matter here.
+    let small_max = if before.header.function_header_layout
+        == hbc_decomp::format::FunctionHeaderLayout::Modern12
+    {
+        1 << 14
+    } else {
+        1 << 15
+    };
+    let target = (0..before.function_headers.len())
+        .filter(|&i| {
+            let h = &before.function_headers[i];
+            h.is_overflowed() || (h.bytecode_size_in_bytes() as i64 + delta) < small_max
+        })
+        .min_by_key(|&i| before.function_headers[i].offset())
+        .expect("a growable function");
+    let abc = format
+        .definitions
+        .iter()
+        .find(|d| d.name == "AsyncBreakCheck")
+        .expect("AsyncBreakCheck")
+        .opcode;
+    let th = &before.function_headers[target];
+    let (t_off, t_size) = (th.offset() as usize, th.bytecode_size_in_bytes() as usize);
+    let mut body = bytes[t_off..t_off + t_size].to_vec();
+    body.resize(t_size + delta as usize, abc);
+    let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
+    let by_body = patch_function_bytes(&mut file, target as u32, &body).expect("body grow");
+    let by_body = BytecodeFile::parse_auto(&by_body).unwrap();
+
+    assert_eq!(
+        by_string.header.debug_info_offset, by_body.header.debug_info_offset,
+        "debug_info_offset relocated differently"
+    );
+    let mut past_both = 0usize;
+    for (i, was) in before.function_headers.iter().enumerate() {
+        let (s, b) = (&by_string.function_headers[i], &by_body.function_headers[i]);
+        assert_eq!(
+            fixed_fields(was),
+            fixed_fields(s),
+            "fn#{i}: add_string changed a fixed field"
+        );
+        assert_eq!(
+            fixed_fields(was),
+            fixed_fields(b),
+            "fn#{i}: body grow changed a fixed field"
+        );
+        // FunctionInfo (and every large header) sits after all the code, so it is
+        // past both splice points for every function, the grown one included.
+        assert_eq!(
+            info_offset(s),
+            info_offset(b),
+            "fn#{i}: info offset relocated differently"
+        );
+        if i == target {
+            assert_eq!(
+                b.offset(),
+                was.offset(),
+                "the grown body itself must not move"
+            );
+            assert_eq!(b.bytecode_size_in_bytes() as usize, t_size + delta as usize);
+        } else if was.offset() as usize >= t_off + t_size {
+            past_both += 1;
+            assert_eq!(
+                s.offset(),
+                b.offset(),
+                "fn#{i}: body offset relocated differently"
+            );
+        } else {
+            assert_eq!(
+                b.offset(),
+                was.offset(),
+                "fn#{i} sits before the grown body"
+            );
+        }
+    }
+    assert!(
+        past_both > 0,
+        "no header past both splices; the differential checked nothing"
+    );
+    println!(
+        "  {past_both} of {} headers past both splices relocated identically (delta {delta}, grew fn#{target})",
+        before.function_headers.len()
     );
 }
 

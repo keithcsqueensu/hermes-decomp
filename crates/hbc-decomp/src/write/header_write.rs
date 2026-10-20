@@ -104,49 +104,6 @@ pub fn patch_legacy_small_header_offset_size(
     Ok(())
 }
 
-// Shift the body `offset` field (bits 0..=24, a 25-bit field) of a Modern12
-// function header by `delta`, reading and rewriting the field in place so it
-// does not depend on any decoded value. Only valid for non-overflowed modern
-// headers, where this field is the real body offset. (When overflowed, the same
-// bits hold a packed large-header pointer whose offset portion is only 24 bits
-// — see `read_modern_large_pointer`.)
-pub fn shift_modern_small_header_offset(slot: &mut [u8], delta: i64) -> Result<()> {
-    if slot.len() < 12 {
-        return Err(Error::Write("modern function header slot too small".into()));
-    }
-    let mut bytes = [0u8; 16];
-    bytes[..12].copy_from_slice(&slot[..12]);
-    let mut raw = u128::from_le_bytes(bytes);
-    let cur = (raw & ((1u128 << 25) - 1)) as i64;
-    let new_offset = (cur + delta) as u128 & ((1u128 << 25) - 1);
-    raw &= !((1u128 << 25) - 1);
-    raw |= new_offset;
-    let out = raw.to_le_bytes();
-    slot[..12].copy_from_slice(&out[..12]);
-    Ok(())
-}
-
-// Shift the body offset (bits 0..24) and, when set, the info offset (bits
-// 64..88) of a non-overflowed Legacy16 small header by `delta`, in place.
-pub fn shift_legacy_small_header_offsets(slot: &mut [u8], delta: i64) -> Result<()> {
-    if slot.len() < 16 {
-        return Err(Error::Write("function header slot too small".into()));
-    }
-    let mut raw = u128::from_le_bytes(slot[..16].try_into().unwrap());
-    let off = (raw & ((1u128 << 25) - 1)) as i64;
-    let info = ((raw >> 64) & ((1u128 << 25) - 1)) as i64;
-    let new_off = (off + delta) as u128 & ((1u128 << 25) - 1);
-    raw &= !((1u128 << 25) - 1);
-    raw |= new_off;
-    if info != 0 {
-        let new_info = (info + delta) as u128 & ((1u128 << 25) - 1);
-        raw &= !(((1u128 << 25) - 1) << 64);
-        raw |= new_info << 64;
-    }
-    slot[..16].copy_from_slice(&raw.to_le_bytes());
-    Ok(())
-}
-
 // Read the body offset (bits 0..24) of a Legacy16 large header packed pointer:
 // large_ptr = (info_offset << 16) | offset, where offset is bits 0..24 and
 // info_offset is bits 64..88 of the small header.

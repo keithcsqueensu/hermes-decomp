@@ -16,11 +16,17 @@ different contracts. This plan is about closing that gap.
 
 ---
 
-## What is actually true today
+> **Status: P0–P2 shipped.** `write/reloc.rs` is now the
+> one primitive, `relocate(file, buf, &Reloc)`; `apply_reloc`/`RelocPlan` are deleted; all three
+> copies below call it; R26 is fixed. P3 is unchanged — on a named trigger. "What is actually
+> true today" below is kept as the **pre-P1 analysis** that motivated the work; its `[code]`
+> references point at `81c4e2a`, before the change. § P1 records how the shipped primitive
+> differs from the sketch.
 
-Re-derived at `81c4e2a`: **none of P0–P3 has shipped.** The write path's relocation code has
-had only `cargo fmt`/clippy churn since `92fc80e`, so the analysis below still holds;
-the `[code]` references are re-pointed to that commit.
+## What was true before P1
+
+Re-derived at `81c4e2a`: none of P0–P3 had shipped. The write path's relocation code had
+had only `cargo fmt`/clippy churn since `92fc80e`.
 
 ### The stub
 
@@ -162,7 +168,7 @@ FunctionInfo region. One primitive should assert it once, with the reason attach
 
 ## Plan
 
-### P0 — Make the promise honest *(30 minutes)*
+### P0 — Make the promise honest — ✅ **shipped**
 
 Delete `apply_reloc` and `RelocPlan`, or replace them with P1's real signature. Do not leave the
 current pair in place: an exported type with no producer, whose field names imply a design the
@@ -173,7 +179,9 @@ than a placeholder left.
 `RelocPlan` is `pub use`d, so removing it is a breaking change to the public API. The crate is
 0.x and the type is inert, so this is a version-number question, not a design one.
 
-### P1 — One relocation primitive *(the actual work, ~1 day)*
+**Shipped as:** both deleted; `write` now re-exports `relocate` and `Reloc` in their place.
+
+### P1 — One relocation primitive — ✅ **shipped**
 
 ```rust
 /// One spliced region, and the size change it caused.
@@ -213,12 +221,46 @@ the three-copy structure cannot currently make, and it is the one that would cat
 in one copy and not the others. The existing `vm_verify` suite is the backstop: the primitive is
 a refactor, so every op must still run on a real engine with unchanged output.
 
-### P2 — Retire the legacy re-encode *(folded into P1)*
+**As shipped** (`write/reloc.rs`), three differences from the sketch above, each for a reason:
+
+- **`moved_from`, not `splice_at`.** The threshold is the **old end** of the replaced region,
+  not its start. With the start, the resized function's own body offset (which equals the
+  splice point) would shift; with the end, "offsets `>= moved_from` move" is one rule for both
+  ops — the string paths pass the old start of the array buffer, the body path the old end of
+  the body.
+- **A value that does not fit its field is refused.** The old copies masked: a body grown past
+  the small header's size field — **15 bits legacy, 14 bits modern** — or an offset past 25 bits
+  was silently truncated into a header that reparsed with the wrong value. `relocate` returns an
+  error naming the field. (Turning such a function into an overflowed one is not relocation and
+  is not attempted.)
+- **It checks its own precondition:** the function-header table must lie before the splice,
+  which is what lets every slot be edited at its old position.
+
+**Tests.** `reloc::tests` (unit, committed fixtures): a non-4-aligned delta is refused; a size
+one past the legacy 15-bit and the modern 14-bit field is refused; the largest size that fits is
+accepted and reparses. `tests/corpus.rs`
+`a_string_append_and_a_body_grow_relocate_identically` is the differential, **[measured]** on two
+v96 production bundles with `HBC_REQUIRE_ORACLES=vm,hbcdump,corpus`:
+
+```
+Equinox 11.43.0    63956 of 63957 headers past both splices relocated identically (delta 437228)
+CoachRx 2.1.223    51175 of 51176 headers past both splices relocated identically (delta 305196)
+```
+
+The delta is `add_string`'s (the unpacked rebuild, `../string_packing/PLAN.md`), so the grown body
+is the global function, which is overflowed on both; the small-header size write is what the unit
+tests cover. `vm_verify` (v96/v98/v99 engines) and the `hbcdump` differential pass unchanged.
+
+### P2 — Retire the legacy re-encode — ✅ **shipped** (folded into P1)
 
 `patch_function_bytes` should shift the legacy small header in place like everything else, which
 deletes RE1 rather than documenting it. If the re-encode is kept for some reason not visible
 here, pin it instead: the probe above is three lines of assertion over a corpus bundle, and
 without it the property is only known to hold on one bundle on one day.
+
+**Shipped as:** the re-encode is deleted; every legacy small header is shifted in place. The
+corpus differential also asserts that no decoded header field other than the offsets and the
+resized size changes under either op, which is the property the re-encode put at risk.
 
 ### P3 — The structured rebuild, *if* an op ever demands it
 
@@ -261,7 +303,7 @@ than left implicit.
 
 ## Ordering
 
-1. **P0 + P1 + P2 as one change.** Roughly a day. It removes two duplicate implementations and
+1. ✅ **P0 + P1 + P2 as one change** — shipped. It removes two duplicate implementations and
    one dead promise, and it is the prerequisite for anything that touches offsets afterwards
    (including `../string_packing/PLAN.md` P1, which splices a differently-sized string region and
    would otherwise be a fourth copy).

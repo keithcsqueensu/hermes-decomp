@@ -103,7 +103,7 @@ is worth keeping, because it is also the failure mode — see § Splitting.
 | Plan | Split from | Owns | Status |
 |---|---|---|---|
 | `06_write/string_packing/PLAN.md` | write register, design limits | how string storage is laid out and could be repacked | researched; P0 worth doing regardless |
-| `06_write/relocation/PLAN.md` | write register, design limits | the absolute-offset surface; splice-and-shift | P0–P2 specified, ~1 day; P3 on a named trigger |
+| `06_write/relocation/PLAN.md` | write register, design limits | the absolute-offset surface; splice-and-shift | P0–P2 shipped (one `relocate` primitive, R26 fixed); P3 on a named trigger |
 | `01_read/unmodeled_regions/PLAN.md` | relocation P3 | per-region read / interpret / emit status + formats | P0, P1, P2, P5 shipped; P1b, P3, P4, P4a, P6 open |
 | `03_analysis/closure_model/PLAN.md` | unmodeled-regions P1b | the decompiler's closure / env-slot model | K1–K4 specified, none shipped as specified; C3 fixed upstream, K1's bit computed in the IR builder but not carried |
 
