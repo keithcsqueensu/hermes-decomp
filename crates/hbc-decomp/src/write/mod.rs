@@ -20,8 +20,9 @@ pub use hasm::{
 };
 pub use patch::{
     add_string, inject_stub, patch_function_body, patch_function_bytes, patch_string_by_id,
-    patch_string_operand, patch_string_replace, regexp_payload, retarget_string, set_regexp,
-    InjectStubKind, OperandTarget, PatchOptions, RegexpSetMode, RegexpSetReport,
+    patch_string_operand, patch_string_replace, regexp_payload, repoint_regexp, retarget_string,
+    set_regexp, InjectStubKind, OperandTarget, PatchOptions, RegexpRepointReport, RegexpSetMode,
+    RegexpSetReport,
 };
 pub use reloc::{relocate, Reloc};
 pub use serialize::{

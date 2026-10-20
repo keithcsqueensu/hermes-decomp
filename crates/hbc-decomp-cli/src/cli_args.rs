@@ -460,6 +460,26 @@ pub enum Command {
         #[command(flatten)]
         format: FormatArgs,
     },
+    /// Point one CreateRegExp at another RegExp entry the bundle already has.
+    RegexpRepoint {
+        input: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        /// Absolute byte offset of the CreateRegExp opcode in the file.
+        #[arg(long, value_parser = parse_hex_or_dec)]
+        at: Option<u32>,
+        /// Function id (used with --insn-offset).
+        #[arg(long)]
+        function: Option<u32>,
+        /// Instruction offset relative to function body start (used with --function).
+        #[arg(long, value_parser = parse_hex_or_dec)]
+        insn_offset: Option<u32>,
+        /// The RegExp table index to point it at.
+        #[arg(long)]
+        index: u32,
+        #[command(flatten)]
+        format: FormatArgs,
+    },
     /// Patch a string table entry (any length; usually rebuilds the table).
     PatchString {
         input: PathBuf,

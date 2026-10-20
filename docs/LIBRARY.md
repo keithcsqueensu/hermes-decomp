@@ -69,7 +69,7 @@ The stage-by-stage contract (W/F stage IDs, in run order) is
 - **`write`** — encode / HASM / patch / serialize: `add_string`, `retarget_string`,
   `patch_string_operand`, `patch_string_by_id` / `patch_string_replace`,
   `patch_function_body`, `assemble_function_hasm`, `inject_stub`, `create_minimal`,
-  `set_regexp` / `regexp_payload`, `relocate`, `serialize_file`, `verify_footer`. **Bytecode only**, not JS → hermesc.
+  `set_regexp` / `regexp_payload` / `repoint_regexp`, `relocate`, `serialize_file`, `verify_footer`. **Bytecode only**, not JS → hermesc.
 - **`cascade`** — offline name proposals: `candidates::extract` picks functions worth
   naming, `verify::verify` checks a proposal artifact against the bytecode, `apply`
   renames the confirmed ones. Artifacts are bound to one bundle by a fingerprint.

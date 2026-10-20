@@ -151,6 +151,7 @@ hermes-decomp add-string app.hbc --value "myProp" --identifier -o app2.hbc
 hermes-decomp retarget-string app.hbc --from "H:mm" --to "HH:mm" -o app2.hbc
 hermes-decomp retarget-string app.hbc --from-id 5 --to-id 42 -o app2.hbc
 hermes-decomp regexp-set app.hbc --index 12 --donor donor.hbc -o app2.hbc   # --donor-index N
+hermes-decomp regexp-repoint app.hbc --function 42 --insn-offset 0x1A --index 7 -o app2.hbc
 hermes-decomp patch-operand app.hbc --at 0xD83E27 --string "black" -o app2.hbc
 hermes-decomp patch-operand app.hbc --function 42 --insn-offset 0x1A --string-id 72 -o app2.hbc
 hermes-decomp patch-string app.hbc --old "done" --new "fini" -o app2.hbc
@@ -236,6 +237,15 @@ stays put either way, so no instruction changes.
   `patch-operand` if anything reads them.
 - **Case-insensitive patterns** store their literals case-folded, so editing one in a hex
   dump is a trap — recompile the donor instead.
+
+`regexp-repoint` is the cheaper move when the pattern you want is one the bundle already
+has: it points one `CreateRegExp` (addressed like `patch-operand`, by `--at` or `--function`
++ `--insn-offset`) at another existing RegExp entry. No table or storage changes; the file
+size stays the same. If another `CreateRegExp` already uses that entry, its pattern and flags
+strings are copied too, so `.source` and `.flags` match the new pattern; if none does, they
+are left alone and a warning says so. The same capture-group rule applies. To find the entry,
+`xref --query <pattern text>` reaches the site that uses it, and `disasm --show-offsets` shows
+the index as `CreateRegExp`'s last operand.
 
 #### Verifying patched output on a real Hermes VM
 

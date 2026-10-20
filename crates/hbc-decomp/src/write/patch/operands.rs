@@ -19,8 +19,32 @@ pub enum OperandTarget {
     FunctionRelative { function: u32, insn_offset: u32 },
 }
 
+/// Resolve `target` to the absolute file offset of the instruction's opcode.
+pub(super) fn resolve_target(file: &BytecodeFile, target: &OperandTarget) -> Result<usize> {
+    Ok(match *target {
+        OperandTarget::AbsoluteOffset(off) => off as usize,
+        OperandTarget::FunctionRelative {
+            function,
+            insn_offset,
+        } => {
+            let hdr = file
+                .function_headers
+                .get(function as usize)
+                .ok_or_else(|| Error::Write(format!("function {function} not found")))?;
+            let body_size = hdr.bytecode_size_in_bytes();
+            if insn_offset >= body_size {
+                return Err(Error::Write(format!(
+                    "insn_offset 0x{:x} >= function body size 0x{:x}",
+                    insn_offset, body_size
+                )));
+            }
+            hdr.offset() as usize + insn_offset as usize
+        }
+    })
+}
+
 /// Decode one instruction from `raw` at absolute byte offset `abs_off`.
-fn decode_one_at(
+pub(super) fn decode_one_at(
     raw: &[u8],
     abs_off: usize,
     format: &BytecodeFormat,
@@ -64,7 +88,7 @@ fn decode_one_at(
 }
 
 /// Byte width of an operand type.
-fn operand_byte_width(ty: OperandType) -> usize {
+pub(super) fn operand_byte_width(ty: OperandType) -> usize {
     match ty {
         OperandType::Reg8 | OperandType::UInt8 | OperandType::UInt8S | OperandType::Addr8 => 1,
         OperandType::UInt16 | OperandType::UInt16S => 2,
@@ -107,27 +131,7 @@ pub fn patch_string_operand(
         )));
     }
 
-    // Resolve target to absolute offset.
-    let abs_off = match target {
-        OperandTarget::AbsoluteOffset(off) => off as usize,
-        OperandTarget::FunctionRelative {
-            function,
-            insn_offset,
-        } => {
-            let hdr = file
-                .function_headers
-                .get(function as usize)
-                .ok_or_else(|| Error::Write(format!("function {function} not found")))?;
-            let body_size = hdr.bytecode_size_in_bytes();
-            if insn_offset >= body_size {
-                return Err(Error::Write(format!(
-                    "insn_offset 0x{:x} >= function body size 0x{:x}",
-                    insn_offset, body_size
-                )));
-            }
-            hdr.offset() as usize + insn_offset as usize
-        }
-    };
+    let abs_off = resolve_target(file, &target)?;
 
     // Decode the instruction.
     let (insn, operand_positions) = decode_one_at(&raw, abs_off, format)?;
