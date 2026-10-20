@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use hbc_decomp::{
     add_string, create_minimal, emit_hasm_function, format_secrets_report, generate_frida_for_file,
     inject_stub, parse_hasm_with_context, patch_function_body, patch_string_by_id,
-    patch_string_operand, patch_string_replace, regexp_payload, retarget_string, scan_secrets,
-    set_regexp, CreateOptions, FridaHookOptions, InjectStubKind, OperandTarget, PatchOptions,
-    RegexpSetMode, RegexpSetReport,
+    patch_string_operand, patch_string_replace, regexp_payload, repoint_regexp, retarget_string,
+    scan_secrets, set_regexp, CreateOptions, FridaHookOptions, InjectStubKind, OperandTarget,
+    PatchOptions, RegexpSetMode, RegexpSetReport,
 };
 
 use crate::cli_args::{FormatArgs, FunctionLayoutArg, LayoutArg};
@@ -309,6 +309,51 @@ pub fn run_add_string(
         value,
         new_id,
         identifier,
+        output.display()
+    );
+    Ok(())
+}
+
+pub fn run_regexp_repoint(
+    input: &PathBuf,
+    output: &PathBuf,
+    at: Option<u32>,
+    function: Option<u32>,
+    insn_offset: Option<u32>,
+    index: u32,
+    args: &FormatArgs,
+) -> Result<(), BoxErr> {
+    let mut file = load_file(input, args)?;
+    let format = load_format(&file, args.format_version)?;
+    warn_modern_write(&file);
+    let target = match (at, function, insn_offset) {
+        (Some(off), _, _) => OperandTarget::AbsoluteOffset(off),
+        (None, Some(func), Some(rel)) => OperandTarget::FunctionRelative {
+            function: func,
+            insn_offset: rel,
+        },
+        _ => return Err("provide --at or --function + --insn-offset".into()),
+    };
+    let (out, r) = repoint_regexp(&mut file, &format, target, index, &PatchOptions::default())?;
+    std::fs::write(output, out)?;
+    match r.strings_from {
+        Some(site) => eprintln!(
+            "note: copied the pattern and flags strings from the CreateRegExp at 0x{site:x}, \
+             which already uses regexp {index}"
+        ),
+        None => eprintln!(
+            "warning: no other CreateRegExp uses regexp {index}, so `.source` and `.flags` \
+             still describe regexp {}; patch them with patch-operand if anything reads them",
+            r.old_index
+        ),
+    }
+    eprintln!(
+        "Repointed CreateRegExp at 0x{:x}: regexp {} → {} ({} → {} capture groups) → {}",
+        r.at,
+        r.old_index,
+        r.new_index,
+        r.old_marked_count,
+        r.new_marked_count,
         output.display()
     );
     Ok(())

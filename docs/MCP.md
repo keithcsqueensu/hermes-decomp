@@ -81,7 +81,7 @@ HASM is the disasm dialect described in [USAGE.md](USAGE.md#bytecode-write-path-
 | `create_hbc` | Minimal valid `.hbc` from scratch (legacy layout ≤ v96, modern ≥ v97) |
 | `frida_hooks` | Frida hooks for a Metro module's exports → `before.js` / `after.js` / `agent.js` / `run.sh` |
 
-The CLI's `add-string`, `retarget-string`, `patch-operand`, `regexp-set` and `cascade` have no MCP tool.
+The CLI's `add-string`, `retarget-string`, `patch-operand`, `regexp-set`, `regexp-repoint` and `cascade` have no MCP tool.
 
 ## Response limits and failures
 

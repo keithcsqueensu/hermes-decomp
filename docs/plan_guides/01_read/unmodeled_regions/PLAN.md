@@ -745,7 +745,7 @@ without one. Listed only so the boundary is explicit. Do not build it speculativ
 pattern string* — an assembler, which is why P4 was ordered behind P3's disassembler. That
 piece is still speculative and still nobody's. What follows is not that.
 
-### P4a — Put a chosen RegExp into a real bundle — ✅ **shipped** (archetypes B and C)
+### P4a — Put a chosen RegExp into a real bundle — ✅ **shipped** (archetypes A, B and C)
 
 **Shipped as** `regexp-set` (`write/patch/regexp.rs`, `set_regexp` + `regexp_payload`): take entry
 N of a donor `.hbc` and land it over entry M — **in place** (B) when it fits M's slot and no other
@@ -759,9 +759,20 @@ when the flags byte differs and always notes that `.source`/`.flags` did not cha
 pattern (`a false true` / `b false true`); `tests/corpus.rs`
 `a_regexp_append_moves_the_tail_and_nothing_else` appends on Equinox 11.43.0 (63,957 bodies
 shifted by 60, none changed) and CoachRx 2.1.223 (51,176). A cross-version donor (v98 → v96)
-runs too. Still not built: archetype A (repointing a `CreateRegExp` at another index) —
-`patch-operand` edits only string-id operands, so it needs a small extension for the `UInt32`
-index operand — and compiling a pattern by shelling out to a configured `hermesc`.
+runs too.
+
+**Archetype A shipped as** `regexp-repoint` (`repoint_regexp`): rewrite one `CreateRegExp`'s
+`UInt32` index operand, addressed like `patch-operand`, with the instruction's shape checked
+rather than assumed. It goes one step past A as written: when another `CreateRegExp` already uses
+the target entry, that site's pattern and flags string ids are copied too — they are by
+construction the right `.source`/`.flags` — so the first trap below does not arise. Same
+capture-group refusal. **[measured]**: `vm_verify` at v96/v98/v99 shows the repointed site both
+matching and *reporting* the new pattern; on Equinox 11.43.0 the scan for such a site covers
+1,319 `CreateRegExp`s in ~80 ms.
+
+Still not built, deliberately: compiling a pattern by shelling out to a configured `hermesc`.
+It would automate two commands that already work, at the price of an external binary and temp
+files inside a write op.
 
 The plan as scoped:
 

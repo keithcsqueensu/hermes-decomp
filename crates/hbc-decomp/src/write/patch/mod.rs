@@ -16,7 +16,9 @@ pub mod strings;
 pub use functions::{patch_function_body, patch_function_bytes};
 pub use inject::{inject_stub, InjectStubKind};
 pub use operands::{patch_string_operand, OperandTarget};
-pub use regexp::{regexp_payload, set_regexp, RegexpSetMode, RegexpSetReport};
+pub use regexp::{
+    regexp_payload, repoint_regexp, set_regexp, RegexpRepointReport, RegexpSetMode, RegexpSetReport,
+};
 pub use strings::{add_string, patch_string_by_id, patch_string_replace, retarget_string};
 
 #[derive(Debug, Clone, Default)]

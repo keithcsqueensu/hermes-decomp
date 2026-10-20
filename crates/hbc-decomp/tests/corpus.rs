@@ -38,8 +38,9 @@ use common::Oracle;
 
 use hbc_decomp::write::patch::PatchOptions;
 use hbc_decomp::{
-    add_string, encode_function_body, patch_function_bytes, regexp_payload, retarget_string,
-    set_regexp, BytecodeFile, BytecodeFormat, FunctionHeader, RegexpSetMode,
+    add_string, encode_function_body, patch_function_bytes, regexp_payload, repoint_regexp,
+    retarget_string, set_regexp, BytecodeFile, BytecodeFormat, FunctionHeader, OperandTarget,
+    RegexpSetMode,
 };
 
 fn corpus() -> Option<(Vec<u8>, PathBuf)> {
@@ -541,6 +542,85 @@ fn a_regexp_append_moves_the_tail_and_nothing_else() {
         report.old_len,
         report.new_len,
         after.function_headers.len()
+    );
+}
+
+// P4a, archetype A on a production bundle: repointing one CreateRegExp scans the
+// whole bundle for a site that already uses the target entry, so this is where
+// that scan's cost and its answer are checked at scale.
+#[test]
+fn a_regexp_repoint_edits_one_instruction_and_copies_its_strings() {
+    let (bytes, _) = corpus_or_skip!();
+    let before = BytecodeFile::parse_auto(&bytes).expect("corpus parses");
+    let format = BytecodeFormat::for_version(before.header.version).expect("opcode table");
+
+    // Every CreateRegExp site as (absolute offset, pattern, flags, index).
+    let mut sites = Vec::new();
+    for id in 0..before.function_headers.len() as u32 {
+        let base = before.function_headers[id as usize].offset();
+        for insn in before.decode_function_instructions(&format, id).unwrap() {
+            if format.definitions[insn.opcode as usize].name == "CreateRegExp" {
+                let v = |i: usize| insn.operands[i].value.as_u32().unwrap();
+                sites.push((base + insn.offset, v(1), v(2), v(3)));
+            }
+        }
+    }
+    let marked = |i: u32| regexp_payload(&before, i).unwrap()[0];
+    // A site, and an entry another site already uses that keeps its group count.
+    let (site, donor) = sites
+        .iter()
+        .find_map(|s| {
+            sites
+                .iter()
+                .find(|d| d.3 != s.3 && marked(d.3) >= marked(s.3))
+                .map(|d| (*s, *d))
+        })
+        .expect("two CreateRegExp sites with different entries");
+
+    let t = std::time::Instant::now();
+    let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
+    let (out, report) = repoint_regexp(
+        &mut file,
+        &format,
+        OperandTarget::AbsoluteOffset(site.0),
+        donor.3,
+        &PatchOptions::default(),
+    )
+    .expect("repoint");
+    let took = t.elapsed();
+
+    assert_eq!(report.new_index, donor.3);
+    let from = report.strings_from.expect("a site already uses the entry");
+    let used = sites.iter().find(|s| s.0 == from).unwrap();
+    assert_eq!(
+        used.3, donor.3,
+        "strings must come from a site using the new entry"
+    );
+    assert_eq!(out.len(), bytes.len(), "a repoint must not resize");
+    let differing = bytes.iter().zip(&out).filter(|(a, b)| a != b).count();
+    assert!(differing <= 12 + 20, "{differing} bytes changed");
+
+    // Read the edited instruction back with the bundle's own decoder.
+    let after = BytecodeFile::parse_auto(&out).unwrap();
+    let owner = (0..after.function_headers.len() as u32)
+        .filter(|&id| after.function_headers[id as usize].offset() <= site.0)
+        .max_by_key(|&id| after.function_headers[id as usize].offset())
+        .unwrap();
+    let base = after.function_headers[owner as usize].offset();
+    let insn = after
+        .decode_function_instructions(&format, owner)
+        .unwrap()
+        .into_iter()
+        .find(|i| base + i.offset == site.0)
+        .expect("the edited instruction");
+    let v = |i: usize| insn.operands[i].value.as_u32().unwrap();
+    assert_eq!((v(1), v(2), v(3)), (used.1, used.2, donor.3));
+    println!(
+        "  CreateRegExp at 0x{:x}: regexp {} -> {}, strings from 0x{from:x}; {} sites, scan {took:.2?}",
+        site.0,
+        site.3,
+        donor.3,
+        sites.len()
     );
 }
 

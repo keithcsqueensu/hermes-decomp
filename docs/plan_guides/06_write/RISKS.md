@@ -118,6 +118,7 @@ missing VM into a failure rather than a skip (R21). `n/a` means the command prod
 | `retarget-string` | Layout-agnostic | Yes (v96) | ✅ ran | ✅ | small table + id hash only; refuses overflow |
 | `patch-operand` | Layout-agnostic | Yes (v96) | ✅ ran | ✅ | + Q9 property-name warning |
 | `regexp-set` | Yes | Yes (v96 + v98 + v99) | ✅ ran, both arms | ✅ | in place or appended (`patch/regexp.rs`, P4a); the VM run asserts the host now matches the donor's pattern; the append arm also swept on two production bundles (`tests/corpus.rs`) |
+| `regexp-repoint` | Layout-agnostic | Yes (v96 + v98 + v99) | ✅ ran | ✅ | one `CreateRegExp`'s index operand, plus its pattern/flags string ids copied from a site already using the entry (P4a archetype A); the VM run asserts the site both matches and *reports* the new pattern; corpus run scans 1,319 sites in ~80 ms |
 | `asm` / `patch-function` | Yes | Yes (v96 + v98) | ✅ identity round-trip | ✅ | the Q3/Q4 gate in front of it is now correct on every supported layout |
 | `asm-check` (`run_roundtrip_check`) | Yes | No | ✅ `OK` on v99 | ⚪ | still no test (`write_cmd.rs:407`) |
 | `inject-stub` | Yes | Yes (v96 + v98 + v99) | ✅ ran | ✅ | was 🔴 on v99: shifted a body without relocating handlers, because the guard in front of it read the wrong byte. Fixed via `ModernLayout`; both guard directions now tested on real fixtures |

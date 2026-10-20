@@ -41,8 +41,9 @@ use common::Oracle;
 
 use hbc_decomp::write::patch::PatchOptions;
 use hbc_decomp::{
-    add_string, create_minimal, inject_stub, patch_string_replace, regexp_payload, retarget_string,
-    set_regexp, BytecodeFile, BytecodeFormat, CreateOptions, InjectStubKind, RegexpSetMode,
+    add_string, create_minimal, inject_stub, patch_string_replace, regexp_payload, repoint_regexp,
+    retarget_string, set_regexp, BytecodeFile, BytecodeFormat, CreateOptions, InjectStubKind,
+    OperandTarget, RegexpSetMode,
 };
 
 // Versions with committed fixtures, one per distinct header layout the write
@@ -495,8 +496,8 @@ fn chained_size_changing_ops_need_no_reparse() {
 // P4a -- regexp-set: a donor stream compiled by hermesc runs in the host
 // ---------------------------------------------------------------------------
 
-const REGEXP_OUTPUT: &str = "a true false
-b true false";
+// Each fixture line: what `a` matches, what `b` matches, and what `b` reports.
+const REGEXP_OUTPUT: &str = "a true false\nb true false false\nb.source x /";
 
 // Host entry `host` replaced by donor entry `donor`, on a fresh parse.
 fn set_from_donor(
@@ -543,8 +544,7 @@ fn regexp_set_in_place_matches_the_donor_pattern() {
         assert_runs(
             version,
             &out,
-            "a false true
-b true false",
+            "a false true\nb true false false\nb.source x /",
             &format!("regexp-in-place-v{version}"),
         );
     }
@@ -578,10 +578,109 @@ fn regexp_set_appended_matches_the_donor_pattern() {
         assert_runs(
             version,
             &out,
-            "a true false
-b false true",
+            // `b` now matches the donor's pattern but still *reports* `x`: the
+            // `.source` trap, observed rather than described.
+            "a true false\nb false true false\nb.source x /",
             &format!("regexp-appended-v{version}"),
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P4a archetype A -- regexp-repoint: a CreateRegExp at another existing entry
+// ---------------------------------------------------------------------------
+
+/// The CreateRegExp sites of the host's global function, in order.
+fn create_regexp_sites(file: &BytecodeFile) -> Vec<u32> {
+    let format = format_for(file);
+    let base = file.function_headers[0].offset();
+    file.decode_function_instructions(&format, 0)
+        .unwrap()
+        .iter()
+        .filter(|i| format.definitions[i.opcode as usize].name == "CreateRegExp")
+        .map(|i| base + i.offset)
+        .collect()
+}
+
+/// `b`'s site is pointed at `a`'s entry. `a`'s site already uses that entry, so
+/// its pattern and flags strings are copied too, and `b` both matches and
+/// reports `a`'s pattern. Nothing but the one instruction changes.
+#[test]
+fn regexp_repoint_matches_and_reports_the_new_entry() {
+    for version in FIXTURE_VERSIONS {
+        let host = fixture("regexp", version);
+        let mut file = BytecodeFile::parse_auto(&host).expect("parse host");
+        let format = format_for(&file);
+        let sites = create_regexp_sites(&file);
+        assert_eq!(sites.len(), 2, "v{version}: fixture has two CreateRegExp");
+
+        let (out, report) = repoint_regexp(
+            &mut file,
+            &format,
+            OperandTarget::AbsoluteOffset(sites[1]),
+            0,
+            &PatchOptions::default(),
+        )
+        .expect("repoint b at entry 0");
+        assert_eq!((report.old_index, report.new_index), (1, 0), "v{version}");
+        assert_eq!(report.strings_from, Some(sites[0]), "v{version}");
+        assert_eq!(
+            out.len(),
+            host.len(),
+            "v{version}: a repoint must not resize"
+        );
+        let differing = host.iter().zip(&out).filter(|(a, b)| a != b).count();
+        assert!(
+            differing <= 12 + 20,
+            "v{version}: {differing} bytes changed; only three operands and the footer may"
+        );
+        assert_runs(
+            version,
+            &out,
+            "a true false\nb false false true\nb.source ^equinox-(\\d+)$ /i",
+            &format!("regexp-repoint-v{version}"),
+        );
+    }
+}
+
+/// Pointing `a`'s site (one capture group) at `b`'s entry (none) is refused.
+#[test]
+fn regexp_repoint_refuses_fewer_capture_groups() {
+    for version in FIXTURE_VERSIONS {
+        let mut file = BytecodeFile::parse_auto(&fixture("regexp", version)).unwrap();
+        let format = format_for(&file);
+        let site = create_regexp_sites(&file)[0];
+        let err = repoint_regexp(
+            &mut file,
+            &format,
+            OperandTarget::AbsoluteOffset(site),
+            1,
+            &PatchOptions::default(),
+        )
+        .expect_err("dropping a capture group must be refused")
+        .to_string();
+        assert!(err.contains("capture group"), "v{version}: {err}");
+    }
+}
+
+/// Anything but a CreateRegExp is refused rather than edited.
+#[test]
+fn regexp_repoint_refuses_other_instructions() {
+    for version in FIXTURE_VERSIONS {
+        let mut file = BytecodeFile::parse_auto(&fixture("regexp", version)).unwrap();
+        let format = format_for(&file);
+        let first = file.function_headers[0].offset();
+        assert!(!create_regexp_sites(&file).contains(&first));
+        let err = repoint_regexp(
+            &mut file,
+            &format,
+            OperandTarget::AbsoluteOffset(first),
+            0,
+            &PatchOptions::default(),
+        )
+        .expect_err("a non-CreateRegExp must be refused")
+        .to_string();
+        assert!(err.contains("not a CreateRegExp"), "v{version}: {err}");
     }
 }
 

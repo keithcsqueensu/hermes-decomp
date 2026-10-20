@@ -181,6 +181,21 @@ fn file_transforming_commands_write_nothing_to_stdout() {
                 s(&fixture("regexp.v96.hbc")),
             ],
         ),
+        (
+            "regexp-repoint",
+            vec![
+                "regexp-repoint".into(),
+                "--function".into(),
+                "0".into(),
+                "--insn-offset".into(),
+                "0x20".into(),
+                "--index".into(),
+                "0".into(),
+                "-o".into(),
+                s(&tmp_dir().join("rp.hbc")),
+                s(&fixture("regexp.v96.hbc")),
+            ],
+        ),
     ];
 
     for (name, args) in cases {

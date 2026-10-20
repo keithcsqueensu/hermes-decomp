@@ -20,12 +20,20 @@
 // payload with fewer groups than the entry it replaces is refused.
 // `.source` and `.flags` do NOT follow: they are `CreateRegExp`'s string
 // operands. The report says so whenever the payload's flags byte differs.
+//
+// The third way (archetype A) touches no table at all: `repoint_regexp` changes
+// one `CreateRegExp` to use another entry the bundle already has. When some
+// other `CreateRegExp` already uses that entry, its two string operands are the
+// right `.source` and `.flags` for it, so they are copied too and nothing is
+// left describing the old pattern.
 
 use crate::error::{Error, Result};
 use crate::file::BytecodeFile;
+use crate::opcode::{BytecodeFormat, OperandType};
 use crate::write::reloc::{relocate, Reloc};
 use crate::write::serialize::{commit_image, section_offset};
 
+use super::operands::{decode_one_at, operand_byte_width, resolve_target, OperandTarget};
 use super::PatchOptions;
 
 /// Size of `RegexBytecodeHeader`, the prefix every stream starts with.
@@ -216,6 +224,163 @@ pub fn set_regexp(
             mode,
             old_len: old_len as u32,
             new_len,
+            old_marked_count: old_marked,
+            new_marked_count: new_marked,
+            old_syntax_flags: old_flags,
+            new_syntax_flags: new_flags,
+        },
+    ))
+}
+
+/// What `repoint_regexp` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegexpRepointReport {
+    /// Absolute file offset of the `CreateRegExp` that was changed.
+    pub at: u32,
+    pub old_index: u32,
+    pub new_index: u32,
+    /// Absolute offset of the other `CreateRegExp` already using `new_index`
+    /// whose pattern and flags strings were copied; `None` when no site uses it,
+    /// and the strings were left describing the old pattern.
+    pub strings_from: Option<u32>,
+    pub old_marked_count: u16,
+    pub new_marked_count: u16,
+    pub old_syntax_flags: u8,
+    pub new_syntax_flags: u8,
+}
+
+// The operand positions of a decoded CreateRegExp: (pattern, flags, index), each
+// as (operand type, absolute byte position, value). The opcode is
+// `(Reg8 dst, UInt32S pattern, UInt32S flags, UInt32 index)` at v96, v98 and
+// v99; the shape is checked rather than assumed, so a version that moved it is
+// refused instead of mis-edited.
+type Slot = (OperandType, usize, u32);
+
+fn create_regexp_slots(
+    raw: &[u8],
+    abs_off: usize,
+    format: &BytecodeFormat,
+) -> Result<(Slot, Slot, Slot)> {
+    let (insn, pos) = decode_one_at(raw, abs_off, format)?;
+    let name = format
+        .definitions
+        .get(insn.opcode as usize)
+        .map(|d| d.name.as_str())
+        .unwrap_or("?");
+    let is_string = |t: OperandType| {
+        matches!(
+            t,
+            OperandType::UInt8S | OperandType::UInt16S | OperandType::UInt32S
+        )
+    };
+    let slot = |i: usize| -> Slot {
+        let op = &insn.operands[i];
+        (op.ty, pos[i], op.value.as_u32().unwrap_or(u32::MAX))
+    };
+    match insn.operands.iter().map(|o| o.ty).collect::<Vec<_>>()[..] {
+        [_, p, f, OperandType::UInt32]
+            if name == "CreateRegExp" && is_string(p) && is_string(f) =>
+        {
+            Ok((slot(1), slot(2), slot(3)))
+        }
+        _ => Err(Error::Write(format!(
+            "instruction at 0x{abs_off:x} is {name}, not a CreateRegExp of the \
+             (dst, pattern, flags, index) shape"
+        ))),
+    }
+}
+
+fn write_operand(buf: &mut [u8], (ty, pos, _): Slot, value: u32) {
+    match operand_byte_width(ty) {
+        1 => buf[pos] = value as u8,
+        2 => buf[pos..pos + 2].copy_from_slice(&(value as u16).to_le_bytes()),
+        _ => buf[pos..pos + 4].copy_from_slice(&value.to_le_bytes()),
+    }
+}
+
+/// Point one `CreateRegExp` at RegExp entry `new_index`, an entry the bundle
+/// already has (archetype A). No table or storage changes. When another
+/// `CreateRegExp` already uses `new_index`, its pattern and flags string ids are
+/// copied too, so `.source` and `.flags` match what the regex now does. Refuses
+/// an entry with fewer capture groups than the one it replaces.
+pub fn repoint_regexp(
+    file: &mut BytecodeFile,
+    format: &BytecodeFormat,
+    target: OperandTarget,
+    new_index: u32,
+    _opts: &PatchOptions,
+) -> Result<(Vec<u8>, RegexpRepointReport)> {
+    let abs_off = resolve_target(file, &target)?;
+    let mut raw = file
+        .raw_bytes
+        .clone()
+        .ok_or_else(|| Error::Write("no raw_bytes".into()))?;
+    let (pattern, flags, index) = create_regexp_slots(&raw, abs_off, format)?;
+    let old_index = index.2;
+    if old_index == new_index {
+        return Err(Error::Write(format!(
+            "CreateRegExp at 0x{abs_off:x} already uses regexp {new_index}"
+        )));
+    }
+    let (old_marked, old_flags) = header_of(
+        regexp_payload(file, old_index)?,
+        &format!("regexp {old_index}"),
+    )?;
+    let (new_marked, new_flags) = header_of(
+        regexp_payload(file, new_index)?,
+        &format!("regexp {new_index}"),
+    )?;
+    if new_marked < old_marked {
+        return Err(Error::Write(format!(
+            "regexp {old_index} has {old_marked} capture group(s) and regexp \
+             {new_index} has {new_marked}: code reading a group that no longer \
+             exists would get `undefined`, far from this edit"
+        )));
+    }
+
+    // Another site that already uses the new entry carries the strings that
+    // describe it. Same opcode, so the same operand types.
+    let mut strings_from = None;
+    'search: for id in 0..file.function_headers.len() as u32 {
+        let Ok(insns) = file.decode_function_instructions(format, id) else {
+            continue;
+        };
+        let base = file.function_headers[id as usize].offset() as usize;
+        for insn in insns {
+            let at = base + insn.offset as usize;
+            if at == abs_off {
+                continue;
+            }
+            if let Ok((p, f, i)) = create_regexp_slots(&raw, at, format) {
+                if i.2 == new_index && p.0 == pattern.0 && f.0 == flags.0 {
+                    strings_from = Some((at, p.2, f.2));
+                    break 'search;
+                }
+            }
+        }
+    }
+
+    write_operand(&mut raw, index, new_index);
+    if let Some((_, p, f)) = strings_from {
+        write_operand(&mut raw, pattern, p);
+        write_operand(&mut raw, flags, f);
+    }
+    let (_, _, check) = create_regexp_slots(&raw, abs_off, format)?;
+    if check.2 != new_index {
+        return Err(Error::Write(format!(
+            "read-back failed: expected regexp {new_index}, got {}",
+            check.2
+        )));
+    }
+
+    let out = commit_image(file, raw)?;
+    Ok((
+        out,
+        RegexpRepointReport {
+            at: abs_off as u32,
+            old_index,
+            new_index,
+            strings_from: strings_from.map(|(at, _, _)| at as u32),
             old_marked_count: old_marked,
             new_marked_count: new_marked,
             old_syntax_flags: old_flags,

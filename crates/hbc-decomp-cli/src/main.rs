@@ -652,6 +652,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &format,
             )?;
         }
+        Command::RegexpRepoint {
+            input,
+            output,
+            at,
+            function,
+            insn_offset,
+            index,
+            format,
+        } => {
+            commands::write_cmd::run_regexp_repoint(
+                &input,
+                &output,
+                at,
+                function,
+                insn_offset,
+                index,
+                &format,
+            )?;
+        }
         Command::PatchString {
             input,
             output,
