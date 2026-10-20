@@ -442,6 +442,24 @@ pub enum Command {
         #[command(flatten)]
         format: FormatArgs,
     },
+    /// Replace one RegExp entry's bytecode with an entry from a donor .hbc compiled by hermesc.
+    RegexpSet {
+        input: PathBuf,
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+        /// The RegExp table index to replace (the last operand of its CreateRegExp).
+        #[arg(long)]
+        index: u32,
+        /// A .hbc whose RegExp table holds the replacement, e.g. from
+        /// `hermesc -emit-binary` on a one-line script using the pattern.
+        #[arg(long)]
+        donor: PathBuf,
+        /// Which of the donor's RegExp entries to use.
+        #[arg(long, default_value = "0")]
+        donor_index: u32,
+        #[command(flatten)]
+        format: FormatArgs,
+    },
     /// Patch a string table entry (any length; usually rebuilds the table).
     PatchString {
         input: PathBuf,

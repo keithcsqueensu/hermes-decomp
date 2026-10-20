@@ -117,6 +117,7 @@ missing VM into a failure rather than a skip (R21). `n/a` means the command prod
 | `patch-string --old` (replace) | Yes | Yes (v96) | ✅ ran | ✅ | by-value lookup tested (`strings.rs:857`) |
 | `retarget-string` | Layout-agnostic | Yes (v96) | ✅ ran | ✅ | small table + id hash only; refuses overflow |
 | `patch-operand` | Layout-agnostic | Yes (v96) | ✅ ran | ✅ | + Q9 property-name warning |
+| `regexp-set` | Yes | Yes (v96 + v98 + v99) | ✅ ran, both arms | ✅ | in place or appended (`patch/regexp.rs`, P4a); the VM run asserts the host now matches the donor's pattern; the append arm also swept on two production bundles (`tests/corpus.rs`) |
 | `asm` / `patch-function` | Yes | Yes (v96 + v98) | ✅ identity round-trip | ✅ | the Q3/Q4 gate in front of it is now correct on every supported layout |
 | `asm-check` (`run_roundtrip_check`) | Yes | No | ✅ `OK` on v99 | ⚪ | still no test (`write_cmd.rs:407`) |
 | `inject-stub` | Yes | Yes (v96 + v98 + v99) | ✅ ran | ✅ | was 🔴 on v99: shifted a body without relocating handlers, because the guard in front of it read the wrong byte. Fixed via `ModernLayout`; both guard directions now tested on real fixtures |
@@ -190,8 +191,9 @@ harness gate.
   bit 1, and the bit set is pinned against upstream. It was the only item in that plan that
   fixed an output which was *wrong* rather than one that was *missing*, which is why it was
   worth more than its size — hours — suggested.
-- **Putting a chosen RegExp into a bundle** → `../01_read/unmodeled_regions/PLAN.md` **P4a**, newly split
-  out of P4 because a concrete ask arrived. It does *not* need P3 and does not need a regex
+- **Putting a chosen RegExp into a bundle** → `../01_read/unmodeled_regions/PLAN.md` **P4a**,
+  **shipped** as `regexp-set` (in place, or appended through `write::reloc::relocate`). What
+  follows is the reasoning it was scoped on. Split out of P4 because a concrete ask arrived. It does *not* need P3 and does not need a regex
   assembler: the bytecode stream is position-independent and byte-identical across v96/v98/v99
   for the same pattern, so the payload is compiled by `hermesc` and transplanted. Two of its
   three archetypes — repointing a `CreateRegExp` operand, and overwriting an entry whose slot is

@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use hbc_decomp::{
     add_string, create_minimal, emit_hasm_function, format_secrets_report, generate_frida_for_file,
     inject_stub, parse_hasm_with_context, patch_function_body, patch_string_by_id,
-    patch_string_operand, patch_string_replace, retarget_string, scan_secrets, CreateOptions,
-    FridaHookOptions, InjectStubKind, OperandTarget, PatchOptions,
+    patch_string_operand, patch_string_replace, regexp_payload, retarget_string, scan_secrets,
+    set_regexp, CreateOptions, FridaHookOptions, InjectStubKind, OperandTarget, PatchOptions,
+    RegexpSetMode, RegexpSetReport,
 };
 
-use crate::cli_args::FormatArgs;
+use crate::cli_args::{FormatArgs, FunctionLayoutArg, LayoutArg};
 use crate::helpers::{load_file, load_format};
 
 type BoxErr = Box<dyn std::error::Error>;
@@ -308,6 +309,54 @@ pub fn run_add_string(
         value,
         new_id,
         identifier,
+        output.display()
+    );
+    Ok(())
+}
+
+pub fn run_regexp_set(
+    input: &PathBuf,
+    output: &PathBuf,
+    index: u32,
+    donor: &PathBuf,
+    donor_index: u32,
+    args: &FormatArgs,
+) -> Result<(), BoxErr> {
+    let mut file = load_file(input, args)?;
+    warn_modern_write(&file);
+    // The donor is parsed with its own detected format: hermesc may be a
+    // different version than the target, and the regex stream does not care.
+    let auto = FormatArgs {
+        format_version: None,
+        layout: LayoutArg::Auto,
+        function_layout: FunctionLayoutArg::Auto,
+    };
+    let donor_file = load_file(donor, &auto)?;
+    let payload = regexp_payload(&donor_file, donor_index)?.to_vec();
+    let (out, r) = set_regexp(&mut file, index, &payload, &PatchOptions::default())?;
+    std::fs::write(output, out)?;
+    if r.old_syntax_flags != r.new_syntax_flags {
+        eprintln!(
+            "warning: regexp {index} matches with flags {:?} now, but its CreateRegExp \
+             flags string still says {:?}; `.flags` will disagree with how it matches",
+            RegexpSetReport::flags_text(r.new_syntax_flags),
+            RegexpSetReport::flags_text(r.old_syntax_flags),
+        );
+    }
+    eprintln!(
+        "note: `.source` and `.flags` are CreateRegExp's string operands and still \
+         describe the old pattern; retarget or patch them separately if anything reads them"
+    );
+    let how = match r.mode {
+        RegexpSetMode::InPlace => "in place",
+        RegexpSetMode::Appended => "appended to storage",
+    };
+    eprintln!(
+        "Set regexp {index} {how} ({} → {} bytes, {} → {} capture groups) → {}",
+        r.old_len,
+        r.new_len,
+        r.old_marked_count,
+        r.new_marked_count,
         output.display()
     );
     Ok(())

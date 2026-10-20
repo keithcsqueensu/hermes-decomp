@@ -51,7 +51,7 @@ two actions take only `--format-version` and always auto-detect the layout. A gl
 
 **Write path** (all in `write_cmd`, → guide 06): `emit-hasm`, `asm`/`patch-function` and
 `inject-stub` (`--allow-stale-debug-info` guard, R24), `patch-operand`, `retarget-string`,
-`add-string`, `patch-string`, `create`, `asm-check`. Plus `update` → `update_cmd::run`.
+`add-string`, `regexp-set`, `patch-string`, `create`, `asm-check`. Plus `update` → `update_cmd::run`.
 
 ### Dispatch (`main.rs`)
 `run()` is one large `match cli.command` routing each variant to a `commands::*` function.
@@ -118,8 +118,9 @@ reports any `resolve_format` opcode-table substitution and integrity warnings in
   function named in guides 01–05.
 - **Write / RE (7 tools):** `secrets`, `emit_hasm`, `patch_string`, `inject_stub`,
   `patch_function` (`parse_hasm_with_context` + `patch_function_body`), `create_hbc`,
-  `frida_hooks` — all → guide 06. These return `CallToolResult` directly, outside `cap_text`.
-  The CLI's `patch-operand`, `retarget-string` and `add-string` have no MCP counterpart.
+  `frida_hooks` — all → guide 06. They answer through `text_result`, so `cap_text` bounds them
+  like the read tools. The CLI's `patch-operand`, `retarget-string`, `add-string` and
+  `regexp-set` have no MCP counterpart.
 
 ### Server structure (`server/`)
 `server/mod.rs` holds `HermesService`, `LoadedFile` (file + format + path + bytes + memoized

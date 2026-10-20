@@ -635,6 +635,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             commands::write_cmd::run_add_string(&input, &output, value, identifier, &format)?;
         }
+        Command::RegexpSet {
+            input,
+            output,
+            index,
+            donor,
+            donor_index,
+            format,
+        } => {
+            commands::write_cmd::run_regexp_set(
+                &input,
+                &output,
+                index,
+                &donor,
+                donor_index,
+                &format,
+            )?;
+        }
         Command::PatchString {
             input,
             output,

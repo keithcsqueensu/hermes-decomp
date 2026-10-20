@@ -38,8 +38,8 @@ use common::Oracle;
 
 use hbc_decomp::write::patch::PatchOptions;
 use hbc_decomp::{
-    add_string, encode_function_body, patch_function_bytes, retarget_string, BytecodeFile,
-    BytecodeFormat, FunctionHeader,
+    add_string, encode_function_body, patch_function_bytes, regexp_payload, retarget_string,
+    set_regexp, BytecodeFile, BytecodeFormat, FunctionHeader, RegexpSetMode,
 };
 
 fn corpus() -> Option<(Vec<u8>, PathBuf)> {
@@ -453,6 +453,94 @@ fn a_string_append_and_a_body_grow_relocate_identically() {
     println!(
         "  {past_both} of {} headers past both splices relocated identically (delta {delta}, grew fn#{target})",
         before.function_headers.len()
+    );
+}
+
+// P4a, archetype C on a production bundle: appending a regex stream shifts the
+// whole tail -- every function body sits after regexp storage -- so it is run
+// here once at full scale, not just on the three-function fixtures.
+#[test]
+fn a_regexp_append_moves_the_tail_and_nothing_else() {
+    let (bytes, _) = corpus_or_skip!();
+    let before = BytecodeFile::parse_auto(&bytes).expect("corpus parses");
+    let donor_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/regexp_donor.v96.hbc");
+    let donor_bytes = std::fs::read(&donor_path).expect("regexp_donor fixture");
+    let donor = BytecodeFile::parse_auto(&donor_bytes).unwrap();
+    let payload = regexp_payload(&donor, 1).unwrap().to_vec();
+    assert_eq!(payload[0], 0, "donor entry 1 has no capture group");
+
+    // The first entry the donor may replace and cannot fit: no capture groups to
+    // lose, and a slot smaller than the payload, so it must append.
+    let index = (0..before.reg_exp_table.len() as u32)
+        .find(|&i| {
+            let p = regexp_payload(&before, i).unwrap();
+            p.len() < payload.len() && p[0] == 0 && p[1] == 0
+        })
+        .expect("a small capture-free regex in the corpus");
+
+    let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
+    let (out, report) =
+        set_regexp(&mut file, index, &payload, &PatchOptions::default()).expect("regexp-set");
+    assert_eq!(report.mode, RegexpSetMode::Appended);
+    let after = BytecodeFile::parse_auto(&out).expect("patched corpus reparses");
+
+    assert_eq!(regexp_payload(&after, index).unwrap(), &payload[..]);
+    for i in (0..before.reg_exp_table.len() as u32).filter(|&i| i != index) {
+        assert_eq!(
+            regexp_payload(&after, i).unwrap(),
+            regexp_payload(&before, i).unwrap(),
+            "regexp {i} changed"
+        );
+    }
+    let deltas: BTreeSet<i64> = after
+        .function_headers
+        .iter()
+        .zip(&before.function_headers)
+        .map(|(a, b)| a.offset() as i64 - b.offset() as i64)
+        .collect();
+    assert_eq!(
+        deltas.len(),
+        1,
+        "every body should shift by one delta; saw {deltas:?}"
+    );
+    let delta = *deltas.iter().next().unwrap();
+    assert!(delta > 0 && delta % 4 == 0, "delta {delta}");
+    for (i, (a, b)) in after
+        .function_headers
+        .iter()
+        .zip(&before.function_headers)
+        .enumerate()
+    {
+        assert_eq!(
+            fixed_fields(a),
+            fixed_fields(b),
+            "fn#{i}: a fixed field changed"
+        );
+        assert_eq!(
+            a.bytecode_size_in_bytes(),
+            b.bytecode_size_in_bytes(),
+            "fn#{i}: size"
+        );
+    }
+    // Each body moved; none changed. (Not `instructions`: that runs to EOF and
+    // takes in the large headers, whose offsets rightly changed.)
+    let body = |img: &[u8], h: &FunctionHeader| {
+        let o = h.offset() as usize;
+        img[o..o + h.bytecode_size_in_bytes() as usize].to_vec()
+    };
+    let changed = (after.function_headers.iter().zip(&before.function_headers))
+        .filter(|(a, b)| body(&out, a) != body(&bytes, b))
+        .count();
+    assert_eq!(
+        changed, 0,
+        "{changed} function bodies changed; they must only move"
+    );
+    println!(
+        "  regexp {index} appended ({} -> {} bytes); {} function bodies shifted by {delta}",
+        report.old_len,
+        report.new_len,
+        after.function_headers.len()
     );
 }
 

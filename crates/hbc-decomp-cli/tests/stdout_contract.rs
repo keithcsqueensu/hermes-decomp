@@ -166,6 +166,21 @@ fn file_transforming_commands_write_nothing_to_stdout() {
                 s(&scratch("po-in")),
             ],
         ),
+        (
+            "regexp-set",
+            vec![
+                "regexp-set".into(),
+                "--index".into(),
+                "1".into(),
+                "--donor".into(),
+                s(&fixture("regexp_donor.v96.hbc")),
+                "--donor-index".into(),
+                "1".into(),
+                "-o".into(),
+                s(&tmp_dir().join("rx.hbc")),
+                s(&fixture("regexp.v96.hbc")),
+            ],
+        ),
     ];
 
     for (name, args) in cases {
