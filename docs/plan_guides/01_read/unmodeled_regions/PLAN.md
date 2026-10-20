@@ -806,9 +806,9 @@ header's body offset and, when overflowed, its info offset. On 11.39.0 that shif
 10,302,900 bytes of bytecode and touches 62,909 function headers — the regexp section sits at
 0x6213AC, well upstream of the instruction stream at 0x63B56C.
 
-⚠️ **Do not copy the shift a fourth time.** It exists three times already and that is R26.
-Factor `add_string`'s tail relocation into something both callers use *before* adding the regexp
-caller, or the phase makes a known problem worse for a section that needed the least of it.
+⚠️ **Do not copy the shift.** It is one primitive now — `write::reloc::relocate` (R26, fixed).
+The regexp append splices its region and calls it with `moved_from` = the region's old end, as
+`add_string` does.
 
 **Four traps, two of them measured.**
 
@@ -838,7 +838,7 @@ for the debug relocation in P2. Then the C arm once against the 11.39.0 corpus b
 10 MB tail shift over 62,909 headers is not a thing to first attempt in production.
 
 **Cost.** A is hours and needs nothing. B is a day with the test. C is the real work, and most
-of it is the R26 refactor that should happen anyway.
+of it was the R26 refactor, which has shipped; what is left is the table entry and the splice.
 
 **Not in scope.** Compiling a pattern string to bytecode ourselves (that is P4, still
 speculative), and *inserting* a `CreateRegExp` where none exists — that is an instruction

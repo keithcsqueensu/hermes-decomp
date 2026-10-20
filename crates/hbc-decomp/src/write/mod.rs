@@ -23,7 +23,7 @@ pub use patch::{
     patch_string_operand, patch_string_replace, retarget_string, InjectStubKind, OperandTarget,
     PatchOptions,
 };
-pub use reloc::RelocPlan;
+pub use reloc::{relocate, Reloc};
 pub use serialize::{
     commit_image, finalize_raw_image, serialize_file, write_file, SerializeOptions,
 };

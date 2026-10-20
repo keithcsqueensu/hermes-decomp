@@ -169,11 +169,11 @@ harness gate.
   left is the two oracles a public runner cannot cheaply have: a per-version Hermes build
   (`vm_verify`) and the production bundle (`corpus`). Both are infrastructure, not code.
   The regression this pass found (`test.yml` red, strict pin skipped) is fixed; see R21.
-- **One relocation primitive, and an honest `apply_reloc`** → R26. Three hand-rolled copies of
-  "splice a region, shift every offset past it", plus a stub that promises a fourth and cannot
-  work. Small and self-contained, and a prerequisite for `string_packing/PLAN.md` P1, which
-  splices a differently-sized string region and would otherwise become the fourth copy.
-  → `relocation/PLAN.md`.
+- **One relocation primitive** → R26, **shipped** (`relocation/PLAN.md` P0–P2). The three
+  hand-rolled copies are now one `write::reloc::relocate`, the dead `apply_reloc`/`RelocPlan`
+  stub is gone, and a corpus differential pins that a string append and a body grow relocate
+  identically. Anything that splices a region next — `string_packing/PLAN.md` P1, the P4a
+  RegExp append — calls it rather than copying the shift.
 - **A way to *fix* a drifted opcode table** → R19, done. `tests/upstream_pin.rs` detects drift
   and names it precisely; `scripts/gen_bytecode_table.py` applies the fix, preserving each
   file's existing shape rather than imposing one (which is what sank the earlier attempt) and
@@ -377,12 +377,11 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
   whole list.)
 - **No JS recompilation.** The write path assembles HASM (our disasm dialect) and patches
   bytes; it does not recompile decompiled JavaScript (CONTRIBUTING.md scope note).
-- **`apply_reloc` on structured headers is intentionally unimplemented** — it errors and
-  points callers at `patch_function_bytes`/`finalize_raw_image` (`reloc.rs:23`).
-  `RelocPlan` is a placeholder type for a future structured-rebuild path: nothing constructs
-  one, and no shipped op needs one. The refusal is right. What is wrong is underneath it, and
-  it is R26's, not this document's — including whether the placeholder should exist at all.
-  → **`relocation/PLAN.md`** owns the offset surface, the duplication and the plan.
+- **The write path splices one region and shifts what follows; there is no structured
+  rebuild.** Every size-changing op goes through `write::reloc::relocate`. Rebuilding an image
+  from the model — which inserting a function or repacking the string table wholesale would
+  need — is unbuilt and waits on a named trigger.
+  → **`relocation/PLAN.md`** owns the offset surface, the primitive and P3.
 - **`retarget_string` refuses overflow entries** (v1 scope) and allows — but the CLI warns
   on — a string↔identifier cross-kind retarget (`strings.rs:257`; note moved to the CLI
   layer, see Q5).
@@ -518,7 +517,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R23 | An op's output is only ever checked against our own model | all | M×H | 🟩 | Three independent oracles now exist: a real VM (does it run), upstream headers and `BytecodeList.def` (does our format model match theirs), and `hbcdump` (does a second implementation read the same instructions) | Keep reaching for an external oracle when adding a check. The three findings this pass — stale model, opcode drift, debug stack overflow — were each invisible to a test written against our own assumptions, and each fell out immediately once something else was asked. |
 | R24 | A size-changing edit silently invalidates a function's debug info | fn/inject | M×M | ⬜ **fixed** | **Neither silent nor invalid any more: an insertion is relocated, a wholesale replacement is refused.** `inject-stub` shifts the affected addresses (`write/patch/debug_reloc.rs`, P2) — one SLEB128 delta, because every later entry is relative to it — and re-points the debug region when that changes length. `asm`/`patch-function` still refuse, because a replaced body has no old-address-to-new-address mapping to follow; that is a capability gap, not a correctness one. Previously: **guarded** (P0 of `../01_read/unmodeled_regions/PLAN.md`, `tests/debug_info_guard.rs`): `patch_function_body` refuses a size-changing edit to a function with `FLAG_HAS_DEBUG_INFO` when the file actually has a debug section, with `--allow-stale-debug-info` / `PatchOptions::allow_stale_debug_info` as the explicit opt-out. Keyed on the section as well as the flag because `create` sets the flag on an image with no debug info at all. Refusing by default is free on real targets: **0 of the Equinox bundle's 62,909 functions carry the flag** [measured]. Previously: nothing. Location streams store bytecode addresses *within* a function as SLEB128 deltas; a resize shifts `debug_info_offset` (the section) and rewrites nothing inside it, so every location past the edit point maps to the wrong instruction. No error, no warning | — (fixed). Two residuals worth naming rather than hiding: a wholesale body replacement still cannot keep its line table, by nature rather than by omission; and both the guard and the relocation key on `FLAG_HAS_DEBUG_INFO`, so a file whose functions carry debug info the flag does not admit to would slip past — unmeasured, and unlikely, since the flag is what upstream's own serializer writes the region from |
 | R25 | The debug-info reader is hardcoded to the v96 header shape | all | M×M | ⬜ **fixed** | `DebugLayout::for_version` keys the header size (28 B at v96, 16 at v98+), whether the lexical sub-regions exist, and which of the two location-stream encodings applies; unmodelled versions yield no debug info rather than a mis-ruled read. `debug_info_shapes_match_upstream` derives all four quantities from each checkout and fails if any drifts — verified by breaking each in turn. Previously: `DebugInfo::parse` takes no version (`debug.rs:88`) and `parse_header` reads seven `u32`s unconditionally (`debug.rs:148`), but `DebugInfoHeader` is **28 B at v96, 20 B at v97, 16 B at v98/v99** — upstream deleted the scope-descriptor, textified-callee and string-table offsets. On a modern file it reads 12 bytes too many and computes `data_start` from the wrong base | — (fixed). The old claim that this was "never exercised because every fixture lacks debug info" was backwards: every fixture *has* debug info, so the wrong-sized read ran on every parse and was merely unasserted. Confirmed before the fix by compiling one source at three versions: 5 scope descriptors and an 8-entry debug string table at v96, zeros at v98/v99 |
-| R26 | Relocation after a splice is implemented three times by hand, and promised a fourth time by a stub that cannot work | string/fn | L×H | 🟧 | All three copies are currently correct, and checked by machine rather than by reading: `vm_verify` runs every op on a real engine, `corpus` sweeps the 62,909-function production bundle, and `commit_image` re-derives the model afterwards so none of them can leave it stale. The one asymmetry — `patch_function_bytes` re-encodes each legacy small header from the model where the string paths shift bits in place — was measured lossless on all 62,894 non-overflowed headers of the 11.39.0 bundle | The copies cannot diverge silently today because nothing compares them: a fix landing in one and not the others is invisible until a bundle is wrong. Collapse them into one primitive, with a differential that would catch it — specified as `relocation/PLAN.md` P0–P2, roughly a day, and a prerequisite for `string_packing/PLAN.md` P1 |
+| R26 | Relocation after a splice is implemented three times by hand, and promised a fourth time by a stub that cannot work | string/fn | L×H | ⬜ **fixed** | **One primitive now** (`write/reloc.rs`, `relocate`), used by `patch_function_bytes`, `patch_string_resize` and `add_string`; the stub is deleted. Pinned by `a_string_append_and_a_body_grow_relocate_identically` (`tests/corpus.rs`): the same delta spliced at two points moves every header past both identically, and no decoded field other than offsets and size changes — measured on Equinox 11.43.0 (63,956 headers) and CoachRx 2.1.223 (51,175). The legacy re-encode (RE1) is gone: every header is shifted in place. A value that does not fit its field — a body past the small header's 15-bit (legacy) / 14-bit (modern) size, an offset past 25 bits — is now refused where it used to be masked (`reloc::tests`). Previously: all three copies are currently correct, and checked by machine rather than by reading: `vm_verify` runs every op on a real engine, `corpus` sweeps the 62,909-function production bundle, and `commit_image` re-derives the model afterwards so none of them can leave it stale. The one asymmetry — `patch_function_bytes` re-encodes each legacy small header from the model where the string paths shift bits in place — was measured lossless on all 62,894 non-overflowed headers of the 11.39.0 bundle | The copies cannot diverge silently today because nothing compares them: a fix landing in one and not the others is invisible until a bundle is wrong. Collapse them into one primitive, with a differential that would catch it | — (fixed) |
 | R27 | The `options` bitfield is carried as an integer and never decoded, and the CJS module table's meaning depends on it | all | L×M | ⬜ **fixed** | **Decoded, and the CJS table is labelled by it.** `BytecodeOptions` (`format.rs`) is a version-keyed view over the byte — `static_builtins()`, `cjs_modules_statically_resolved()`, and `has_async()` returning `Option<bool>`, `None` from v98 because the bit *does not exist* there rather than because it is clear — plus `unknown_bits()`, which is what a v98 image built before upstream's BitField rewrite trips. The raw byte stays on the header as `options_raw` and the write path still round-trips it verbatim. `dump --kind cjs-modules` now keys its labels on bit 1 and says which of the two tables it is showing; `info` prints the decoded byte. The bit set is pinned against every configured checkout by `upstream_pin.rs::bytecode_options_bits_match_upstream`, which derives its expectations from `BytecodeOptions` rather than transcribing them, so an added, removed or reordered bit are three distinct failures. Acceptance in `tests/bytecode_options.rs` against two new fixtures — `asyncy.v{96,98,99}.hbc` (the same async source: `0b100` at v96, `0` above) and `cjsdir.v96.hbc` (two modules resolving to `index.js` and `helper.js`). The statically-resolved arm has no artifact and is asserted against a synthesised byte, which its test name says. **The original evidence:** nothing decoded `BytecodeHeader::options` (`format.rs:80`); grep it. Upstream it is a version-keyed bitfield — `staticBuiltins`, `cjsModulesStaticallyResolved`, `hasAsync` at v96, with `hasAsync` **removed** by v98 — so bit 2 means one thing on one supported version and nothing on another. The byte round-trips verbatim, so no written image is affected | Live consequence, small: `cjsModulesStaticallyResolved` selects between two tables of identical byte shape but different meaning — filename string ID → function ID when clear, module ID → function ID when set (`BytecodeDataProvider.cpp:300`) — and `inspect.rs:89` labelled the pair `(symbol_id, function_id)` unconditionally. Checked against the generator rather than the reader, the damage is narrower than it first looked: both forms store `{key, functionID}`, so the *second* field is right either way — it is the first that is a module index rather than a string id on a statically-resolved bundle, and the label invites resolving it as one. The parse was *not* affected: both forms are pair arrays sized by the same count. Fixed by P5 in `../01_read/unmodeled_regions/PLAN.md`, in the hours it was costed at — and it did pin the bit set in `upstream_pin.rs`, because the v96 → v98 loss of `hasAsync` is R8's drift again, already happened, unnoticed |
 | R28 | Scope-descriptor names were resolved as string-table *indices*, not byte offsets | read | L×M | ⬜ **fixed** | Upstream's `appendString` writes a byte offset into the debug string table and `decodeString` seeks there for a LEB128 length; `parse_scope_descriptors` treated the value as an index into the decoded list. Offset 0 and index 0 coincide, so the first name of every scope resolved and the rest came back empty. Found by P1, on a scope with three captured variables that decoded as `["alpha", "", ""]` | — (fixed: `name_at_offset`). The failure mode is why it survived: an empty name reads as "the compiler did not record one", which is *also* true of most variables, so nothing about the output looked wrong. Pinned by `every_captured_name_resolves_not_just_the_first`, which needs three names — a one-name test passes both before and after |
 
@@ -538,10 +537,10 @@ Grid (residual likelihood × impact; resolved items listed below it for the down
 L
 I Med         ·               ·                R14  R19  R21
 K
-E Low       R13 R16           R6 R27           R3 R10 R12 R26
+E Low       R13 R16           R6 R27           R3 R10 R12
 L
   Fixed (each was a live defect, not a hypothetical):
-      R1 ⬜ · R5 ⬜ · R8 ⬜ · R9 ⬜ · R11 ⬜ · R15 ⬜ · R24 ⬜ · R25 ⬜ · R28 ⬜
+      R1 ⬜ · R5 ⬜ · R8 ⬜ · R9 ⬜ · R11 ⬜ · R15 ⬜ · R24 ⬜ · R25 ⬜ · R26 ⬜ · R28 ⬜
   Resolved earlier or downgraded by evidence: R4 🟩 · R7 ⬜ · R2 🟩 · R23 🟩
   CLI-surface risks live in ../07_frontends/RISKS.md: R17, R18 (open) · R20, R22 (fixed).
 ```
@@ -587,7 +586,7 @@ testing nothing.
   `tests/corpus.rs`; *encoding* one is still unimplemented.
 - **R3 · Header field positions.** String counts sit at fixed offsets `[44..64]` shared across
   layouts, but `debug_info_offset` differs: **modern fixed at byte 108**, **legacy computed
-  by `legacy_debug_info_offset_pos`** (`strings.rs:292`), which itself depends on
+  by `debug_info_offset_pos`** (`reloc.rs`), which itself depends on
   version-gated fields (bigint present? function_source present?). A wrong legacy position
   writes garbage into a random header field with no immediate error.
 - **R4 · `string_kinds` runs (I12)** and **identifier ordering/hash (I9).** Inserting rather
@@ -606,9 +605,9 @@ testing nothing.
   but the version has no `AsyncBreakCheck`, it now **hard-errors** (Q8) instead of shipping
   a misaligned delta — residual risk retired (⬜).
 - **R8 · Overflowed functions.** Must relocate the small-header pointer **and** the large
-  header's internal fields (`resize_overflowed_function`, `functions.rs:321`). The packed
+  header's internal fields (`relocate_overflowed`, `reloc.rs`). The packed
   pointer is read and shifted in the small-header slot (`slot..slot+16` legacy,
-  `slot..slot+12` modern via `read_modern_large_pointer`, `functions.rs:336`–`:344`); the large
+  `slot..slot+12` modern via `read_modern_large_pointer`); the large
   header's body offset, size (legacy `+8`) and legacy info offset (`+16`) are then rewritten
   in place (`functions.rs:357`–`:376`). These magic offsets are v98-shaped; a version whose large header
   differs will be silently mis-patched. **This happened** — v99's large header is 36 bytes,
@@ -833,8 +832,8 @@ Decisions a future impl agent must not guess at.
   24-bit and 25-bit masks cover *different* fields, and both are correct:
   `read_modern_large_pointer` reads the **overflowed** packed large-header pointer, whose
   offset portion is 24 bits (`function_name << 24 | offset & 0x00ff_ffff`, per parser);
-  `shift_modern_small_header_offset` (`header_write.rs:113`) and `resize_modern_small`
-  (`functions.rs:290`) shift the **non-overflowed** body-offset field, which is 25 bits (per
+  `relocate_modern_small` (`reloc.rs`; formerly `shift_modern_small_header_offset` and
+  `resize_modern_small`) shifts the **non-overflowed** body-offset field, which is 25 bits (per
   parser Modern12 bitfield map `offset : (0, 25)`). No non-overflowed read uses 24 bits, so
   there is no single-field inconsistency to align. The `header_write.rs` comment was corrected
   in an earlier pass to say so explicitly.
@@ -1059,8 +1058,7 @@ are unchanged. Apply per handler field independently to `start`/`end`/`target`.
 
 Note the table's **location** already relocates today: `patch_function_bytes` copies the
 FunctionInfo region verbatim in the tail splice, and the info pointer is shifted by the
-existing overflowed/legacy relocation (`resize_overflowed_function` in `functions.rs`,
-`shift_legacy_small_header_offsets` at `header_write.rs:131`). Q3's *new* work is rewriting the entry
+existing relocation (`write::reloc::relocate`). Q3's *new* work is rewriting the entry
 **values**.
 
 **Phase 1 — inject-stub (single-point insertion). Feasible now.**

@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use crate::file::BytecodeFile;
 use crate::opcode::BytecodeFormat;
 
+use crate::write::reloc::{relocate, Reloc};
 use crate::write::serialize::{commit_image, section_offset};
 
 use super::PatchOptions;
@@ -287,22 +288,6 @@ pub fn retarget_string(
     Ok(out)
 }
 
-// Byte position of `debug_info_offset` inside a legacy 128-byte header. Mirrors
-// the field order written by `write_legacy_header`.
-pub(super) fn legacy_debug_info_offset_pos(header: &crate::format::BytecodeHeader) -> usize {
-    let mut pos = 64usize;
-    if header.big_int_count.is_some() {
-        pos += 8; // big_int_count + big_int_storage_size
-    }
-    pos += 8; // reg_exp_count + reg_exp_storage_size
-    pos += 12; // array_buffer_size + obj_key_buffer_size + obj_value_buffer_size
-    pos += 8; // segment_id/cjs_module_offset + cjs_module_count
-    if header.function_source_count.is_some() {
-        pos += 4; // function_source_count
-    }
-    pos
-}
-
 // Grow or shrink a UTF-8 string entry. Rebuilds the small string table and the
 // string storage (unpacked), then relocates every section after the string
 // region and shifts all absolute offsets (function bodies, function info,
@@ -312,10 +297,6 @@ pub(super) fn legacy_debug_info_offset_pos(header: &crate::format::BytecodeHeade
 // only. Refuses anything that would need an overflow string entry or an
 // identifier-hash rebuild, so it never emits a silently corrupt file.
 fn patch_string_resize(file: &mut BytecodeFile, id: u32, new_value: &str) -> Result<Vec<u8>> {
-    let modern = matches!(
-        file.header.function_header_layout,
-        crate::format::FunctionHeaderLayout::Modern12
-    );
     // Validate the id up front; the encoding is chosen per new value below.
     if file.strings.get(id as usize).is_none() {
         return Err(Error::Write(format!("string id {id} out of range")));
@@ -431,54 +412,19 @@ fn patch_string_resize(file: &mut BytecodeFile, id: u32, new_value: &str) -> Res
     // (60) share offsets across layouts; debug_info_offset differs.
     rebuilt[56..60].copy_from_slice(&overflow_count.to_le_bytes());
     rebuilt[60..64].copy_from_slice(&storage_size.to_le_bytes());
-    if file.header.debug_info_offset != 0 {
-        // Modern header keeps debug_info_offset at a fixed byte 108.
-        let dpos = if modern {
-            108
-        } else {
-            legacy_debug_info_offset_pos(&file.header)
-        };
-        let shifted = (file.header.debug_info_offset as i64 + delta) as u32;
-        if dpos + 4 <= rebuilt.len() {
-            rebuilt[dpos..dpos + 4].copy_from_slice(&shifted.to_le_bytes());
-        }
-    }
-
     // Everything after the string region moves by `delta`, so every function
-    // body offset shifts. The small function header is before the region and
-    // keeps its slot; we edit it in place. When a function is overflowed the
-    // small header only holds a pointer to an out-of-line large header (also in
-    // the moved region): we shift that pointer and the large header's own body
-    // offset (plus its info offset for legacy). Exception-handler tables are
-    // body-relative and are NOT rewritten here — a whole-region shift moves the
-    // table and the code it points into together, so those offsets stay valid.
-    let fh_sec = section_offset(file, "function_headers")
-        .ok_or_else(|| Error::Write("function_headers section missing".into()))?
-        as usize;
-    let hsize = if modern { 12 } else { 16 };
-    let flag_byte = if modern { 11 } else { 15 };
-    for i in 0..file.function_headers.len() {
-        let slot = fh_sec + i * hsize;
-        if slot + hsize > rebuilt.len() {
-            break;
-        }
-        let overflowed = rebuilt[slot + flag_byte] & crate::format::FLAG_OVERFLOWED != 0;
-        if overflowed {
-            relocate_overflowed_header(&mut rebuilt, slot, modern, delta)?;
-        } else if modern {
-            crate::write::header_write::shift_modern_small_header_offset(
-                &mut rebuilt[slot..slot + 12],
-                delta,
-            )?;
-        } else {
-            // Legacy non-overflowed: shift the 25-bit body offset in place; the
-            // 25-bit info_offset only moves if it is set (points past the region).
-            crate::write::header_write::shift_legacy_small_header_offsets(
-                &mut rebuilt[slot..slot + 16],
-                delta,
-            )?;
-        }
-    }
+    // body offset shifts (the header table sits before the region and keeps its
+    // slot). Exception-handler tables are body-relative and are NOT rewritten: a
+    // whole-region shift moves the table and the code it points into together.
+    relocate(
+        file,
+        &mut rebuilt,
+        &Reloc {
+            moved_from: array_off,
+            delta,
+            resized: None,
+        },
+    )?;
 
     // An identifier's precomputed hash depends on its text, so refresh it.
     update_identifier_hash(file, &mut rebuilt, id, new_value)?;
@@ -492,43 +438,6 @@ fn patch_string_resize(file: &mut BytecodeFile, id: u32, new_value: &str) -> Res
 
     let out = commit_image(file, rebuilt)?;
     Ok(out)
-}
-
-// Relocate an overflowed function whose real fields live in an out-of-line large
-// header. Shifts the small header pointer, then the large header body offset (and
-// its info offset for legacy). All of these sit in the region that moved.
-fn relocate_overflowed_header(
-    rebuilt: &mut [u8],
-    slot: usize,
-    modern: bool,
-    delta: i64,
-) -> Result<()> {
-    use crate::write::header_write as hw;
-    let large_ptr = if modern {
-        hw::read_modern_large_pointer(&rebuilt[slot..slot + 12])?
-    } else {
-        hw::read_legacy_large_pointer(&rebuilt[slot..slot + 16])?
-    };
-    if modern {
-        hw::shift_modern_large_pointer(&mut rebuilt[slot..slot + 12], delta)?;
-    } else {
-        hw::shift_legacy_large_pointer(&mut rebuilt[slot..slot + 16], delta)?;
-    }
-    let lh = (large_ptr as i64 + delta) as usize;
-    // The body offset is the first u32 of both large header layouts.
-    hw::shift_u32_at(rebuilt, lh, delta)?;
-    // Legacy large headers store info_offset at +16; modern computes it (nothing
-    // stored to shift).
-    if !modern {
-        let info_pos = lh + 16;
-        if info_pos + 4 <= rebuilt.len() {
-            let info = u32::from_le_bytes(rebuilt[info_pos..info_pos + 4].try_into().unwrap());
-            if info != 0 {
-                hw::shift_u32_at(rebuilt, info_pos, delta)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 // Append a new string to the string table. Rebuilds the entire string region
@@ -545,10 +454,6 @@ pub fn add_string(
     is_identifier: bool,
     _opts: &PatchOptions,
 ) -> Result<(Vec<u8>, u32)> {
-    let modern = matches!(
-        file.header.function_header_layout,
-        crate::format::FunctionHeaderLayout::Modern12
-    );
     let new_id = file.header.string_count;
 
     let locs = read_all_string_locs(file)?;
@@ -737,43 +642,15 @@ pub fn add_string(
     rebuilt[60..64].copy_from_slice(&storage_size.to_le_bytes());
 
     // ---- Shift downstream offsets by delta ----
-    if file.header.debug_info_offset != 0 {
-        let dpos = if modern {
-            108
-        } else {
-            legacy_debug_info_offset_pos(&file.header)
-        };
-        let shifted = (file.header.debug_info_offset as i64 + delta) as u32;
-        if dpos + 4 <= rebuilt.len() {
-            rebuilt[dpos..dpos + 4].copy_from_slice(&shifted.to_le_bytes());
-        }
-    }
-
-    let fh_sec = section_offset(file, "function_headers")
-        .ok_or_else(|| Error::Write("function_headers section missing".into()))?
-        as usize;
-    let hsize = if modern { 12 } else { 16 };
-    let flag_byte = if modern { 11 } else { 15 };
-    for i in 0..file.function_headers.len() {
-        let slot = fh_sec + i * hsize;
-        if slot + hsize > rebuilt.len() {
-            break;
-        }
-        let overflowed = rebuilt[slot + flag_byte] & crate::format::FLAG_OVERFLOWED != 0;
-        if overflowed {
-            relocate_overflowed_header(&mut rebuilt, slot, modern, delta)?;
-        } else if modern {
-            crate::write::header_write::shift_modern_small_header_offset(
-                &mut rebuilt[slot..slot + 12],
-                delta,
-            )?;
-        } else {
-            crate::write::header_write::shift_legacy_small_header_offsets(
-                &mut rebuilt[slot..slot + 16],
-                delta,
-            )?;
-        }
-    }
+    relocate(
+        file,
+        &mut rebuilt,
+        &Reloc {
+            moved_from: array_off,
+            delta,
+            resized: None,
+        },
+    )?;
 
     // ---- Sync in-memory model ----
     file.strings.push(StringTableEntry {
