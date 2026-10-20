@@ -41,8 +41,8 @@ use common::Oracle;
 
 use hbc_decomp::write::patch::PatchOptions;
 use hbc_decomp::{
-    add_string, create_minimal, inject_stub, patch_string_replace, retarget_string, BytecodeFile,
-    BytecodeFormat, CreateOptions, InjectStubKind,
+    add_string, create_minimal, inject_stub, patch_string_replace, regexp_payload, retarget_string,
+    set_regexp, BytecodeFile, BytecodeFormat, CreateOptions, InjectStubKind, RegexpSetMode,
 };
 
 // Versions with committed fixtures, one per distinct header layout the write
@@ -488,5 +488,111 @@ fn chained_size_changing_ops_need_no_reparse() {
 10",
             &format!("chained-v{version}"),
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P4a -- regexp-set: a donor stream compiled by hermesc runs in the host
+// ---------------------------------------------------------------------------
+
+const REGEXP_OUTPUT: &str = "a true false
+b true false";
+
+// Host entry `host` replaced by donor entry `donor`, on a fresh parse.
+fn set_from_donor(
+    version: u32,
+    host: u32,
+    donor: u32,
+) -> hbc_decomp::Result<(Vec<u8>, hbc_decomp::RegexpSetReport)> {
+    let donor_bytes = fixture("regexp_donor", version);
+    let donor_file = BytecodeFile::parse_auto(&donor_bytes).expect("parse donor");
+    let payload = regexp_payload(&donor_file, donor)
+        .expect("donor entry")
+        .to_vec();
+    let mut file = BytecodeFile::parse_auto(&fixture("regexp", version)).expect("parse host");
+    set_regexp(&mut file, host, &payload, &PatchOptions::default())
+}
+
+/// The only assertion that tells "reparses" from "works": the host's regex
+/// matches the donor's pattern on a real engine. Entry 0's donor fits its slot,
+/// so it lands in place and the file size does not change.
+#[test]
+fn regexp_set_in_place_matches_the_donor_pattern() {
+    for version in FIXTURE_VERSIONS {
+        let host = fixture("regexp", version);
+        assert_runs(
+            version,
+            &host,
+            REGEXP_OUTPUT,
+            &format!("regexp-baseline-v{version}"),
+        );
+
+        let (out, report) = set_from_donor(version, 0, 0).expect("set regexp 0");
+        assert_eq!(report.mode, RegexpSetMode::InPlace, "v{version}");
+        assert_eq!(
+            out.len(),
+            host.len(),
+            "v{version}: an in-place set must not resize"
+        );
+        let re = BytecodeFile::parse_auto(&out).expect("reparse");
+        let donor = BytecodeFile::parse_auto(&fixture("regexp_donor", version)).unwrap();
+        assert_eq!(
+            regexp_payload(&re, 0).unwrap(),
+            regexp_payload(&donor, 0).unwrap()
+        );
+        assert_runs(
+            version,
+            &out,
+            "a false true
+b true false",
+            &format!("regexp-in-place-v{version}"),
+        );
+    }
+}
+
+/// Entry 1's donor is larger than its slot, so it is appended to storage, the
+/// entry is repointed and everything after the storage shifts -- every function
+/// body included, which is why a run is the check that matters.
+#[test]
+fn regexp_set_appended_matches_the_donor_pattern() {
+    for version in FIXTURE_VERSIONS {
+        let host = fixture("regexp", version);
+        let (out, report) = set_from_donor(version, 1, 1).expect("set regexp 1");
+        assert_eq!(report.mode, RegexpSetMode::Appended, "v{version}");
+        assert!(
+            out.len() > host.len(),
+            "v{version}: an append must grow the file"
+        );
+        let re = BytecodeFile::parse_auto(&out).expect("reparse");
+        let donor = BytecodeFile::parse_auto(&fixture("regexp_donor", version)).unwrap();
+        assert_eq!(
+            regexp_payload(&re, 1).unwrap(),
+            regexp_payload(&donor, 1).unwrap()
+        );
+        let before = BytecodeFile::parse_auto(&host).unwrap();
+        assert_eq!(
+            regexp_payload(&re, 0).unwrap(),
+            regexp_payload(&before, 0).unwrap(),
+            "v{version}: the other entry must be untouched"
+        );
+        assert_runs(
+            version,
+            &out,
+            "a true false
+b false true",
+            &format!("regexp-appended-v{version}"),
+        );
+    }
+}
+
+/// A donor with fewer capture groups than the entry it replaces is refused:
+/// code reading `m[1]` would get `undefined`, far from the edit.
+#[test]
+fn regexp_set_refuses_fewer_capture_groups() {
+    for version in FIXTURE_VERSIONS {
+        let err = set_from_donor(version, 0, 2)
+            .expect_err("dropping a capture group must be refused")
+            .to_string();
+        assert!(err.contains("capture group"), "v{version}: {err}");
     }
 }

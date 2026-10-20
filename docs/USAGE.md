@@ -150,6 +150,7 @@ hermes-decomp add-string app.hbc --value "myNewString" -o app2.hbc
 hermes-decomp add-string app.hbc --value "myProp" --identifier -o app2.hbc
 hermes-decomp retarget-string app.hbc --from "H:mm" --to "HH:mm" -o app2.hbc
 hermes-decomp retarget-string app.hbc --from-id 5 --to-id 42 -o app2.hbc
+hermes-decomp regexp-set app.hbc --index 12 --donor donor.hbc -o app2.hbc   # --donor-index N
 hermes-decomp patch-operand app.hbc --at 0xD83E27 --string "black" -o app2.hbc
 hermes-decomp patch-operand app.hbc --function 42 --insn-offset 0x1A --string-id 72 -o app2.hbc
 hermes-decomp patch-string app.hbc --old "done" --new "fini" -o app2.hbc
@@ -209,6 +210,32 @@ names (adds a Jenkins hash slot). Encoding is chosen by content: pure ASCII uses
 one byte per character; anything with a non-ASCII character uses UTF-16. If the
 value already exists, a note is emitted to stderr but the string is still appended
 (no silent dedup).
+
+`regexp-set` replaces the bytecode of one RegExp table entry (`--index`, the last
+operand of its `CreateRegExp`) with an entry taken from a donor `.hbc`. There is no
+regex compiler here: let `hermesc` compile the pattern and lift it out.
+
+```bash
+echo 'var re = /^nope-(\d+)$/i; print(re.test(""));' > donor.js
+hermesc -emit-binary -out donor.hbc donor.js
+hermes-decomp dump donor.hbc --kind regexp          # entry 0 is the payload
+hermes-decomp regexp-set app.hbc --index 12 --donor donor.hbc -o app2.hbc
+```
+
+The stream is position-independent and the same pattern compiles to the same bytes at
+v96, v98 and v99, so the donor's version does not have to match. When the payload fits
+the entry's slot it is written in place and the file size does not change; otherwise it
+is appended to RegExp storage, the entry is repointed and the tail shifts. Every index
+stays put either way, so no instruction changes.
+
+- **Refused:** a payload with fewer capture groups than the entry it replaces — code
+  reading `m[1]` would quietly get `undefined`.
+- **Not changed:** `.source` and `.flags`. They are `CreateRegExp`'s string operands, so
+  they still describe the old pattern; a note says so on every run, and a warning when
+  the payload's flags differ from the old entry's. Fix them with `add-string` +
+  `patch-operand` if anything reads them.
+- **Case-insensitive patterns** store their literals case-folded, so editing one in a hex
+  dump is a trap — recompile the donor instead.
 
 #### Verifying patched output on a real Hermes VM
 

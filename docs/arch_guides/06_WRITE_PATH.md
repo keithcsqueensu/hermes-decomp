@@ -51,6 +51,7 @@ Two properties define it, and both are the reason the plan_guides exist:
 | File | Edit |
 |---|---|
 | `patch/strings.rs` | string-table entries: same-length in place, or grow/shrink with a full table + storage rebuild and tail relocation; append (`add_string`); repoint an entry at another's storage (`retarget_string`) |
+| `patch/regexp.rs` | one RegExp entry's bytecode, replaced by a donor stream (`set_regexp`): in place when it fits the entry's unshared slot, else appended to storage with the entry repointed and the tail moved by `relocate`; refuses fewer capture groups (P4a) |
 | `patch/operands.rs` | a single string-id operand in one instruction, addressed by `OperandTarget` (absolute offset or function + insn offset) — no body rebuild; validates shape, read-back verifies |
 | `patch/functions.rs` | whole function bodies: same-size in place; different-size splices the code section, shifts later offsets, fixes the debug-info offset; refuses a resize of a function with handlers or (unless opted out) debug info |
 | `patch/inject.rs` | inject a stub into a body: a runtime no-op pad, or a `print(<name>)` entry-logging prologue |

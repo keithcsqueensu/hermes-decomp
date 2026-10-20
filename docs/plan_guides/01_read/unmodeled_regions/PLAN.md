@@ -745,7 +745,25 @@ without one. Listed only so the boundary is explicit. Do not build it speculativ
 pattern string* — an assembler, which is why P4 was ordered behind P3's disassembler. That
 piece is still speculative and still nobody's. What follows is not that.
 
-### P4a — Put a chosen RegExp into a real bundle *(the need appeared)*
+### P4a — Put a chosen RegExp into a real bundle — ✅ **shipped** (archetypes B and C)
+
+**Shipped as** `regexp-set` (`write/patch/regexp.rs`, `set_regexp` + `regexp_payload`): take entry
+N of a donor `.hbc` and land it over entry M — **in place** (B) when it fits M's slot and no other
+entry shares those bytes, otherwise **appended** to storage with M repointed and the tail moved by
+`write::reloc::relocate`. One deliberate departure from C as written below: the append adds
+*storage only* and repoints the existing entry, rather than adding a table entry. Every index
+stays put, so no `CreateRegExp` operand changes, and the old bytes are left unreferenced. Refuses
+a payload with fewer capture groups (`markedCount`) than the stream it replaces; the CLI warns
+when the flags byte differs and always notes that `.source`/`.flags` did not change. **[measured]**:
+`vm_verify` runs both arms at v96, v98 and v99 and asserts the host now matches the donor's
+pattern (`a false true` / `b false true`); `tests/corpus.rs`
+`a_regexp_append_moves_the_tail_and_nothing_else` appends on Equinox 11.43.0 (63,957 bodies
+shifted by 60, none changed) and CoachRx 2.1.223 (51,176). A cross-version donor (v98 → v96)
+runs too. Still not built: archetype A (repointing a `CreateRegExp` at another index) —
+`patch-operand` edits only string-id operands, so it needs a small extension for the `UInt32`
+index operand — and compiling a pattern by shelling out to a configured `hermesc`.
+
+The plan as scoped:
 
 **Why this is a separate phase.** A concrete ask arrived — a regex to be added to the Equinox
 bundle — and it turns out **not to need P3, and not to need an assembler at all**. The regex
@@ -954,7 +972,7 @@ P0  ✅ ──────────► shipped: the guard
 P1  ✅ ──► P2 ✅    shipped: the reader, then relocation for insertions
 P1b                specified and measured; blocked on the closure model — ../../03_analysis/closure_model/PLAN.md K1/K3
 P3  ──► P4         disassemble before you assemble; P4 only on demand
-P4a ──────────────► independent of both: the donor comes from hermesc, not from us
+P4a ✅ ────────────► shipped: regexp-set; the donor comes from hermesc, not from us
 P5  ✅ ────────────► shipped: the bitfield, and the CJS labels with it
 P6                 blocked on P1+P2 for debug info, and on a demand that does not exist yet
 ```
