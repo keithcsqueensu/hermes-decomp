@@ -152,8 +152,8 @@ pub enum Command {
         #[arg(long)]
         no_cache: bool,
         /// Apply the names in a proposal artifact (see `cascade extract` / `cascade verify`)
-        /// for the proposals this bytecode confirms. Implies --no-cache, since the cache
-        /// does not key on the artifact.
+        /// for the proposals this bytecode confirms. Implies --no-cache: a cascade build
+        /// never reads or writes the analysis cache.
         #[arg(long)]
         cascade: Option<PathBuf>,
     },

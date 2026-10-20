@@ -9,6 +9,15 @@ Binary: **`hermes-decomp`**. Input: a `.hbc` or React Native `.bundle`.
 | `--layout <auto\|legacy\|modern>` | File header layout (default: `auto`) |
 | `--function-layout <auto\|legacy16\|modern12>` | Per-function header layout (default: `auto`) |
 | `--format-version <N>` | Override detected HBC bytecode version |
+| `--log <SPEC>` | Log tracing, an `env_logger` filter (`debug`, `trace`, or per target `modname=trace,closure=debug`). Overrides `RUST_LOG`. Global: goes before or after the command |
+
+Useful `--log` targets: `modname` (module naming decisions), `require` (require call
+resolution), `closure` (closure slot naming), `pipeline` (stage timings). Narrower named
+targets: `slotname`, `renames`, `decl`, `hoist`, `ipa`, `cascade`, `depmap`, `genlift`,
+`supers`.
+
+The `cascade` subcommands take only `--format-version`; `create` and `asm-check` take none of
+the three.
 
 ## Commands
 
@@ -43,19 +52,24 @@ Useful options: `--deep`, `--stable`, `--resolve-closures`,
 `--expand` / `--expand-depth N`, `--show-offsets`, `--no-strings`,
 `--no-propagate`, `--no-simplify`, `--no-structure`, `--check-dead-code`,
 `--assembly`, `--json`, `--modules`, `--module-name`,
-`--exclude-module-name`, `--from-module`, `--module-depth`, `--no-cache`.
+`--exclude-module-name`, `--from-module`, `--module-depth`, `--no-cache`,
+`--cascade <artifact.json>` (see **Cascade** below).
 
 `--deep` runs extra passes of inter-procedural and closure naming, so more
 parameters recover a real name instead of `argN`. It is slower and never
 overwrites a name already found, so the default output stays a subset of it.
 `--stable` favours names that stay the same across app builds, which keeps
-diffs between two versions smaller.
+diffs between two versions smaller: a module that has no recovered name is named from a
+hash of its stable content rather than its Metro id, and the volatile module id comments
+are dropped.
 
 Full-bundle `decompile` and runs with `-o` print **progress on stderr**.
 
 **Analysis cache:** first run writes `<input>.hdcache` next to the file
 (~0.2s reloads later). Keyed by SHA-256(bytecode) **and** SHA-256(binary).
-Delete the `.hdcache` or pass `--no-cache` to force a rebuild.
+Delete the `.hdcache` or pass `--no-cache` to force a rebuild. A build with `--cascade`
+never reads or writes the cache, in the CLI or through the library: the key could see only
+the artifact's path, so an edited proposal would hit a stale entry.
 
 ### Explore / analyze
 
@@ -67,12 +81,13 @@ hermes-decomp tui app.hbc --input2 app_v2.hbc   # split-view diff
 hermes-decomp bin-diff v1.hbc v2.hbc            # --diff-code
 hermes-decomp xref app.hbc --query "loginWithToken"
 hermes-decomp xref app.hbc --query 42 --kind function
+hermes-decomp xref app.hbc --query "loginWithToken" --json
 
 hermes-decomp graphviz app.hbc --function 5 --open
 hermes-decomp callgraph app.hbc
 hermes-decomp callgraph app.hbc --function 42 --depth 3 --dot > calls.dot
 
-hermes-decomp extract app.hbc -o modules/
+hermes-decomp extract app.hbc -o modules/       # --no-strings
 hermes-decomp modules app.hbc --limit 50
 hermes-decomp deps app.hbc --module 0 --depth 3
 
@@ -84,6 +99,32 @@ hermes-decomp dump app.hbc --kind obj-shapes --json
 hermes-decomp closures app.hbc --function 5
 hermes-decomp debug app.hbc --vars    # also --scopes, --callees
 ```
+
+`--json` gives a machine-readable report instead of text on `xref`, `bin-diff`,
+`callgraph`, `modules`, `deps`, `closures`, `dump`, `secrets` and `decompile`
+(`decompile --json` is the IR, not JavaScript). `modules --json` lists the first
+`--limit` modules with the total count, each with its dependencies and export map;
+`deps --json` adds the module's dependents, and an unknown module id is an error there
+rather than an empty tree.
+
+### Cascade (offline name proposals)
+
+Proposal and verification, after the CASCADE paper (arXiv 2507.17691). A model is good at
+recognising what an unnamed helper is for and bad at being trusted about it, so it only ever
+*proposes* a name; the bytecode decides whether to believe it. Nothing here talks to a
+network.
+
+```bash
+hermes-decomp cascade extract app.hbc -o candidates.json      # functions worth naming
+# ... a reader (human or model) writes proposals.json from candidates.json, offline ...
+hermes-decomp cascade verify app.hbc proposals.json           # report what the bytecode confirms
+hermes-decomp decompile app.hbc --cascade proposals.json -o out.js
+```
+
+Only confirmed proposals are applied; a rejected one changes nothing and the function keeps
+its generic name. The artifact carries a fingerprint of the bundle it was made for (HBC
+version, function and string counts, a digest of the string table), so it cannot be applied
+to a different build and rename by coincidence. `--cascade` bypasses the analysis cache.
 
 ### Secrets / Frida
 
@@ -239,7 +280,8 @@ therefore degrades to reparse-only coverage rather than failing.
 
 Three further suites work the same way, each checking against a different external
 source of truth. All are opt-in, so a checkout without these artifacts still builds
-and tests — see **Requiring the oracles** below for how to make a run refuse to skip:
+and tests — see **Requiring the oracles** below for how to make a run refuse to skip.
+(The round-trip corpus is the exception: see **The round-trip corpus** below.)
 
 | Suite | Checks against | Env |
 |---|---|---|
@@ -270,8 +312,10 @@ python scripts/fetch_pinned_hermes.py C:\src\pins
 # v96: 2afc7b09f -> C:\src\pins\hermes-v96 (fetched)   ... and 97, 98, 99
 ```
 
-Each is a blobless, sparse checkout at that version's `GitCommitHash` — about 4 MB
-and a few seconds for all four, against ~1.5 GB for a full clone.
+Each is a blobless, sparse checkout at that version's `GitCommitHash` — about 1.6 MB
+each and a few seconds for all four, against ~1.5 GB for a full clone. The sparse set is
+`include/hermes/BCGen/HBC` plus `lib/BCGen/HBC` (the v96 debug-info check reads
+`DebugInfo.cpp`); a tree fetched by an older script is widened on reuse.
 
 **Requiring the oracles.** An unset variable means "I do not have this oracle" and
 the suite skips with a printed note. That is what keeps an unconfigured checkout
@@ -289,7 +333,7 @@ things are errors regardless of this setting: a variable that is *set* but does 
 point at what it claims (a stale path silently degrading to a no-op is the failure
 this exists to remove), and an unknown token in the list itself.
 
-CI runs `cargo test --workspace` unconfigured, then fetches the four pinned
+CI runs `cargo test --workspace` with `HBC_CORPUS_OPTIONAL=1`, then fetches the four pinned
 checkouts and re-runs `upstream_pin` under `HBC_REQUIRE_ORACLES=src`, so the
 bundled format tables cannot drift from the upstream commits they record without
 the build going red. `vm_verify` and `corpus` need a Hermes build and a third-party
@@ -299,6 +343,32 @@ bundle respectively, so they stay opt-in on a public runner.
 sweeps every function for encode/decode symmetry and diffs the disassembly against
 `hbcdump`. The fixtures contain no overflowed string entries at all; a production
 bundle has ~1,400.
+
+**The round-trip corpus.** Separate from the production-bundle `corpus` suite above, the
+library tests read a generated corpus of small bytecode files compiled by `hermesc`. It is
+not committed; build it once:
+
+```bash
+bash scripts/build/fetch_hermesc.sh
+bash scripts/build/build_corpus.sh
+```
+
+Without it the tests that read real bytecode **fail** and say so — they used to return early
+and pass having asserted nothing. Set `HBC_CORPUS_OPTIONAL=1` to skip them instead, which is
+what CI does. Tracked crash-regression fixtures (a few hundred bytes per version) run
+everywhere, CI included.
+
+**Running every gate.** Before a change lands:
+
+```bash
+cargo build --release --workspace
+bash scripts/build/gates.sh          # --quick skips the parse check
+```
+
+`gates.sh` runs clippy with warnings denied, the test suite, the round-trip corpus (a
+decompiler crash on a present bytecode is a FAIL), and a parse check of the decompiled
+JavaScript against a recorded ceiling per bundle. A bundle not on the machine is skipped
+rather than failed. See `CONTRIBUTING.md`.
 
 Two other binaries from the same build are useful as read-side oracles:
 `hbcdump -mode=objdump` (reference disassembly plus a string table with kinds,
