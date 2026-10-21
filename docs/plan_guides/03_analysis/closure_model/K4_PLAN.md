@@ -297,8 +297,8 @@ are reviewed for what still needs them. P1b's `NameSource::Debug` rung (K3) beco
 
 **[measured]** Equinox 11.43.0 (v96), release, `--no-cache`. Byte-identity was checked against
 `f303870`'s output on Equinox and CoachRx 2.1.223 at every stage, and on Discord 350.8 (v98,
-68.5 MB bundle, 170 MB output, ~18 min while sharing the machine) as a third bundle: K4.1
-identical; K4.2 and K4.3 as recorded in their commits.
+68.5 MB bundle, 170 MB output, ~18 min while sharing the machine) as a third bundle: K4.1,
+K4.2 and K4.3 each identical.
 
 **Stamp census** (`RUST_LOG=slots=debug`), stamped references by stage:
 
