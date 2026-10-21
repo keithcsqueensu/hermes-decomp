@@ -7,5 +7,5 @@ mod value;
 mod tests;
 
 pub(crate) use naming::name_from_constant_text;
-pub use types::{encode_level_slot, ClosureInfo, ClosureSlotValue};
+pub use types::{encode_level_slot, ClosureInfo, ClosureSlotValue, NameSource, SlotName};
 pub use value::{ident_from_property_key, value_from_expr};

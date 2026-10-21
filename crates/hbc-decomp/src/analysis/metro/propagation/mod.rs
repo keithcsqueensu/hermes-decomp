@@ -547,7 +547,9 @@ pub fn propagate_module_names(
                                 target
                             {
                                 // Fallback: handle "closure_N" as a slot update
-                                if let Some(slot_id_str) = v.strip_prefix("closure_") {
+                                if let Some(slot_id_str) =
+                                    v.strip_prefix(crate::ir::placeholder::PREFIX)
+                                {
                                     if let Ok(slot) = slot_id_str.parse::<u32>() {
                                         if let Some(ctx) = closure_ctx {
                                             ctx.update_slot_variable(*func_id, slot, name.clone());

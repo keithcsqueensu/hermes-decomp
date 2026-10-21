@@ -1,4 +1,4 @@
-use super::types::{ClosureInfo, ClosureSlotValue};
+use super::types::{ClosureInfo, ClosureSlotValue, NameSource, SlotName};
 use crate::analysis::metro::registry::FactoryRoles;
 
 impl ClosureInfo {
@@ -34,27 +34,39 @@ impl ClosureInfo {
     }
 
     pub fn get_slot_name(&self, slot: u32) -> String {
-        if let Some(name) = self.names.get(&slot) {
-            return name.clone();
+        self.slot_name(slot).text
+    }
+
+    /// A slot's name with the rung it came from: the decided name if there is
+    /// one, else the one its value suggests.
+    pub fn slot_name(&self, slot: u32) -> SlotName {
+        let derived = self.derived_slot_name(slot);
+        match self.names.get(&slot) {
+            Some(name) => SlotName {
+                text: name.clone(),
+                source: derived.source,
+            },
+            None => derived,
         }
-        self.derived_slot_name(slot)
     }
 
     /// The name a slot's value suggests, ignoring any decided name.
-    pub fn derived_slot_name(&self, slot: u32) -> String {
+    pub fn derived_slot_name(&self, slot: u32) -> SlotName {
+        use NameSource::*;
+        let named = |text: String, source| SlotName { text, source };
         // The raw slot index (the key may be level-encoded for ancestor scopes).
         let raw_slot = slot & 0x00FF_FFFF;
-        let unresolved = format!("closure_{raw_slot}");
+        let unresolved = named(crate::ir::Value::closure_var_name(0, raw_slot), Placeholder);
         match self.slots.get(&slot) {
             Some(ClosureSlotValue::Function { id, name }) => {
                 if let Some(n) = name {
-                    n.clone()
+                    named(n.clone(), Function)
                 } else {
-                    format!("f{id}")
+                    named(format!("f{id}"), Synthesised)
                 }
             }
             // Exclusive RegExp slot only (see `store_slot` merge rules).
-            Some(ClosureSlotValue::RegExp) => format!("re{raw_slot}"),
+            Some(ClosureSlotValue::RegExp) => named(format!("re{raw_slot}"), Synthesised),
             // A slot initialised with a constant is a *mutable captured variable*
             // (e.g. a counter `var c = 0` shared with an inner closure), not an
             // alias for the constant. Prefer a short descriptive name derived
@@ -64,9 +76,9 @@ impl ClosureInfo {
             // NOTE: never treat string constants starting with `/` as regex,             // only `ClosureSlotValue::RegExp` maps to `re{N}`.
             Some(ClosureSlotValue::Constant(c)) => {
                 if let Some(name) = name_from_constant_text(c) {
-                    name
+                    named(name, Constant)
                 } else {
-                    format!("c{raw_slot}")
+                    named(format!("c{raw_slot}"), Synthesised)
                 }
             }
             Some(ClosureSlotValue::Variable(v)) => {
@@ -74,9 +86,9 @@ impl ClosureInfo {
                 // are applied eagerly via `apply_metro_param_roles` only on
                 // factory functions, never here (avoids false `require` labels).
                 if v == "arguments" {
-                    "args".to_string()
+                    named("args".to_string(), Synthesised)
                 } else if is_meaningful_closure_name(v) {
-                    v.clone()
+                    named(v.clone(), Variable)
                 } else {
                     unresolved
                 }
@@ -184,7 +196,7 @@ fn is_meaningful_closure_name(name: &str) -> bool {
     if name.starts_with("tmp") {
         return false;
     }
-    if name.starts_with("closure_") || name.starts_with("outer") {
+    if crate::ir::placeholder::has_prefix(name) || name.starts_with("outer") {
         return false;
     }
     true

@@ -305,7 +305,10 @@ impl Codegen {
             // Match: import closure_N from "modName";
             if let Some(rest) = imp.strip_prefix("import ") {
                 let parts: Vec<&str> = rest.splitn(3, ' ').collect();
-                if parts.len() >= 3 && parts[0].starts_with("closure_") && parts[1] == "from" {
+                if parts.len() >= 3
+                    && crate::ir::placeholder::has_prefix(parts[0])
+                    && parts[1] == "from"
+                {
                     let mod_name = parts[2].trim_matches(|c| c == '"' || c == ';');
                     let sanitized = sanitize_import_name(mod_name);
                     if !sanitized.is_empty()
@@ -323,7 +326,7 @@ impl Codegen {
                     let after = &imp[start + "default as ".len()..];
                     if let Some(end) = after.find([' ', '}']) {
                         let closure_name = &after[..end];
-                        if closure_name.starts_with("closure_") {
+                        if crate::ir::placeholder::has_prefix(closure_name) {
                             if let Some(from_idx) = imp.find("from \"") {
                                 let mod_part = &imp[from_idx + 6..];
                                 if let Some(end_quote) = mod_part.find('"') {
@@ -899,7 +902,7 @@ impl Codegen {
 // A binding whose name is a decompiler placeholder that should take its module's
 // name when it is an import.
 fn is_generic_import_binding(name: &str) -> bool {
-    if name.starts_with("closure_") {
+    if crate::ir::placeholder::has_prefix(name) {
         return true;
     }
     let result_stem = name.trim_end_matches(|c: char| c.is_ascii_digit());

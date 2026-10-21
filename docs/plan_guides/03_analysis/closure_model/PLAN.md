@@ -38,6 +38,11 @@ so exposed **C9**, a correctness bug the old level mapping had been hiding: two 
 captured variables printed under one name. It is fixed for the paths it was found on. C1, C4,
 C6, C7 and C8 stand; K3 and K4 are open.
 
+**Status after K3.** K3 has shipped in the form the code allows, byte-identical on Equinox
+(K3). Making it so turned up **C10**: the stages that rename placeholders after W6 cannot
+yet be opened to C9's `closure_N$K` names, or to the bake record, without regressions of
+their own. K4 is open.
+
 ---
 
 ## 1. The model as it stands
@@ -351,6 +356,34 @@ What is *not* claimed: other renaming passes (W11 definition naming, the inherit
 `capture_sync`) were not audited for the same text-keying, only observed not to reintroduce a
 collision on these probes and on `genMethod`.
 
+### C10 — the late renamers resolve by text, and opening them is not free **[measured]** — open
+
+K3 set out to route every placeholder test through one parser. Where the old predicates
+*disagreed*, unifying them is a decision, not a respelling, and each was measured on Equinox
+against the K2 output:
+
+- **Letting `closure_N$K` through** W10/W11's gate (`is_closure_name`), ancestor inherit, and
+  the declaration pass's env-slot test: ~5,100 changed lines, mostly the intended effect (W11
+  names the owner's binding and its readers together, `closure_0$2` → `name`). But it also
+  regressed `resolveThenable`: the owner's body kept `let closure_0$2 = status;` while its
+  readers became `status`, a parameter the owner reuses for a string (`status =
+  status.status`). The slot's value had been renamed by IPA after the name was decided, and
+  allocation re-decided from the new value.
+- **Bake record first** at the remaining text-keyed resolvers (metro's
+  `closure_write_target` and its `closure_N` slot-update fallback, ancestor inherit's
+  two-number form, W10's `resolve_var_to_slot`) and **`slot_owner`** in place of metro's
+  three hand-rolled level walks (which ignore block scopes): ~1,900 changed lines, including
+  a new `let closure_3$2;` inside regenerator's `invoke` that shadows the outer
+  `closure_3$2`. The metro callers update the slot in the context without renaming the IR,
+  which breaks `update_slot_variable`'s assumption that a value update and the IR move
+  together.
+
+Neither shipped. Both are behaviour changes that need the same per-site investigation C9 got,
+and both point at one root: `update_slot_variable` changes what the context calls a slot
+while the IR keeps the name it was baked with. K4 would remove the question.
+`useAnimatedPropsLifecycleWithPrevNodeRef` is a standing example, wrong in the K2 output and in
+both experiments: a capture named `current` beside a local `current`.
+
 ### C6 — `ClosureSlotValue` has no room for a better source of truth **[code]**
 
 Per §1: the enum is a value with no provenance. Adding debug names means either a new variant
@@ -475,7 +508,24 @@ placeholders for W10/W11 naming. Acceptance: the level ≥ 1 placeholder count f
 placeholder count falls; no new `undefined`/collision in the Equinox output. **This is the
 highest value-per-line item in the report** and it is independent of everything else here.
 
-### K3 — `SlotName { text, source }` (C6)
+### K3 — `SlotName { text, source }` (C6) — ✅ shipped, as far as the code allows
+
+*As shipped:* `crate::ir::placeholder` holds the spellings, the one parser and the predicates.
+The independent re-derivations are gone (`parse_closure_binding`, `parse_single_slot`,
+`parse_level_slot`, `is_closure_numeric_suffix`, and three copies of `is_env_slot_name`),
+and every remaining prefix test goes through it: outside that module and the tests, only
+`Value::closure_var_name` spells `closure_`. `ClosureInfo::slot_name` returns
+`SlotName { text, source: NameSource }`, the ladder's rungs in order with room above
+`Function` for debug names, and the two consumers of a ladder result that tested its spelling
+(the allocator, W10's `owner_var`) test the source. Equinox output is byte-identical.
+
+Not done, and why: the census sites test IR text, not a ladder result, so most cannot test a
+source until the node carries one (K4). `ClosureSlotValue::Variable` still holds a bare
+`String`: its 39 construction sites do not know their provenance (Metro, IPA and register
+naming all arrive as text), and nothing would consume it before P1b adds a `Debug` rung.
+Where the old predicates disagreed, unifying them changes output (C10), and was left out.
+The original text follows.
+
 Replace bare `String` in `ClosureSlotValue::Variable` and the `get_slot_name` return. Bump
 `CACHE_VERSION`. Convert the §2 census sites from spelling tests to source tests, one file at
 a time — each conversion is behaviour-preserving on its own. Acceptance: byte-identical

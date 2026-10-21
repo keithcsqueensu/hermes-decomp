@@ -15,8 +15,7 @@ pub(super) fn generator_wrapper_target(body: &[Statement]) -> Option<u32> {
         )
     };
     let is_env_slot_name = |n: &str| {
-        n.starts_with("closure_")
-            || (n.len() >= 2 && n.starts_with('c') && n[1..].chars().all(|c| c.is_ascii_digit()))
+        crate::ir::placeholder::has_prefix(n) || crate::ir::placeholder::is_counter_slot(n)
     };
     let is_param_value = |e: &Expression| match e {
         Expression::Value(Value::Parameter(_))

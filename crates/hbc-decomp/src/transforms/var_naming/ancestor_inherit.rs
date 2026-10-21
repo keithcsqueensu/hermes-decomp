@@ -63,19 +63,20 @@ pub fn inherit_ancestor_closure_names(
             // A single-number name carries no level: the exact origin the
             // bake recorded is the only safe source (guessing level 1 renamed
             // moment's `locales` object after the thresholds' slot).
-            let (level, slot) = match parse_level_slot(name) {
-                Some(ls) => ls,
-                None => match parse_single_slot(name) {
-                    Some(_) if !written.contains(name) => match closure_ctx
-                        .baked_captures
-                        .get(&fid)
-                        .and_then(|m| m.get(name))
-                    {
-                        Some(&origin) => origin,
-                        None => continue,
-                    },
-                    _ => continue,
+            let recorded = closure_ctx
+                .baked_captures
+                .get(&fid)
+                .and_then(|m| m.get(name))
+                .copied();
+            let (level, slot) = match crate::ir::placeholder::parse(name) {
+                // A disambiguated `closure_N$K` is not let through: see `crate::ir::placeholder::parse`.
+                Some(p) if p.variant.is_some() => continue,
+                Some(p) if p.level > 0 => (p.level, p.slot),
+                Some(_) if !written.contains(name) => match recorded {
+                    Some(origin) => origin,
+                    None => continue,
                 },
+                _ => continue,
             };
             if level == 0 {
                 continue;
@@ -117,15 +118,6 @@ pub fn inherit_ancestor_closure_names(
     total
 }
 
-// The single-number form `closure_{slot}`.
-fn parse_single_slot(name: &str) -> Option<u32> {
-    let rest = name.strip_prefix("closure_")?;
-    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    rest.parse().ok()
-}
-
 // Every name the statements assign or declare, nested blocks included.
 fn written_names(stmts: &[Statement]) -> HashSet<String> {
     use crate::ir::AssignTarget;
@@ -148,16 +140,6 @@ fn written_names(stmts: &[Statement]) -> HashSet<String> {
     w.0
 }
 
-// Parse the baked two-number form `closure_{level}_{slot}` into (level, slot).
-// Single-number `closure_{slot}` is a local slot (handled elsewhere) and returns None.
-fn parse_level_slot(name: &str) -> Option<(u32, u32)> {
-    let rest = name.strip_prefix("closure_")?;
-    let (level, slot) = rest.split_once('_')?;
-    let l: u32 = level.parse().ok()?;
-    let s: u32 = slot.parse().ok()?;
-    Some((l, s))
-}
-
 // A slot name worth inheriting: not one of the generic fallbacks
 // (`closure_N`, `outerN`, `argN`, `rN`, `tmp*`, `cN`, `reN`, `fN`).
 fn is_inheritable(name: &str) -> bool {
@@ -172,7 +154,7 @@ fn is_inheritable(name: &str) -> bool {
     if !crate::util::is_valid_identifier(name) {
         return false;
     }
-    if name.starts_with("closure_") || name.starts_with("outer") {
+    if crate::ir::placeholder::has_prefix(name) || name.starts_with("outer") {
         return false;
     }
     if name.starts_with("tmp") {
@@ -197,7 +179,7 @@ fn collect_names(stmts: &[Statement], all: &mut HashSet<String>, closures: &mut 
         fn visit_expression(&mut self, e: &'b Expression) {
             if let Expression::Value(Value::Binding(crate::ir::Binding::Variable(n))) = e {
                 self.0.insert(n.clone());
-                if n.starts_with("closure_") {
+                if crate::ir::placeholder::has_prefix(n) {
                     self.1.insert(n.clone());
                 }
             }

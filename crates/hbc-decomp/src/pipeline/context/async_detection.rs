@@ -582,10 +582,7 @@ fn is_apply_forward_value(name: &str, value: &crate::ir::Expression, helper_var:
 }
 
 fn is_env_slot_name(name: &str) -> bool {
-    name.starts_with("closure_")
-        || (name.len() >= 2
-            && name.starts_with('c')
-            && name[1..].chars().all(|c| c.is_ascii_digit()))
+    crate::ir::placeholder::has_prefix(name) || crate::ir::placeholder::is_counter_slot(name)
 }
 
 fn is_typeof_apply_check(expr: &crate::ir::Expression) -> bool {

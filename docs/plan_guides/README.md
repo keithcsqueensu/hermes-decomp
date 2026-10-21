@@ -105,7 +105,7 @@ is worth keeping, because it is also the failure mode — see § Splitting.
 | `06_write/string_packing/PLAN.md` | write register, design limits | how string storage is laid out and could be repacked | P0–P2 shipped (validation, containment packing with a pin set); P3, P4 open |
 | `06_write/relocation/PLAN.md` | write register, design limits | the absolute-offset surface; splice-and-shift | P0–P2 shipped (one `relocate` primitive, R26 fixed); P3 on a named trigger |
 | `01_read/unmodeled_regions/PLAN.md` | relocation P3 | per-region read / interpret / emit status + formats | P0, P1, P2, P3, P4a (A, B, C), P5 shipped; P1b, P4, P6 open |
-| `03_analysis/closure_model/PLAN.md` | unmodeled-regions P1b | the decompiler's closure / env-slot model | K1, K2 shipped (K1 as exact env levels); C9 (distinct captures printed as one name) found and fixed; K3, K4 open |
+| `03_analysis/closure_model/PLAN.md` | unmodeled-regions P1b | the decompiler's closure / env-slot model | K1, K2, K3 shipped (K1 as exact env levels; K3 byte-identical); C9 fixed; C10 (late renamers still text-keyed) and K4 open |
 
 Two edges cross stages and are the ones people trip on:
 

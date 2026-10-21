@@ -295,13 +295,10 @@ fn declaration_names(stmts: &[Statement]) -> HashSet<String> {
 }
 
 fn is_env_slot_name(name: &str) -> bool {
-    // closure_0, closure_1_2, c0, c12 — Hermes env / counter bindings
-    if let Some(rest) = name.strip_prefix("closure_") {
-        return !rest.is_empty()
-            && rest.chars().all(|c| c.is_ascii_digit() || c == '_')
-            && rest.chars().any(|c| c.is_ascii_digit());
-    }
-    name.len() >= 2 && name.starts_with('c') && name[1..].chars().all(|c| c.is_ascii_digit())
+    // closure_0, closure_0$2, closure_1_2, c0, c12 — Hermes env / counter bindings
+    // A disambiguated `closure_N$K` is not let through: see `crate::ir::placeholder::parse`.
+    crate::ir::placeholder::parse(name).is_some_and(|p| p.variant.is_none())
+        || crate::ir::placeholder::is_counter_slot(name)
 }
 
 fn insert_decls_in_block(

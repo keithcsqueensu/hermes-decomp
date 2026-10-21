@@ -145,23 +145,10 @@ pub(super) struct ClosureUsageInfo {
 // Check if a variable name is a generic closure name (`closure_N`,
 // `closure_{level}_{slot}`, or short `cN` from constant-initialised env slots).
 pub(super) fn is_closure_name(name: &str) -> bool {
-    if let Some(suffix) = name.strip_prefix("closure_") {
-        return is_closure_numeric_suffix(suffix);
-    }
-    if let Some(suffix) = name.strip_prefix('c') {
-        return !suffix.is_empty()
-            && suffix.len() <= 6
-            && suffix.chars().all(|c| c.is_ascii_digit());
-    }
-    false
-}
-
-fn is_closure_numeric_suffix(rest: &str) -> bool {
-    if rest.is_empty() {
-        return false;
-    }
-    rest.split('_')
-        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+    use crate::ir::placeholder;
+    // A disambiguated `closure_N$K` is not let through: see `crate::ir::placeholder::parse`.
+    placeholder::parse(name).is_some_and(|p| p.variant.is_none())
+        || (name.len() <= 7 && placeholder::is_counter_slot(name))
 }
 
 // A unique, usable object-key this capture was stored under. Ground truth:
