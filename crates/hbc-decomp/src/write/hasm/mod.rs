@@ -6,8 +6,13 @@ use crate::file::Instruction;
 pub mod emit;
 pub mod parse;
 
-pub use emit::{assemble_function_hasm, assemble_module, emit_hasm_function};
-pub use parse::{parse_hasm, parse_hasm_function, parse_hasm_with_context};
+pub use emit::{
+    assemble_function_hasm, assemble_function_hasm_with, assemble_module, emit_hasm_function,
+};
+pub use parse::{
+    parse_hasm, parse_hasm_body_with_context, parse_hasm_function, parse_hasm_function_full,
+    parse_hasm_with_context,
+};
 
 // One function in a HASM module.
 #[derive(Debug, Clone)]

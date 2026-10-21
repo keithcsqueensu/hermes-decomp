@@ -41,9 +41,9 @@ use common::Oracle;
 
 use hbc_decomp::write::patch::PatchOptions;
 use hbc_decomp::{
-    add_string, create_minimal, inject_stub, patch_string_replace, regexp_payload, repoint_regexp,
-    retarget_string, set_regexp, BytecodeFile, BytecodeFormat, CreateOptions, InjectStubKind,
-    OperandTarget, RegexpSetMode,
+    add_string, assemble_function_hasm_with, create_minimal, emit_hasm_function, inject_stub,
+    patch_string_replace, regexp_payload, repoint_regexp, retarget_string, set_regexp,
+    BytecodeFile, BytecodeFormat, CreateOptions, InjectStubKind, OperandTarget, RegexpSetMode,
 };
 
 // Versions with committed fixtures, one per distinct header layout the write
@@ -179,39 +179,55 @@ fn functions_with_handlers(file: &BytecodeFile) -> Vec<u32> {
         .collect()
 }
 
-/// The false-negative half of R9: a size-changing edit on a function that really
-/// has handlers must be refused. Before the ModernLayout fix this passed on v96
-/// and silently accepted the edit on v99, producing an image whose `catch` no
-/// longer caught.
+/// Q3 phase 1, and the false-negative half of R9: a size-changing edit on a
+/// function that really has handlers relocates them. Both stubs insert at one
+/// point -- the log stub at offset 0, NopPad before the last `Ret` -- so every
+/// handler offset at or past it moves by the inserted size, and the program has
+/// to take its catch path exactly as before. Before the ModernLayout fix, v99
+/// accepted this edit without relocating and the `catch` stopped catching; until
+/// Q3, every version refused it.
 #[test]
-fn size_change_on_real_handler_table_is_refused() {
+fn an_insertion_relocates_the_handler_table() {
     for version in FIXTURE_VERSIONS {
         let bytes = fixture("handlers", version);
-        let file = BytecodeFile::parse_auto(&bytes).expect("parse handlers fixture");
-        let with_handlers = functions_with_handlers(&file);
+        let probe = BytecodeFile::parse_auto(&bytes).expect("parse handlers fixture");
+        let with_handlers = functions_with_handlers(&probe);
         assert!(
             !with_handlers.is_empty(),
             "v{version}: fixture should have at least one function with a handler \
              table, found none -- the header layout is being misread"
         );
-
         for id in with_handlers {
-            let mut file = BytecodeFile::parse_auto(&bytes).expect("reparse");
-            let format = format_for(&file);
-            let err = inject_stub(
-                &mut file,
-                &format,
-                id,
-                InjectStubKind::NopPad,
-                &PatchOptions::default(),
-            )
-            .expect_err(&format!(
-                "v{version} fn#{id} declares handlers; a size-changing edit must be refused"
-            ));
-            assert!(
-                err.to_string().contains("exception-handler table"),
-                "v{version} fn#{id}: unexpected error {err}"
-            );
+            let name = probe.strings[probe.function_headers[id as usize].function_name() as usize]
+                .value
+                .clone();
+            for (kind, want) in [
+                (InjectStubKind::NopPad, HANDLERS_OUTPUT.to_string()),
+                (
+                    InjectStubKind::LogEntry,
+                    format!("{name}\nno-throw: 3\n{name}\nthrow: -1"),
+                ),
+            ] {
+                let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
+                let format = format_for(&file);
+                let before = probe.exception_handlers[&id].clone();
+                let old_size = probe.function_headers[id as usize].bytecode_size_in_bytes();
+                let out = inject_stub(&mut file, &format, id, kind, &PatchOptions::default())
+                    .unwrap_or_else(|e| panic!("v{version} fn#{id} {kind:?}: {e}"));
+                let delta = file.function_headers[id as usize].bytecode_size_in_bytes() - old_size;
+                let after = &file.exception_handlers[&id];
+                assert_eq!(after.len(), before.len(), "v{version} {kind:?}");
+                if kind == InjectStubKind::LogEntry {
+                    for (a, b) in after.iter().zip(&before) {
+                        assert_eq!(
+                            (a.start, a.end, a.target),
+                            (b.start + delta, b.end + delta, b.target + delta),
+                            "v{version}: an insertion at 0 moves every handler"
+                        );
+                    }
+                }
+                assert_runs(version, &out, &want, &format!("{kind:?}-v{version}-fn{id}"));
+            }
         }
     }
 }
@@ -261,39 +277,109 @@ fn handler_free_functions_accept_size_change_and_still_run() {
     }
 }
 
-/// The corruption the guard exists to prevent, asserted end to end: injecting a
-/// prologue at body offset 0 shifts every body-relative handler offset, so if the
-/// guard ever stops firing the `catch` stops catching. This test would have
-/// caught the v99 regression on its own.
+/// Q3 phase 2: a whole-body edit says where its handlers went. `emit-hasm`
+/// writes each handler as `.handler` labels, the body is edited -- here three
+/// bytes go in at the start of the first try region, which also makes the
+/// alignment padding land after the HASM was written -- and `asm` puts the
+/// handlers where the edited code says. The catch must still be taken. The
+/// same edit with the `.handler` lines removed is refused, as before Q3.
 #[test]
-fn handler_bearing_function_is_never_silently_corrupted() {
+fn a_hasm_edit_carries_its_handlers() {
     for version in FIXTURE_VERSIONS {
         let bytes = fixture("handlers", version);
-        let probe = BytecodeFile::parse_auto(&bytes).expect("parse");
-        for id in functions_with_handlers(&probe) {
-            let mut file = BytecodeFile::parse_auto(&bytes).expect("reparse");
+        let probe = BytecodeFile::parse_auto(&bytes).unwrap();
+        let format = format_for(&probe);
+        let id = functions_with_handlers(&probe)[0];
+        let hasm = emit_hasm_function(&probe, &format, id).unwrap();
+        assert!(
+            hasm.contains(".handler "),
+            "v{version}: emit-hasm writes the handlers"
+        );
+
+        let first = probe.exception_handlers[&id][0].start;
+        let anchor = format!("L{first}:\n");
+        assert!(
+            hasm.contains(&anchor),
+            "v{version}: handler start is labelled"
+        );
+        let edited = hasm.replacen(
+            &anchor,
+            &format!("{anchor}AsyncBreakCheck\nAsyncBreakCheck\nAsyncBreakCheck\n"),
+            1,
+        );
+
+        // hermesc gives every fixture function a line table, which a whole-body
+        // replacement cannot keep (R24); this test is about the handlers.
+        let opts = PatchOptions {
+            allow_stale_debug_info: true,
+            ..Default::default()
+        };
+        let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
+        let out = assemble_function_hasm_with(&mut file, &format, id, &edited, &opts)
+            .unwrap_or_else(|e| panic!("v{version}: {e}"));
+        assert!(out.len() > bytes.len(), "v{version}: the body grew");
+        assert_ne!(
+            file.exception_handlers[&id], probe.exception_handlers[&id],
+            "v{version}: the handlers moved with the code"
+        );
+        assert_runs(
+            version,
+            &out,
+            HANDLERS_OUTPUT,
+            &format!("hasm-handlers-v{version}"),
+        );
+
+        let stripped: String = edited
+            .lines()
+            .filter(|l| !l.starts_with(".handler"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
+        let err = assemble_function_hasm_with(&mut file, &format, id, &stripped, &opts)
+            .expect_err("a resize that drops the handlers must be refused")
+            .to_string();
+        assert!(err.contains(".handler"), "v{version}: {err}");
+    }
+}
+
+/// The log stub needs a 12-register frame (a call's header and arguments sit in
+/// the top 8, its own r0..r3 below them). Growing a frame moves whatever a
+/// `Call` or `Construct` reads "from the end of the current frame", so the stub
+/// is refused where the compiler gave such a function less -- v96's `thrower`,
+/// frame 11 -- and works everywhere else, `caller`'s handlers included. The old
+/// rule grew every frame by 8, and the v96 engine crashed on the `new Error`.
+#[test]
+fn the_log_stub_never_grows_a_frame_a_call_reads_from_the_end_of() {
+    for version in FIXTURE_VERSIONS {
+        for (id, name) in [(1u32, "thrower"), (2, "caller")] {
+            let mut file = BytecodeFile::parse_auto(&fixture("calls", version)).unwrap();
             let format = format_for(&file);
-            match inject_stub(
+            let frame = file.function_headers[id as usize].frame_size();
+            let made = inject_stub(
                 &mut file,
                 &format,
                 id,
                 InjectStubKind::LogEntry,
-                &PatchOptions::default(),
-            ) {
-                // Refused: correct, that is the guard doing its job.
-                Err(_) => {}
-                // Allowed: then handler relocation must have landed (Q3), and the
-                // program must still take its catch path correctly. Anything else
-                // is the silent corruption this whole test exists for.
-                Ok(out) => {
-                    assert_runs(
-                        version,
-                        &out,
-                        HANDLERS_OUTPUT,
-                        &format!("log-v{version}-fn{id}"),
-                    );
-                }
+                &Default::default(),
+            );
+            if version == 96 && name == "thrower" {
+                assert!(
+                    frame < 12,
+                    "the fixture's premise: v96 thrower has a small frame"
+                );
+                let err = made
+                    .expect_err("growing thrower's frame must be refused")
+                    .to_string();
+                assert!(err.contains("Construct"), "{err}");
+                continue;
             }
+            let out = made.unwrap_or_else(|e| panic!("v{version} {name}: {e}"));
+            assert_runs(
+                version,
+                &out,
+                &format!("{name}\nok: 1\n{name}\nthrow: -1"),
+                &format!("calls-{name}-v{version}"),
+            );
         }
     }
 }

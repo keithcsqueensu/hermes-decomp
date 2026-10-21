@@ -3,22 +3,44 @@
 // `write::reloc::relocate`. Legacy and modern, overflowed or not.
 
 use crate::error::{Error, Result};
-use crate::file::{BytecodeFile, Instruction};
+use crate::file::{BytecodeFile, ExceptionHandler, Instruction};
 use crate::opcode::BytecodeFormat;
 
+use super::handlers::{self, HandlerUpdate};
 use super::PatchOptions;
 use crate::write::encode::encode_function_body;
 use crate::write::reloc::{relocate, Reloc};
-use crate::write::serialize::{commit_image, HeaderEdit};
+use crate::write::serialize::{commit_image_checked, HeaderEdit};
 
 // Replace the instruction stream of `function_id`. Same-size bodies patch in place;
-// longer bodies expand the code section and shift subsequent function offsets.
+// longer bodies expand the code section and shift subsequent function offsets. A
+// function with an exception-handler table keeps it as it is, so its size cannot
+// change; `patch_function_body_with` says where the handlers go.
 pub fn patch_function_body(
     file: &mut BytecodeFile,
     format: &BytecodeFormat,
     function_id: u32,
     new_body: &[Instruction],
     options: &PatchOptions,
+) -> Result<Vec<u8>> {
+    patch_function_body_with(
+        file,
+        format,
+        function_id,
+        new_body,
+        options,
+        HandlerUpdate::Keep,
+    )
+}
+
+// `patch_function_body`, with what to do about the function's handler table.
+pub(crate) fn patch_function_body_with(
+    file: &mut BytecodeFile,
+    format: &BytecodeFormat,
+    function_id: u32,
+    new_body: &[Instruction],
+    options: &PatchOptions,
+    handlers: HandlerUpdate,
 ) -> Result<Vec<u8>> {
     let old_size = file
         .function_headers
@@ -27,32 +49,37 @@ pub fn patch_function_body(
         .unwrap_or(0);
     let encoded = encode_function_body(format, new_body)?;
     let delta = encoded.len() as i64 - old_size as i64;
+    let has_handlers = handlers::has_handlers(file, function_id);
 
-    // A size-changing edit shifts every body-relative offset. Exception-handler
-    // tables (start/end/target) are body-relative and are NOT relocated yet
-    // (plan_guides/06_write/RISKS.md Q3), so refuse to resize a function that declares one rather than
-    // ship stale handler offsets. Keyed on the parser's own "has handlers" gate,
-    // FLAG_HAS_EXCEPTION_HANDLER (bit 3) — this is precise for both layouts and,
-    // unlike `info_offset != 0`, does not over-reject debug-only legacy functions
-    // or (fatally) every overflowed modern function. Same-size edits are allowed:
-    // they neither move the table nor shift body offsets.
-    if delta != 0 {
-        if let Some(fh) = file.function_headers.get(function_id as usize) {
-            if fh.flags() & crate::format::FLAG_HAS_EXCEPTION_HANDLER != 0 {
-                return Err(Error::Write(format!(
-                    "function {function_id} has an exception-handler table; \
-                     size-changing edits are not supported (handler offsets are \
-                     body-relative and would be left stale). See plan_guides/06_write/RISKS.md Q3."
-                )));
-            }
+    // Handler offsets are body-relative, so a size-changing edit has to say where
+    // they went (Q3): an insertion shifts them, a HASM body states them. One that
+    // says neither is refused rather than shipped with stale offsets. Keyed on the
+    // parser's own "has handlers" gate, FLAG_HAS_EXCEPTION_HANDLER (bit 3) -- precise
+    // for both layouts and, unlike `info_offset != 0`, not over-rejecting
+    // debug-only legacy functions or every overflowed modern one.
+    match &handlers {
+        HandlerUpdate::Keep if delta != 0 && has_handlers => {
+            return Err(Error::Write(format!(
+                "function {function_id} has an exception-handler table, and this edit \
+                 changes the body's size without saying where the handlers went. Give the \
+                 HASM `.handler start, end, target` lines (emit-hasm writes them), or keep \
+                 the body the same size. See plan_guides/06_write/RISKS.md Q3."
+            )));
         }
+        HandlerUpdate::Replace(_) if !has_handlers => {
+            return Err(Error::Write(format!(
+                "function {function_id} has no exception-handler table, and a body edit \
+                 cannot add one (it would resize the function's info region)"
+            )));
+        }
+        _ => {}
+    }
+    if delta != 0 {
         // The same defect in a second structure (R24). A location stream stores
         // bytecode addresses *within* the function as SLEB128 deltas, and a resize
         // rewrites none of them, so every location past the edit point maps to the
         // wrong instruction -- silently, since the stream still decodes and still
-        // terminates. Checked after the handler guard so a function carrying both
-        // reports the handler reason, which is the one that breaks execution rather
-        // than only debugging.
+        // terminates.
         //
         // Ordinary React Native bundles are unaffected: FLAG_HAS_DEBUG_INFO is set
         // on 0 of the Equinox bundle's 62,909 functions [measured]. This fires on
@@ -87,7 +114,7 @@ pub fn patch_function_body(
     // terminating instruction. When padding is required but this bytecode version
     // has no AsyncBreakCheck to pad with, fail loudly rather than silently emit a
     // non-4-aligned delta that misaligns every downstream large header (I5 / Q8).
-    if delta != 0 && delta.rem_euclid(4) != 0 {
+    let (encoded, pad_at, pad) = if delta != 0 && delta.rem_euclid(4) != 0 {
         let Some(op_abc) = format
             .definitions
             .iter()
@@ -103,6 +130,7 @@ pub fn patch_function_body(
         let pad = (4 - delta.rem_euclid(4)) as usize;
         let mut padded = new_body.to_vec();
         let insert_at = padded.len().saturating_sub(1);
+        let pad_at = encode_function_body(format, &new_body[..insert_at])?.len() as u32;
         for _ in 0..pad {
             padded.insert(
                 insert_at,
@@ -114,17 +142,67 @@ pub fn patch_function_body(
                 },
             );
         }
-        let encoded = encode_function_body(format, &padded)?;
-        return patch_function_bytes(file, function_id, &encoded);
+        (encode_function_body(format, &padded)?, pad_at, pad as i64)
+    } else {
+        (encoded, 0, 0)
+    };
+
+    // Where the handlers end up, as offsets in the final body -- when the edit
+    // moves them at all. Kept handlers on a same-size body stay untouched.
+    let final_delta = encoded.len() as i64 - old_size as i64;
+    let table = match handlers {
+        _ if !has_handlers => None,
+        HandlerUpdate::Keep => None,
+        HandlerUpdate::Insert { .. } if final_delta == 0 => None,
+        HandlerUpdate::Insert { at } => {
+            if pad != 0 {
+                return Err(Error::Write(
+                    "an insertion must keep the body 4-byte aligned itself".into(),
+                ));
+            }
+            let old = handlers::read_table(
+                file.raw_bytes.as_deref().unwrap_or_default(),
+                handlers::table_pos(file, function_id)?,
+            )?;
+            Some(handlers::shifted(&old, at, final_delta))
+        }
+        // The padding went in at `pad_at`, after the HASM was written.
+        HandlerUpdate::Replace(given) => Some(handlers::shifted(&given, pad_at, pad)),
+    };
+    if let Some(new) = &table {
+        handlers::check_within(new, encoded.len() as u32)?;
     }
-    patch_function_bytes(file, function_id, &encoded)
+    patch_function_bytes_with(file, function_id, &encoded, table.as_deref())
 }
 
-// Low-level: replace function body with raw bytes.
+// Low-level: replace function body with raw bytes. A function with handlers keeps
+// them unchanged, so its size cannot change.
 pub fn patch_function_bytes(
     file: &mut BytecodeFile,
     function_id: u32,
     new_body: &[u8],
+) -> Result<Vec<u8>> {
+    if handlers::has_handlers(file, function_id) {
+        let old_size = file.function_headers[function_id as usize].bytecode_size_in_bytes();
+        if new_body.len() != old_size as usize {
+            return Err(Error::Write(format!(
+                "function {function_id} has an exception-handler table; patch_function_bytes \
+                 cannot change its size (its handler offsets would go stale). See \
+                 plan_guides/06_write/RISKS.md Q3."
+            )));
+        }
+    }
+    patch_function_bytes_with(file, function_id, new_body, None)
+}
+
+// Splice `new_body` in, relocate everything after it, and -- when the function
+// has a handler table -- write `handlers` into it, all in one buffer before the
+// single commit, which then checks the table reads back as written.
+fn patch_function_bytes_with(
+    file: &mut BytecodeFile,
+    function_id: u32,
+    new_body: &[u8],
+    handlers: Option<&[ExceptionHandler]>,
 ) -> Result<Vec<u8>> {
     let (old_size, abs_off) = {
         let fh = file
@@ -133,56 +211,76 @@ pub fn patch_function_bytes(
             .ok_or_else(|| Error::Write(format!("invalid function id {function_id}")))?;
         (fh.bytecode_size_in_bytes() as usize, fh.offset() as usize)
     };
+    let table_before = match handlers {
+        Some(_) => Some(handlers::table_pos(file, function_id)?),
+        None => None,
+    };
     let mut raw = file
         .raw_bytes
         .clone()
         .ok_or_else(|| Error::Write("no raw_bytes".into()))?;
-
-    if new_body.len() == old_size {
-        if abs_off + old_size > raw.len() {
-            return Err(Error::Write("function body out of range".into()));
-        }
-        raw[abs_off..abs_off + old_size].copy_from_slice(new_body);
-        // Update instructions cache
-        let rel = abs_off
-            .checked_sub(file.instruction_offset as usize)
-            .ok_or_else(|| Error::Write("offset underflow".into()))?;
-        if rel + old_size <= file.instructions.len() {
-            file.instructions[rel..rel + old_size].copy_from_slice(new_body);
-        }
-        let out = commit_image(file, raw, HeaderEdit::default())?;
-        return Ok(out);
-    }
-
-    // Grow / shrink. Function bodies form one contiguous region followed by the
-    // FunctionInfo region (large headers, exception tables, debug info), which is
-    // 4 byte aligned. Callers align the body delta to a multiple of 4 so the whole
-    // tail shifts by a 4 aligned amount; `relocate` refuses any other delta (I5).
-    let delta = new_body.len() as i64 - old_size as i64;
     if abs_off + old_size > raw.len() {
         return Err(Error::Write("function body out of range".into()));
     }
+    let moved_from = abs_off + old_size;
+    let delta = new_body.len() as i64 - old_size as i64;
 
-    // Splice body
-    let mut rebuilt = Vec::with_capacity((raw.len() as i64 + delta) as usize);
-    rebuilt.extend_from_slice(&raw[..abs_off]);
-    rebuilt.extend_from_slice(new_body);
-    rebuilt.extend_from_slice(&raw[abs_off + old_size..]);
+    let (mut image, edit) = if delta == 0 {
+        raw[abs_off..abs_off + old_size].copy_from_slice(new_body);
+        (raw, HeaderEdit::default())
+    } else {
+        // Grow / shrink. Function bodies form one contiguous region followed by the
+        // FunctionInfo region (large headers, exception tables, debug info), which
+        // is 4 byte aligned. Callers align the body delta to a multiple of 4 so the
+        // whole tail shifts by a 4 aligned amount; `relocate` refuses any other
+        // delta (I5).
+        let mut rebuilt = Vec::with_capacity((raw.len() as i64 + delta) as usize);
+        rebuilt.extend_from_slice(&raw[..abs_off]);
+        rebuilt.extend_from_slice(new_body);
+        rebuilt.extend_from_slice(&raw[moved_from..]);
+        // Everything at or after the end of the patched body moved by `delta`.
+        // The patched function's own body did not move; only its size changed.
+        relocate(
+            file,
+            &mut rebuilt,
+            &Reloc {
+                moved_from,
+                delta,
+                resized: Some((function_id, new_body.len() as u32)),
+            },
+        )?;
+        (rebuilt, HeaderEdit::shifted(delta))
+    };
 
-    // Everything at or after the end of the patched body moved by `delta`. The
-    // patched function's own body did not move; only its size changed.
-    relocate(
-        file,
-        &mut rebuilt,
-        &Reloc {
-            moved_from: abs_off + old_size,
-            delta,
-            resized: Some((function_id, new_body.len() as u32)),
-        },
-    )?;
+    // The table lies in the FunctionInfo region, after all the code, so it moved
+    // with the tail.
+    if let (Some(handlers), Some(before)) = (handlers, table_before) {
+        if before < moved_from {
+            return Err(Error::Write(format!(
+                "function {function_id}'s handler table at {before} precedes its body's end"
+            )));
+        }
+        let pos = (before as i64 + delta) as usize;
+        handlers::write_table(&mut image, pos, handlers)?;
+    }
 
-    let out = commit_image(file, rebuilt, HeaderEdit::shifted(delta))?;
-    Ok(out)
+    commit_image_checked(file, image, edit, |after| {
+        let Some(want) = handlers else {
+            return Ok(());
+        };
+        let got = after
+            .exception_handlers
+            .get(&function_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if got == want {
+            Ok(())
+        } else {
+            Err(Error::Write(format!(
+                "function {function_id}'s handler table reads back as {got:?}, not {want:?}"
+            )))
+        }
+    })
 }
 
 #[cfg(test)]

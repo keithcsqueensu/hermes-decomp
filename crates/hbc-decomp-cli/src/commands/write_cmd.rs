@@ -3,11 +3,11 @@
 use std::path::{Path, PathBuf};
 
 use hbc_decomp::{
-    add_string, create_minimal, emit_hasm_function, format_secrets_report, generate_frida_for_file,
-    inject_stub, parse_hasm_with_context, patch_function_body, patch_string_by_id,
-    patch_string_operand, patch_string_replace, regexp_payload, repoint_regexp, retarget_string,
-    scan_secrets, set_regexp, CreateOptions, FridaHookOptions, InjectStubKind, OperandTarget,
-    PatchOptions, RegexpSetMode, RegexpSetReport,
+    add_string, assemble_function_hasm_with, create_minimal, emit_hasm_function,
+    format_secrets_report, generate_frida_for_file, inject_stub, parse_hasm_with_context,
+    patch_string_by_id, patch_string_operand, patch_string_replace, regexp_payload, repoint_regexp,
+    retarget_string, scan_secrets, set_regexp, CreateOptions, FridaHookOptions, InjectStubKind,
+    OperandTarget, PatchOptions, RegexpSetMode, RegexpSetReport,
 };
 
 use crate::cli_args::{FormatArgs, FunctionLayoutArg, LayoutArg};
@@ -125,12 +125,13 @@ pub fn run_asm(
     let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
     let text = std::fs::read_to_string(hasm)?;
-    let insns = parse_hasm_with_context(&text, &format, &file)?;
     let opts = PatchOptions {
         allow_stale_debug_info,
         ..Default::default()
     };
-    let out = patch_function_body(&mut file, &format, function, &insns, &opts)?;
+    // `.handler` lines in the HASM put a function's exception handlers back
+    // where the edited code says, so such a function can change size.
+    let out = assemble_function_hasm_with(&mut file, &format, function, &text, &opts)?;
     std::fs::write(output, out)?;
     eprintln!(
         "Assembled function {function} from {} → {}",

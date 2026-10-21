@@ -15,8 +15,8 @@ pub use create::{create_minimal, CreateOptions};
 pub use encode::{encode_function_body, encode_instruction};
 pub use footer::{append_footer, compute_file_hash, rehash_footer, verify_footer};
 pub use hasm::{
-    assemble_function_hasm, assemble_module, emit_hasm_function, parse_hasm,
-    parse_hasm_with_context, HasmFunction, HasmModule,
+    assemble_function_hasm, assemble_function_hasm_with, assemble_module, emit_hasm_function,
+    parse_hasm, parse_hasm_body_with_context, parse_hasm_with_context, HasmFunction, HasmModule,
 };
 pub use patch::{
     add_string, inject_stub, patch_function_body, patch_function_bytes, patch_string_by_id,

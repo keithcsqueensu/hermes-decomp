@@ -119,7 +119,7 @@ missing VM into a failure rather than a skip (R21). `n/a` means the command prod
 | `patch-operand` | Layout-agnostic | Yes (v96) | ✅ ran | ✅ | + Q9 property-name warning |
 | `regexp-set` | Yes | Yes (v96 + v98 + v99) | ✅ ran, both arms | ✅ | in place or appended (`patch/regexp.rs`, P4a); the VM run asserts the host now matches the donor's pattern; the append arm also swept on two production bundles (`tests/corpus.rs`) |
 | `regexp-repoint` | Layout-agnostic | Yes (v96 + v98 + v99) | ✅ ran | ✅ | one `CreateRegExp`'s index operand, plus its pattern/flags string ids copied from a site already using the entry (P4a archetype A); the VM run asserts the site both matches and *reports* the new pattern; corpus run scans 1,319 sites in ~80 ms |
-| `asm` / `patch-function` | Yes | Yes (v96 + v98) | ✅ identity round-trip | ✅ | the Q3/Q4 gate in front of it is now correct on every supported layout |
+| `asm` / `patch-function` | Yes | Yes (v96 + v98 + v99) | ✅ edited round-trip | ✅ | a function with handlers can change size when the HASM gives its `.handler` lines (Q3); jumps follow their labels through an insertion (fixed with Q3, see there) |
 | `asm-check` (`run_roundtrip_check`) | Yes | No | ✅ `OK` on v99 | ⚪ | still no test (`write_cmd.rs:407`) |
 | `inject-stub` | Yes | Yes (v96 + v98 + v99), every function of `plain` | ✅ ran | ✅ | was 🔴 on v99: shifted a body without relocating handlers, because the guard in front of it read the wrong byte. Fixed via `ModernLayout`; both guard directions now tested on real fixtures |
 | `create` | Yes | Yes (v96 + v98 + v99) | ✅ ran | ✅ | was 🔴 on v99: emitted a 37-byte large header, so the engine read `flags` from the wrong byte and refused to call the global. `create_minimal_runs_on_vm` now asserts the output executes |
@@ -180,8 +180,9 @@ harness gate.
   and names it precisely; `scripts/gen_bytecode_table.py` applies the fix, preserving each
   file's existing shape rather than imposing one (which is what sank the earlier attempt) and
   gated on reproducing all four committed tables byte for byte.
-- **Exception-handler relocation** (the one large planned feature) → Pending impl plans (Q3),
-  in two phases. Unblocked: the table can now be located correctly on every supported layout.
+- **Exception-handler relocation** → Pending impl plans (Q3), **both phases shipped**: an
+  insertion (`inject-stub`) shifts the handlers, and a HASM body states them (`.handler` lines,
+  which `emit-hasm` writes). A body edit still cannot add or remove a handler.
 - **Debug info: names in the decompiler** → `../01_read/unmodeled_regions/PLAN.md` P1b. **P0, P1 and P2
   are shipped** — the guard, the version-keyed reader, and relocation for insertions, so R24,
   R25 and R28 are all closed. What remains is putting the recovered names into decompiler
@@ -533,7 +534,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R6 | UTF-16-by-content / %4 padding (I7/I5) | string | L×M | 🟩 | content-driven + tested | — |
 | R7 | Non-%4 body delta misaligns FunctionInfo (I5) | fn/inject | L×H | ⬜ | Q8 hard-error | — (retired) |
 | R8 | Modern large-header magic offsets (v99+) | fn | L×H | ⬜ **fixed** | `ModernLayout` (`modern_layout.rs`) is a version-keyed descriptor; `parse_large_header_modern`, `resize_overflowed_function`, `reserve_modern_log_regs` and `build_minimal_modern` all index through it. Unknown modern versions hard-error instead of extrapolating. Both arms (v98=37B, v99=36B) VM-verified | — (fixed; the standing task is to add a new version's row to `ModernLayout::for_version` when one appears, which R19 makes checkable) |
-| R9 | Exception-handler offsets stale on resize | fn/inject | M×H | ⬜ | Q3/Q4 guard rejects the edit, and now reads `flags` from the right byte on every supported layout (R8). Both directions pinned by `size_change_on_real_handler_table_is_refused` and `handler_free_functions_accept_size_change_and_still_run` on **real v96/v98/v99 fixtures**, not synthetic flags | — (guarded; full relocation = Pending impl plans / Q3, no longer blocked) |
+| R9 | Exception-handler offsets stale on resize | fn/inject | M×H | ⬜ | **Relocated now, not refused (Q3)**: an insertion shifts every handler offset at or past it, a HASM body states its handlers, and the table is rewritten in the same buffer and checked on read-back before the commit; an edit that says neither is still refused. `an_insertion_relocates_the_handler_table` and `a_hasm_edit_carries_its_handlers` run the catch path at v96/v98/v99. Before Q3: the guard rejected the edit, and now reads `flags` from the right byte on every supported layout (R8). Both directions pinned by `size_change_on_real_handler_table_is_refused` and `handler_free_functions_accept_size_change_and_still_run` on **real v96/v98/v99 fixtures**, not synthetic flags | — (guarded; full relocation = Pending impl plans / Q3, no longer blocked) |
 | R10 | Relative jump broken by a partial insertion | fn | L×H | 🟧 | only whole-body / front-insert used today | Keep insertions whole-body or front-only; document the same-shift invariant so a future partial-insert op can't quietly break it. |
 | R11 | Reg/cache reservation magic offsets | inject | L×H | ⬜ | The offsets were correct (the 8×u32 prefix never moved) but were literals; now taken from `ModernLayout`, so they are a checked fact rather than luck | — (fixed with R8) |
 | R12 | Hardcoded injected-opcode operand shapes | inject | L×H | ⬜ **fixed** | The log prologue is built from each version's opcode table (`stub_insn`): the table supplies every operand's type, and the stub says only what each value is -- a register, a cache index, a string id. Another arity, an operand of another kind, or a width too narrow for the value is refused, and the whole prologue is checked before the header is touched. The shape is uniform from v41 to v99; v40 has no `Call2` and is refused (`the_log_prologue_follows_the_opcode_table_at_every_version`). It also stops mislabelling the two string ids as plain `UInt16` | — (fixed) |
@@ -1040,7 +1041,42 @@ directly. Do not "simplify" either half.
 **Tests.** `modern_layout.rs`'s own unit tests pin both arms and the refusals;
 `tests/vm_verify.rs` pins the behaviour on real v96/v98/v99 fixtures under real VMs.
 
-### Q3 — Full exception-handler relocation
+### Q3 — Full exception-handler relocation — ✅ **shipped (both phases)**
+
+**As shipped.** `write/patch/handlers.rs` locates a function's table (info offset, aligned to 4),
+reads it, and rewrites it in place; `patch_function_body_with` takes a `HandlerUpdate` -- `Keep`,
+`Insert { at }`, or `Replace(handlers)` -- and the new table is written into the same buffer as the
+body splice, at its old position plus the size change, then checked on read-back before the one
+commit. No intermediate image with stale handlers exists.
+
+- **Phase 1:** `inject-stub` passes `Insert { at }`. *Unknown 1, settled:* every offset at or past
+  the insertion point moves -- start, end and target alike, the rule the line table already uses --
+  since each names an instruction and the instruction at `at` is the one pushed forward; a try
+  region spanning the insertion grows to cover a no-op. `NopPad` now inserts four bytes, so the body
+  stays aligned without padding elsewhere and `at` is the only point anything moved at.
+- **Phase 2:** `emit-hasm` labels every handler boundary `L<offset>` and appends `.handler start,
+  end, target` lines; the parser resolves them (a label after the last instruction marks the body's
+  end) and `asm` / `assemble_function_hasm_with` / the MCP `patch_function` pass `Replace`. Padding
+  added after the HASM was written shifts the handlers with it. *Unknown 2, settled:* in scope, with
+  one limit -- a body edit can move handlers but not add or remove one, since a different count
+  resizes the function's info region. Without `.handler` lines a resize is still refused, and the
+  message says how to give them.
+- **Found on the way, both older than Q3:**
+  - *`asm` broke every jump past an inserted instruction.* A jump operand `L30` was read as offset 30
+    before the label table was consulted, and emitted labels are named after the offsets they *had*,
+    so once code moved the jump went to the old address -- wrong results and native crashes in the
+    VM tests. A label defined in the text now wins; a name with no label is still a literal offset.
+    The Equinox pipeline's `sortTrainers.hasm` has no jumps, and `apply.py` with this build still
+    reproduces the shipped 11.43.0 bundle byte for byte.
+  - *The log stub grew every frame by 8.* A call places the callee's frame header and arguments in
+    the top registers of the caller's frame, and `Call`/`Construct`/`CallBuiltin`/... read theirs
+    "from the end of the current frame" (BytecodeList.def), so growing the frame of a function that
+    uses one moved its arguments: a v96 function doing `new Error(...)` crashed the engine. The stub
+    now needs a 12-register frame, leaves one that has it alone, grows a smaller one only when no
+    instruction reads from the frame's end, and refuses otherwise
+    (`the_log_stub_never_grows_a_frame_a_call_reads_from_the_end_of`, `calls` fixture).
+
+The original plan follows.
 
 **Goal.** Relocate a function's exception-handler table across a size-changing edit so
 `patch-function` / `asm` / `inject-stub` no longer have to be rejected (removing the Q4

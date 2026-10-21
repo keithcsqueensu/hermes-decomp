@@ -8,6 +8,7 @@ use crate::write::serialize::SerializeOptions;
 
 pub mod debug_reloc;
 pub mod functions;
+pub(crate) mod handlers;
 pub mod inject;
 pub mod operands;
 pub mod regexp;

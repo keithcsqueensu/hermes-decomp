@@ -140,12 +140,13 @@ pub use pipeline::{
 
 // Write-path surface.
 pub use write::{
-    add_string, assemble_function_hasm, assemble_module, create_minimal, emit_hasm_function,
-    encode_function_body, encode_instruction, inject_stub, parse_hasm, parse_hasm_with_context,
-    patch_function_body, patch_function_bytes, patch_string_by_id, patch_string_operand,
-    patch_string_replace, regexp_payload, repoint_regexp, retarget_string, serialize_file,
-    set_regexp, verify_footer, CreateOptions, HasmModule, InjectStubKind, OperandTarget,
-    PatchOptions, RegexpRepointReport, RegexpSetMode, RegexpSetReport, SerializeOptions,
+    add_string, assemble_function_hasm, assemble_function_hasm_with, assemble_module,
+    create_minimal, emit_hasm_function, encode_function_body, encode_instruction, inject_stub,
+    parse_hasm, parse_hasm_with_context, patch_function_body, patch_function_bytes,
+    patch_string_by_id, patch_string_operand, patch_string_replace, regexp_payload, repoint_regexp,
+    retarget_string, serialize_file, set_regexp, verify_footer, CreateOptions, HasmModule,
+    InjectStubKind, OperandTarget, PatchOptions, RegexpRepointReport, RegexpSetMode,
+    RegexpSetReport, SerializeOptions,
 };
 
 pub use frida_hooks::{
