@@ -33,6 +33,11 @@ pub fn generate_ir(
     };
     let mut builder = IRBuilder::new(file, format, builder_options);
     let mut cfg = builder.build_function(function_id)?;
+    // The same level shift the closure context applied when it was built, so a
+    // level means the same scope here as there.
+    if let Some(ctx) = closure_ctx {
+        crate::ir::shift_env_levels_cfg(&mut cfg, ctx.env_offset(function_id));
+    }
 
     // STAGE F2: SSA / Live Range Splitting.
     // First resolve `globalThis` reads to the invariant value so the register
@@ -283,7 +288,13 @@ pub fn build_closure_context_from_file(
 
     // Parallel: compute per-function data (name + analyzed statements).
     // rayon preserves input order in the output Vec.
-    type FunctionIr = (u32, Option<String>, Vec<Statement>, Vec<(u32, u32)>);
+    type FunctionIr = (
+        u32,
+        Option<String>,
+        Vec<Statement>,
+        Vec<(u32, u32)>,
+        Vec<(u32, u32)>,
+    );
     let results: Vec<Option<FunctionIr>> = (0..file.function_headers.len())
         .into_par_iter()
         .map(|i| {
@@ -300,6 +311,7 @@ pub fn build_closure_context_from_file(
                 return None;
             };
             let created_in_block = std::mem::take(&mut builder.created_in_block);
+            let created_with_env = std::mem::take(&mut builder.created_with_env);
             propagate(&mut cfg, &PropagationConfig::default());
 
             let analysis = StructureAnalysis::analyze(&cfg);
@@ -320,23 +332,36 @@ pub fn build_closure_context_from_file(
                 statements
             };
 
-            Some((function_id, func_name, statements, created_in_block))
+            Some((
+                function_id,
+                func_name,
+                statements,
+                created_in_block,
+                created_with_env,
+            ))
         })
         .collect();
 
     // Sequential: build ClosureContext from computed results (order is preserved).
     // Creation scopes first, so every parent link the walk records sees them.
     let mut ctx = ClosureContext::new();
+    let mut created = Vec::new();
     for item in results.iter().flatten() {
         for &(child, level) in &item.3 {
             ctx.set_creation_scope(child, item.0, level);
         }
+        created.extend(item.4.iter().map(|&(child, level)| (item.0, child, level)));
     }
+    // Each function's levels count from the environment it was created with;
+    // shift them so level L is L hops up the parent chain before anything
+    // keys a slot by level.
+    ctx.set_env_offsets(&created);
     for item in results.into_iter().flatten() {
-        let (function_id, func_name, statements, _) = item;
+        let (function_id, func_name, mut statements, _, _) = item;
         if let Some(name) = func_name {
             ctx.add_function_name(function_id, name);
         }
+        crate::ir::shift_env_levels(&mut statements, ctx.env_offset(function_id));
         ctx.analyze_function(function_id, &statements);
     }
 

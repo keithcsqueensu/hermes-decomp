@@ -93,6 +93,18 @@ pub fn sync_capture_names(
     total
 }
 
+/// Every name a body binds or refers to.
+pub(super) fn names_in(stmts: &[Statement]) -> HashSet<String> {
+    let mut b = Bound(HashSet::new());
+    let mut r = Refs(HashSet::new());
+    for s in stmts {
+        b.visit_statement(s);
+        r.visit_statement(s);
+    }
+    b.0.extend(r.0);
+    b.0
+}
+
 struct Refs(HashSet<String>);
 
 impl<'a> Visitor<'a> for Refs {

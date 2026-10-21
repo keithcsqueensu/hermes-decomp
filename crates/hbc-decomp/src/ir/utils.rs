@@ -69,8 +69,12 @@ pub fn target_to_key(target: &AssignTarget) -> Option<String> {
     match target {
         AssignTarget::Binding(Binding::Register(r)) => Some(format!("r{r}")),
         AssignTarget::Binding(Binding::Variable(name)) => Some(name.clone()),
+        // The one spelling every other site prints and matches against
+        // (`Value::closure_var_name`): a level-0 slot is `closure_5`, not
+        // `closure_0_5`. A key spelled differently could never match the name it
+        // was meant to rename, and the rename no-op'd silently (closure_model C2).
         AssignTarget::Binding(Binding::ClosureVar { slot, level, .. }) => {
-            Some(format!("closure_{level}_{slot}"))
+            Some(Value::closure_var_name(*level, *slot))
         }
         _ => None,
     }
@@ -537,6 +541,75 @@ pub fn is_undefined_expr(expr: &Expression) -> bool {
         expr,
         Expression::Value(Value::Constant(Constant::Undefined))
     )
+}
+
+// Move every closure-relative environment level -- 1 and up, below the block
+// environments' range -- out by `by`. A function's `GetParentEnvironment N`
+// is IR level N + 1 when it was created with its creator's own environment;
+// one created with an environment further out (`CreateClosure r, rParent`)
+// reads everything that many more hops up, which only the whole program knows.
+// Level 0, the function's own environment, never moves.
+pub fn shift_env_levels(stmts: &mut Vec<Statement>, by: u32) {
+    use crate::ir::MutVisitor;
+    struct Shift(u32);
+    impl Shift {
+        fn binding(&self, b: &mut Binding) {
+            if let Binding::ClosureVar { level, .. } = b {
+                if *level >= 1 && *level < crate::ir::NESTED_ENV_LEVEL_BASE {
+                    *level += self.0;
+                }
+            }
+        }
+    }
+    impl MutVisitor for Shift {
+        fn visit_expression(&mut self, expr: &mut Expression) {
+            if let Expression::Value(Value::Binding(b)) = expr {
+                self.binding(b);
+            }
+            self.walk_expression(expr);
+        }
+        fn visit_assign_target(&mut self, target: &mut AssignTarget) {
+            if let AssignTarget::Binding(b) = target {
+                self.binding(b);
+            }
+            self.walk_assign_target(target);
+        }
+    }
+    if by != 0 {
+        Shift(by).visit_statement_list(stmts);
+    }
+}
+
+// `shift_env_levels` over a CFG: every block's statements and its terminator.
+pub fn shift_env_levels_cfg(cfg: &mut crate::ir::CFG, by: u32) {
+    if by == 0 {
+        return;
+    }
+    for block in cfg.blocks_mut() {
+        shift_env_levels(&mut block.statements, by);
+        let mut term = match &block.terminator {
+            crate::ir::Terminator::Branch { condition, .. } => {
+                vec![Statement::Expr(condition.clone())]
+            }
+            crate::ir::Terminator::Return(Some(e)) | crate::ir::Terminator::Throw(e) => {
+                vec![Statement::Expr(e.clone())]
+            }
+            crate::ir::Terminator::Switch { value, .. } => vec![Statement::Expr(value.clone())],
+            _ => continue,
+        };
+        shift_env_levels(&mut term, by);
+        let Some(Statement::Expr(shifted)) = term.pop() else {
+            continue;
+        };
+        match &mut block.terminator {
+            crate::ir::Terminator::Branch { condition, .. } => *condition = shifted,
+            crate::ir::Terminator::Return(Some(e)) | crate::ir::Terminator::Throw(e) => {
+                *e = shifted
+            }
+            crate::ir::Terminator::Switch { value, .. } => *value = shifted,
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]

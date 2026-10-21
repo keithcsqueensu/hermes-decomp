@@ -59,13 +59,16 @@ pub fn handle_get_environment(
         .rev()
         .find_map(|op| op.value.as_u32())
         .unwrap_or(0);
-    // `GetParentEnvironment` counts from the environment the function runs in, so
-    // it shifts when that environment is not the function's own. `GetEnvironment`
-    // takes its base environment as a register operand and is already absolute.
-    let level = if name == "GetParentEnvironment" {
-        env_map.parent_env_level(operand_level)
-    } else {
-        operand_level
+    // `GetParentEnvironment N`, and v96's two-operand `GetEnvironment N`, count
+    // from the closure's environment (`EnvRegMap::parent_env_level`). The v98+
+    // three-operand `GetEnvironment dst, start, N` walks N up from the
+    // environment in `start`, so its level is relative to that register's.
+    let level = match (name, inst.operands.len()) {
+        ("GetEnvironment", 3) => {
+            let start = get_reg(&inst.operands, 1)?;
+            env_map.level_of(start) + operand_level
+        }
+        _ => env_map.parent_env_level(operand_level),
     };
     env_map.set_level(dst, level);
     Some(FlowResult::Noop)

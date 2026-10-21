@@ -34,6 +34,14 @@ impl ClosureInfo {
     }
 
     pub fn get_slot_name(&self, slot: u32) -> String {
+        if let Some(name) = self.names.get(&slot) {
+            return name.clone();
+        }
+        self.derived_slot_name(slot)
+    }
+
+    /// The name a slot's value suggests, ignoring any decided name.
+    pub fn derived_slot_name(&self, slot: u32) -> String {
         // The raw slot index (the key may be level-encoded for ancestor scopes).
         let raw_slot = slot & 0x00FF_FFFF;
         let unresolved = format!("closure_{raw_slot}");

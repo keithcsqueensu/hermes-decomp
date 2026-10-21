@@ -1,3 +1,4 @@
+use super::capture_sync::names_in;
 use super::closure_inference::infer_name_from_closure_usage;
 use super::closure_usage::{
     collect_closure_usage_in_stmt, ident_from_property, is_closure_name, is_usable_object_key,
@@ -11,9 +12,11 @@ use std::collections::BTreeMap;
 // Cross-function closure naming: aggregates usage of `closure_N` across sibling functions
 // (children of the same parent) to infer one consistent name per parent slot.
 //
-// After closure resolution, `closure_N` in function X refers to slot N of X's parent.
-// If sibling functions A, B, C all reference `closure_3.setToken()`, we infer "authStore"
-// once and apply it everywhere, no `authStore`/`authStore2` inconsistency.
+// After closure resolution a placeholder (`closure_N`, `closure_N$K`,
+// `closure_L_S`) in function X names one slot of X or of one of its ancestors;
+// the bake record says which. If sibling functions A, B, C all reference
+// `closure_3.setToken()`, we infer "authStore" once and apply it everywhere, no
+// `authStore`/`authStore2` inconsistency.
 //
 // Object-key ground truth (`{ login: closure_1_0 }`) also fills the parent
 // parameter that was stored into that slot, so `forgotPassword(arg0)` becomes
@@ -45,26 +48,30 @@ pub fn rename_closure_variables_cross_function(
 
         // Map each closure_N to its parent slot
         let parent_id = closure_ctx.parent_function.get(&func_id).copied();
+        let baked = closure_ctx.baked_captures.get(&func_id);
 
         let mut usage_items: Vec<_> = usage_map.into_iter().collect();
         usage_items.sort_by(|a, b| a.0.cmp(&b.0));
         for (closure_name, info) in usage_items {
-            if let Some((level, slot)) = parse_closure_capture(&closure_name) {
-                // Single-number `closure_N` is an ancestor capture whose slot
-                // had no name when it was baked; the bake recorded its exact
-                // (level, slot), and that owner is the key. The direct parent is
-                // only a fallback for a name with no record: a class method's
-                // direct parent is the class scope, and keying on it split the
-                // owner (`dependencyMap3`) from its readers (`closure_105`).
-                // Two-number `closure_{level}_{slot}` walks `level` hops.
-                // Keying single-number names on the recorded owner instead was
-                // measured worse (127 349 to 130 029 undeclared names on the
-                // reference bundle): the direct parent stays the key here, and
-                // the record serves the late inherit pass only.
-                let (pid, slot) = if level == 0 {
-                    (parent_id, slot)
-                } else {
-                    (closure_ctx.slot_owner(func_id, level), slot)
+            let recorded = baked.and_then(|b| b.get(&closure_name)).copied();
+            let parsed = parse_closure_capture(&closure_name);
+            if recorded.is_none() && parsed.is_none() {
+                continue;
+            }
+            {
+                // The bake recorded the exact (level, slot) every placeholder
+                // came from, and that owner is the key. Since slot names are
+                // allocated per owner, `closure_N` is no longer "slot N of the
+                // direct parent": it is the function's own slot N, or slot N of
+                // whichever ancestor first used the name, and keying it on the
+                // direct parent gave the factory's `closure_2` (a native-bridge
+                // object) the name of `genMethod`'s own slot 2 (`type`). The
+                // direct parent remains only for a name with no record.
+                let (pid, slot) = match (recorded, parsed) {
+                    (Some((level, slot)), _) => (closure_ctx.slot_owner(func_id, level), slot),
+                    (None, Some((0, slot))) => (parent_id, slot),
+                    (None, Some((level, slot))) => (closure_ctx.slot_owner(func_id, level), slot),
+                    (None, None) => continue,
                 };
 
                 if let Some(pid) = pid {
@@ -134,7 +141,61 @@ pub fn rename_closure_variables_cross_function(
         }
     }
 
-    // Phase 3: Build per-function rename maps and apply
+    // Phase 3a: refuse a name that already means something else anywhere from
+    // the owner down to a reader. A body that binds or refers to the name for
+    // another variable -- or a parameter of that name -- would shadow the slot,
+    // or have the slot shadow it, and two variables would print as one.
+    let mut in_use: BTreeMap<u32, HashSet<String>> =
+        all_ir.iter().map(|(&f, s)| (f, names_in(s))).collect();
+    for (f, ps) in param_names.iter() {
+        in_use
+            .entry(*f)
+            .or_default()
+            .extend(ps.iter().flatten().cloned());
+    }
+    let mut readers: BTreeMap<(u32, u32), Vec<(u32, &String)>> = BTreeMap::new();
+    for (func_id, closure_name, parent_id, slot) in &func_closure_to_slot {
+        readers
+            .entry((*parent_id, *slot))
+            .or_default()
+            .push((*func_id, closure_name));
+    }
+    let keys: Vec<(u32, u32)> = slot_names.keys().copied().collect();
+    for key in keys {
+        let (owner, slot) = key;
+        let new_name = slot_names[&key].clone();
+        // body -> the name it uses for this slot now, if it uses it
+        let mut chain: BTreeMap<u32, Option<String>> = BTreeMap::new();
+        chain.insert(
+            closure_ctx.scope_function(owner),
+            Some(owner_var(closure_ctx, owner, slot)),
+        );
+        for &(reader, old) in readers.get(&key).map(|v| v.as_slice()).unwrap_or(&[]) {
+            chain.insert(reader, Some(old.clone()));
+            let mut seen = HashSet::from([reader]);
+            let mut g = reader;
+            while let Some(&p) = closure_ctx.parent_function.get(&g) {
+                if p == owner || !seen.insert(p) {
+                    break;
+                }
+                chain.entry(closure_ctx.scope_function(p)).or_insert(None);
+                g = p;
+            }
+        }
+        let clash = chain.iter().any(|(body, old)| {
+            old.as_deref() != Some(new_name.as_str())
+                && in_use.get(body).is_some_and(|u| u.contains(&new_name))
+        });
+        if clash {
+            slot_names.remove(&key);
+            continue;
+        }
+        for body in chain.keys() {
+            in_use.entry(*body).or_default().insert(new_name.clone());
+        }
+    }
+
+    // Phase 3b: Build per-function rename maps and apply
     // Group the func_closure_to_slot entries by func_id
     let mut per_func_renames: BTreeMap<u32, BTreeMap<String, String>> = BTreeMap::new();
     for (func_id, closure_name, parent_id, slot) in &func_closure_to_slot {
@@ -150,11 +211,10 @@ pub fn rename_closure_variables_cross_function(
     // and fill the parameter from an object-key name. Look up the param index
     // before rewriting the slot value (`arg0` → `login`).
     for ((parent_id, slot), new_name) in &slot_names {
-        let owner_var = format!("closure_{slot}");
         per_func_renames
             .entry(*parent_id)
             .or_default()
-            .entry(owner_var)
+            .entry(owner_var(closure_ctx, *parent_id, *slot))
             .or_insert_with(|| new_name.clone());
         if object_key_slots.contains(&(*parent_id, *slot)) {
             if let Some(idx) =
@@ -184,6 +244,16 @@ pub fn rename_closure_variables_cross_function(
     // collection saw no object literal.
     total_renamed += apply_object_key_literals(all_ir, closure_ctx, param_names);
     total_renamed
+}
+
+// The name the owner's own body uses for a slot: its decided placeholder.
+fn owner_var(closure_ctx: &ClosureContext, owner: u32, slot: u32) -> String {
+    closure_ctx
+        .function_closures
+        .get(&owner)
+        .map(|ci| ci.get_slot_name(slot))
+        .filter(|n| n.starts_with("closure_"))
+        .unwrap_or_else(|| format!("closure_{slot}"))
 }
 
 // Parse a closure capture into (level, slot).
@@ -243,6 +313,7 @@ fn param_index_stored_in_slot(
     param_index_from_slot_store(
         stmts,
         slot,
+        &owner_var(closure_ctx, parent_id, slot),
         slot_var,
         param_names.get(&parent_id).map(|v| v.as_slice()),
     )
@@ -251,13 +322,13 @@ fn param_index_stored_in_slot(
 fn param_index_from_slot_store(
     stmts: &[Statement],
     slot: u32,
+    owner: &str,
     slot_var: Option<&str>,
     param_names: Option<&[Option<String>]>,
 ) -> Option<u32> {
-    let owner = format!("closure_{slot}");
     for stmt in stmts {
         if let Some(idx) =
-            param_index_from_slot_store_stmt(stmt, slot, &owner, slot_var, param_names)
+            param_index_from_slot_store_stmt(stmt, slot, owner, slot_var, param_names)
         {
             return Some(idx);
         }
@@ -301,31 +372,37 @@ fn param_index_from_slot_store_stmt(
             then_body,
             else_body,
             ..
-        } => param_index_from_slot_store(then_body, slot, slot_var, param_names)
-            .or_else(|| param_index_from_slot_store(else_body, slot, slot_var, param_names)),
+        } => param_index_from_slot_store(then_body, slot, owner, slot_var, param_names)
+            .or_else(|| param_index_from_slot_store(else_body, slot, owner, slot_var, param_names)),
         Statement::While { body, .. }
         | Statement::DoWhile { body, .. }
         | Statement::For { body, .. }
         | Statement::ForIn { body, .. }
         | Statement::ForOf { body, .. }
-        | Statement::Block(body) => param_index_from_slot_store(body, slot, slot_var, param_names),
+        | Statement::Block(body) => {
+            param_index_from_slot_store(body, slot, owner, slot_var, param_names)
+        }
         Statement::TryCatch {
             try_body,
             catch_body,
             finally_body,
             ..
-        } => param_index_from_slot_store(try_body, slot, slot_var, param_names)
-            .or_else(|| param_index_from_slot_store(catch_body, slot, slot_var, param_names))
-            .or_else(|| param_index_from_slot_store(finally_body, slot, slot_var, param_names)),
+        } => param_index_from_slot_store(try_body, slot, owner, slot_var, param_names)
+            .or_else(|| param_index_from_slot_store(catch_body, slot, owner, slot_var, param_names))
+            .or_else(|| {
+                param_index_from_slot_store(finally_body, slot, owner, slot_var, param_names)
+            }),
         Statement::Switch { cases, default, .. } => {
             for (_, body) in cases {
-                if let Some(idx) = param_index_from_slot_store(body, slot, slot_var, param_names) {
+                if let Some(idx) =
+                    param_index_from_slot_store(body, slot, owner, slot_var, param_names)
+                {
                     return Some(idx);
                 }
             }
             default
                 .as_ref()
-                .and_then(|d| param_index_from_slot_store(d, slot, slot_var, param_names))
+                .and_then(|d| param_index_from_slot_store(d, slot, owner, slot_var, param_names))
         }
         _ => None,
     }
@@ -472,11 +549,10 @@ fn apply_object_key_literals(
         {
             fill_param_name(param_names, *owner, idx, key);
         }
-        let owner_var = format!("closure_{slot}");
         per_func
             .entry(*owner)
             .or_default()
-            .entry(owner_var)
+            .entry(owner_var(closure_ctx, *owner, *slot))
             .or_insert_with(|| key.clone());
         if let Some(info) = closure_ctx.function_closures.get(owner) {
             if let Some(ClosureSlotValue::Variable(v)) = info.slots.get(slot) {

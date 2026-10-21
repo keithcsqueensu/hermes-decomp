@@ -30,7 +30,8 @@ use super::DecompileOptionsV2;
 // Bump when the *on-disk schema* changes (header fields, snapshot layout) in a
 // way that old entries must not be read. Pipeline *output* changes are covered
 // by `binary_fingerprint()`, no need to bump for every decompiler fix.
-pub const CACHE_VERSION: u32 = 5;
+// 6: `ClosureContext.env_offsets`.
+pub const CACHE_VERSION: u32 = 6;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.
