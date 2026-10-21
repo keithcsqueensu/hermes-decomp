@@ -215,6 +215,11 @@ headers. All of these are verified on a real v98 Hermes engine. `create` builds 
 minimal file from scratch, legacy layout for v96 and lower and modern layout for
 v97 and newer. The CLI prints a note when a write command targets a modern file.
 
+**Naming a target once.** Where a write command offers two ways to name the same
+thing -- `--at` or `--function` + `--insn-offset`; `--string` or `--string-id`; `--from` or
+`--from-id`; `--old` or `--id` -- give exactly one. Both, or neither, is refused before
+anything is read; there is no precedence to remember.
+
 `patch-operand` rewrites a single string-id operand inside one instruction
 without rebuilding the function body. Addresses by absolute file offset (`--at`)
 or function-relative (`--function` + `--insn-offset`). Resolves the new value

@@ -388,16 +388,25 @@ pub enum Command {
         #[arg(short = 'o', long)]
         output: PathBuf,
         /// Absolute byte offset of the opcode in the file (e.g. 0xD83E27).
-        #[arg(long, value_parser = parse_hex_or_dec)]
+        #[arg(
+            long,
+            value_parser = parse_hex_or_dec,
+            conflicts_with_all = ["function", "insn_offset"],
+            required_unless_present = "function"
+        )]
         at: Option<u32>,
         /// Function id (used with --insn-offset).
-        #[arg(long)]
+        #[arg(long, requires = "insn_offset")]
         function: Option<u32>,
         /// Instruction offset relative to function body start (used with --function).
-        #[arg(long, value_parser = parse_hex_or_dec)]
+        #[arg(long, value_parser = parse_hex_or_dec, requires = "function")]
         insn_offset: Option<u32>,
         /// New string value to write (looked up in string table).
-        #[arg(long)]
+        #[arg(
+            long,
+            conflicts_with = "string_id",
+            required_unless_present = "string_id"
+        )]
         string: Option<String>,
         /// New string id to write (numeric).
         #[arg(long)]
@@ -414,10 +423,10 @@ pub enum Command {
         #[arg(short = 'o', long)]
         output: PathBuf,
         /// Source string id to retarget.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "from", required_unless_present = "from")]
         from_id: Option<u32>,
         /// Target string id whose value the source will resolve to.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "to", required_unless_present = "to")]
         to_id: Option<u32>,
         /// Source string value (alternative to --from-id; first match).
         #[arg(long)]
@@ -440,7 +449,7 @@ pub enum Command {
         #[arg(long)]
         identifier: bool,
         /// Give every string its own storage when the string table is rebuilt,
-        /// instead of sharing storage between a string and its suffixes.
+        /// instead of storing a string inside a longer one that contains it.
         #[arg(long)]
         unpacked_strings: bool,
         #[command(flatten)]
@@ -470,13 +479,18 @@ pub enum Command {
         #[arg(short = 'o', long)]
         output: PathBuf,
         /// Absolute byte offset of the CreateRegExp opcode in the file.
-        #[arg(long, value_parser = parse_hex_or_dec)]
+        #[arg(
+            long,
+            value_parser = parse_hex_or_dec,
+            conflicts_with_all = ["function", "insn_offset"],
+            required_unless_present = "function"
+        )]
         at: Option<u32>,
         /// Function id (used with --insn-offset).
-        #[arg(long)]
+        #[arg(long, requires = "insn_offset")]
         function: Option<u32>,
         /// Instruction offset relative to function body start (used with --function).
-        #[arg(long, value_parser = parse_hex_or_dec)]
+        #[arg(long, value_parser = parse_hex_or_dec, requires = "function")]
         insn_offset: Option<u32>,
         /// The RegExp table index to point it at.
         #[arg(long)]
@@ -489,14 +503,17 @@ pub enum Command {
         input: PathBuf,
         #[arg(short = 'o', long)]
         output: PathBuf,
-        #[arg(long)]
+        /// The string id to patch.
+        #[arg(long, conflicts_with = "old", required_unless_present = "old")]
         id: Option<u32>,
+        /// The string value to patch (first match; alternative to --id).
         #[arg(long)]
         old: Option<String>,
+        /// The new value.
         #[arg(long)]
         new: String,
         /// Give every string its own storage when the string table is rebuilt,
-        /// instead of sharing storage between a string and its suffixes.
+        /// instead of storing a string inside a longer one that contains it.
         #[arg(long)]
         unpacked_strings: bool,
         #[command(flatten)]
