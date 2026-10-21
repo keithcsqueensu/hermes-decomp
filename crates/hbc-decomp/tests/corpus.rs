@@ -324,6 +324,54 @@ fn appending_a_string_shifts_every_function_offset_uniformly() {
     );
 }
 
+// string_packing/PLAN.md P1 at full scale: a rebuild that packs suffixes must
+// recover a real share of what the unpacked rebuild costs against hermesc's own
+// (fully optimised) layout, and every entry must still read back as before --
+// which `add_string` checks on every write (P0), so success here is that check
+// passing over ~99,000 entries.
+#[test]
+fn a_packed_rebuild_recovers_storage_the_unpacked_one_spends() {
+    let (bytes, _) = corpus_or_skip!();
+    let original = BytecodeFile::parse_auto(&bytes).expect("corpus parses");
+    let format = BytecodeFormat::for_version(original.header.version).expect("opcode table");
+    let storage = |unpacked: bool| {
+        let mut file = BytecodeFile::parse_auto(&bytes).unwrap();
+        let opts = PatchOptions {
+            unpacked_strings: unpacked,
+            ..PatchOptions::default()
+        };
+        let (out, _) = add_string(&mut file, &format, "HBC_CORPUS_PACK_PROBE", false, &opts)
+            .expect("add_string on the corpus");
+        let after = BytecodeFile::parse_auto(&out).unwrap();
+        // Same ids, same text: packing moves offsets, never content.
+        for (i, (a, b)) in after.strings.iter().zip(&original.strings).enumerate() {
+            assert_eq!(a.value, b.value, "unpacked={unpacked}: string {i}");
+        }
+        after.header.string_storage_size as i64
+    };
+    let hermesc = original.header.string_storage_size as i64;
+    let unpacked = storage(true);
+    let packed = storage(false);
+    let cost = unpacked - hermesc;
+    let recovered = unpacked - packed;
+    println!(
+        "  storage: hermesc {hermesc}, unpacked rebuild {unpacked} (+{cost}), \
+         packed rebuild {packed} (recovers {recovered}, {:.0}%)",
+        100.0 * recovered as f64 / cost as f64
+    );
+    assert!(
+        packed < unpacked,
+        "packing saved nothing: the sort is backwards"
+    );
+    // Suffix merge is about a quarter of what hermesc's three-stage packer
+    // finds (plan: ~100 KB of ~431 KB on 11.39.0). Well under that means the
+    // merge is missing containers it should find.
+    assert!(
+        recovered * 5 >= cost,
+        "packing recovered {recovered} of {cost}; expected at least a fifth"
+    );
+}
+
 /// A header with everything a relocation may change blanked out: the body
 /// offset, the info offset and the body size. What is left must never move.
 fn fixed_fields(h: &FunctionHeader) -> String {

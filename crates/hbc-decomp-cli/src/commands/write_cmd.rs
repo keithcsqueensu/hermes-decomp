@@ -282,12 +282,16 @@ pub fn run_add_string(
     output: &PathBuf,
     value: String,
     identifier: bool,
+    unpacked_strings: bool,
     args: &FormatArgs,
 ) -> Result<(), BoxErr> {
     let mut file = load_file(input, args)?;
     let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
-    let opts = PatchOptions::default();
+    let opts = PatchOptions {
+        unpacked_strings,
+        ..PatchOptions::default()
+    };
     // Duplicate note (moved here from the library layer): find the first
     // existing entry with the same value and kind before appending.
     let dup = file
@@ -414,12 +418,16 @@ pub fn run_patch_string(
     id: Option<u32>,
     old: Option<String>,
     new: String,
+    unpacked_strings: bool,
     args: &FormatArgs,
 ) -> Result<(), BoxErr> {
     let mut file = load_file(input, args)?;
     let format = load_format(&file, args.format_version)?;
     warn_modern_write(&file);
-    let opts = PatchOptions::default();
+    let opts = PatchOptions {
+        unpacked_strings,
+        ..PatchOptions::default()
+    };
     let out = if let Some(id) = id {
         patch_string_by_id(&mut file, &format, id, &new, &opts)?
     } else if let Some(old) = old {

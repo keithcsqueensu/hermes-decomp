@@ -5,9 +5,14 @@ use crate::error::{Error, Result};
 use crate::file::BytecodeFile;
 use crate::opcode::BytecodeFormat;
 
-use crate::write::reloc::{relocate, Reloc};
-use crate::write::serialize::{commit_image, section_offset};
+use std::collections::BTreeSet;
 
+use crate::write::reloc::{relocate, Reloc};
+use crate::write::serialize::{commit_image_checked, section_offset};
+
+use super::string_storage::{
+    current_strings, lay_out, read_all_string_locs, validate, Packing, StoredString, StringLayout,
+};
 use super::PatchOptions;
 
 // Locate string `id` UTF-8 bytes via the small/overflow string tables in raw bytes.
@@ -95,66 +100,6 @@ fn locate_string_bytes(file: &BytecodeFile, id: u32) -> Result<(usize, usize)> {
         }
     }
     Err(Error::Write(format!("string id {id} not found")))
-}
-
-// Per-string storage location read straight from the small/overflow tables.
-struct StrLoc {
-    storage_off: u32,
-    len_field: u32,
-    is_utf16: bool,
-}
-
-// Read the storage offset + length field of every string from the raw tables.
-fn read_all_string_locs(file: &BytecodeFile) -> Result<Vec<StrLoc>> {
-    let raw = file
-        .raw_bytes
-        .as_ref()
-        .ok_or_else(|| Error::Write("no raw_bytes".into()))?;
-    let small_off = section_offset(file, "small_string_table")
-        .ok_or_else(|| Error::Write("small_string_table section missing".into()))?
-        as usize;
-    let overflow_off = section_offset(file, "overflow_string_table").map(|o| o as usize);
-
-    const UTF16: u32 = 0x1;
-    const OFF_SHIFT: u32 = 1;
-    const OFF_MASK: u32 = 0x7f_ffff;
-    const LEN_SHIFT: u32 = 24;
-    const LEN_MASK: u32 = 0xff;
-    const LEN_OVERFLOW: u32 = 0xff;
-    const OFF_OVERFLOW: u32 = 0x800000;
-
-    let mut out = Vec::with_capacity(file.strings.len());
-    let mut overflow_index = 0usize;
-    for i in 0..file.strings.len() {
-        let slot = small_off + i * 4;
-        if slot + 4 > raw.len() {
-            return Err(Error::Write("small string table OOB".into()));
-        }
-        let raw_e = u32::from_le_bytes(raw[slot..slot + 4].try_into().unwrap());
-        let is_utf16 = (raw_e & UTF16) != 0;
-        let offset = (raw_e >> OFF_SHIFT) & OFF_MASK;
-        let length = (raw_e >> LEN_SHIFT) & LEN_MASK;
-        let (off, len) = if length == LEN_OVERFLOW || offset == OFF_OVERFLOW {
-            let ov_base =
-                overflow_off.ok_or_else(|| Error::Write("overflow string table missing".into()))?;
-            let ov_slot = ov_base + overflow_index * 8;
-            if ov_slot + 8 > raw.len() {
-                return Err(Error::Write("overflow string table OOB".into()));
-            }
-            let o = u32::from_le_bytes(raw[ov_slot..ov_slot + 4].try_into().unwrap());
-            let l = u32::from_le_bytes(raw[ov_slot + 4..ov_slot + 8].try_into().unwrap());
-            overflow_index += 1;
-            (o, l)
-        } else {
-            (offset, length)
-        };
-        out.push(StrLoc {
-            storage_off: off,
-            len_field: len,
-            is_utf16,
-        });
-    }
-    Ok(out)
 }
 
 // Hermes identifier hash: Jenkins one at a time over UTF-16 code units, seeded
@@ -268,6 +213,11 @@ pub fn retarget_string(
     // programmatic callers get no unsolicited stderr output.
     let from_is_id = file.strings[from_id as usize].is_identifier;
 
+    // What every entry must read back as afterwards: unchanged, except that
+    // from_id now reads as to_id.
+    let mut expected = current_strings(file)?;
+    expected[from_id as usize] = expected[to_id as usize].clone();
+
     // Copy the 4-byte entry.
     let entry_bytes: [u8; 4] = raw[to_slot..to_slot + 4].try_into().unwrap();
     raw[from_slot..from_slot + 4].copy_from_slice(&entry_bytes);
@@ -278,31 +228,26 @@ pub fn retarget_string(
         update_identifier_hash(file, &mut raw, from_id, to_value)?;
     }
 
-    // Sync the in-memory model.
-    let to_val = file.strings[to_id as usize].value.clone();
-    let to_utf16 = file.strings[to_id as usize].is_utf16;
-    file.strings[from_id as usize].value = to_val;
-    file.strings[from_id as usize].is_utf16 = to_utf16;
-
-    let out = commit_image(file, raw)?;
-    Ok(out)
+    commit_image_checked(file, raw, |after| {
+        validate(after, &expected, &BTreeSet::new())
+    })
 }
 
-// Grow or shrink a UTF-8 string entry. Rebuilds the small string table and the
-// string storage (unpacked), then relocates every section after the string
-// region and shifts all absolute offsets (function bodies, function info,
-// debug info) by the size delta. This is the hermes_rs issue #10 case.
-//
-// Legacy layout, non-overflowed function headers, non-identifier UTF-8 target
-// only. Refuses anything that would need an overflow string entry or an
-// identifier-hash rebuild, so it never emits a silently corrupt file.
-fn patch_string_resize(file: &mut BytecodeFile, id: u32, new_value: &str) -> Result<Vec<u8>> {
-    // Validate the id up front; the encoding is chosen per new value below.
+// Grow, shrink or re-encode one string entry. Rebuilds the small and overflow
+// tables and the storage (`string_storage::lay_out`, packed unless `packing`
+// says otherwise, with `id` pinned to bytes of its own), then moves everything
+// after the string region by the size delta (`write::reloc::relocate`). Works on
+// legacy and modern layouts, overflowed entries and UTF-16 alike; every entry is
+// checked against its intended text before the result is committed (P0).
+fn patch_string_resize(
+    file: &mut BytecodeFile,
+    id: u32,
+    new_value: &str,
+    packing: Packing,
+) -> Result<Vec<u8>> {
     if file.strings.get(id as usize).is_none() {
         return Err(Error::Write(format!("string id {id} out of range")));
     }
-
-    let locs = read_all_string_locs(file)?;
     let raw = file
         .raw_bytes
         .clone()
@@ -313,9 +258,8 @@ fn patch_string_resize(file: &mut BytecodeFile, id: u32, new_value: &str) -> Res
     let storage_off = section_offset(file, "string_storage")
         .ok_or_else(|| Error::Write("string_storage section missing".into()))?
         as usize;
-    // First section after the string region, everything from here shifts.
     // Section right after the string region: array_buffer on legacy,
-    // literal_value_buffer on modern.
+    // literal_value_buffer on modern. Everything from here shifts.
     let array_off = section_offset(file, "array_buffer")
         .or_else(|| section_offset(file, "literal_value_buffer"))
         .ok_or_else(|| Error::Write("post-string section missing".into()))?
@@ -323,99 +267,30 @@ fn patch_string_resize(file: &mut BytecodeFile, id: u32, new_value: &str) -> Res
     if array_off < small_off || small_off > storage_off {
         return Err(Error::Write("unexpected string section order".into()));
     }
-    let old_region_len = array_off - small_off;
 
-    // Rebuild the storage (unpacked) plus the small and overflow string tables.
-    // A string whose offset or length does not fit the small entry gets an
-    // overflow entry (32-bit offset and length), and its small entry is marked
-    // with length 0xff and the overflow index.
-    let mut new_storage: Vec<u8> = Vec::new();
-    let mut new_small: Vec<u32> = Vec::with_capacity(locs.len());
-    let mut new_overflow: Vec<(u32, u32)> = Vec::new();
-    for (i, loc) in locs.iter().enumerate() {
-        let (bytes, len_field, is_utf16): (Vec<u8>, u32, bool) = if i as u32 == id {
-            // Hermes stores a string with one byte per character only when it is
-            // pure ASCII, and as UTF-16 for anything with a non-ASCII character.
-            // Choose from the new value's own characters, not the old flag: a plain
-            // ASCII string patched to hold `é` or `€` must switch to UTF-16.
-            let needs_utf16 = new_value.bytes().any(|b| b > 0x7f);
-            if needs_utf16 {
-                // UTF-16LE; length is in code units.
-                let units: Vec<u16> = new_value.encode_utf16().collect();
-                let mut b = Vec::with_capacity(units.len() * 2);
-                for u in &units {
-                    b.extend_from_slice(&u.to_le_bytes());
-                }
-                (b, units.len() as u32, true)
-            } else {
-                // Pure ASCII: one byte per character.
-                (new_value.as_bytes().to_vec(), new_value.len() as u32, false)
-            }
-        } else {
-            let byte_len = if loc.is_utf16 {
-                loc.len_field as usize * 2
-            } else {
-                loc.len_field as usize
-            };
-            let start = storage_off + loc.storage_off as usize;
-            if start + byte_len > raw.len() {
-                return Err(Error::Write("string storage OOB during rebuild".into()));
-            }
-            (
-                raw[start..start + byte_len].to_vec(),
-                loc.len_field,
-                loc.is_utf16,
-            )
-        };
-        let off = new_storage.len() as u32;
-        new_storage.extend_from_slice(&bytes);
-        let _ = i;
-        if off >= 0x80_0000 || len_field >= 0xff {
-            // Overflowed: real offset + length go in the overflow table; the small
-            // entry stores the overflow index and length 0xff.
-            let ov_index = new_overflow.len() as u32;
-            new_overflow.push((off, len_field));
-            let e = (0xffu32 << 24) | ((ov_index & 0x7f_ffff) << 1) | (is_utf16 as u32);
-            new_small.push(e);
-        } else {
-            let e = ((len_field & 0xff) << 24) | ((off & 0x7f_ffff) << 1) | (is_utf16 as u32);
-            new_small.push(e);
-        }
-    }
+    let mut strings = current_strings(file)?;
+    strings[id as usize] = StoredString::encode(new_value);
+    let pinned = BTreeSet::from([id as usize]);
+    let layout = lay_out(&strings, &pinned, packing)?;
 
-    // Assemble the new string region: small table, overflow table, storage padded
-    // so the following section keeps its 4-byte alignment.
+    // The new string region: small table, overflow table, storage padded so the
+    // following section keeps its 4-byte alignment.
     let mut region: Vec<u8> = Vec::new();
-    for e in &new_small {
-        region.extend_from_slice(&e.to_le_bytes());
-    }
-    for (off, len) in &new_overflow {
-        region.extend_from_slice(&off.to_le_bytes());
-        region.extend_from_slice(&len.to_le_bytes());
-    }
-    let storage_size = new_storage.len() as u32;
-    let overflow_count = new_overflow.len() as u32;
-    region.extend_from_slice(&new_storage);
-    while !region.len().is_multiple_of(4) {
-        region.push(0);
-    }
+    push_tables_and_storage(&mut region, &layout);
+    let delta = region.len() as i64 - (array_off - small_off) as i64;
 
-    let delta = region.len() as i64 - old_region_len as i64;
-
-    // Splice: [.. small_off] + region + [array_off ..]
     let mut rebuilt = Vec::with_capacity((raw.len() as i64 + delta) as usize);
     rebuilt.extend_from_slice(&raw[..small_off]);
     rebuilt.extend_from_slice(&region);
     rebuilt.extend_from_slice(&raw[array_off..]);
 
-    // Header field updates. overflow_string_count (56) and string_storage_size
-    // (60) share offsets across layouts; debug_info_offset differs.
-    rebuilt[56..60].copy_from_slice(&overflow_count.to_le_bytes());
-    rebuilt[60..64].copy_from_slice(&storage_size.to_le_bytes());
-    // Everything after the string region moves by `delta`, so every function
-    // body offset shifts (the header table sits before the region and keeps its
-    // slot). Exception-handler tables are body-relative and are NOT rewritten: a
-    // whole-region shift moves the table and the code it points into together.
+    // overflow_string_count (56) and string_storage_size (60) share offsets
+    // across layouts.
+    rebuilt[56..60].copy_from_slice(&(layout.overflow.len() as u32).to_le_bytes());
+    rebuilt[60..64].copy_from_slice(&(layout.storage.len() as u32).to_le_bytes());
+    // Everything after the string region moves by `delta`. Exception-handler
+    // tables are body-relative and are NOT rewritten: a whole-region shift moves
+    // the table and the code it points into together.
     relocate(
         file,
         &mut rebuilt,
@@ -429,21 +304,29 @@ fn patch_string_resize(file: &mut BytecodeFile, id: u32, new_value: &str) -> Res
     // An identifier's precomputed hash depends on its text, so refresh it.
     update_identifier_hash(file, &mut rebuilt, id, new_value)?;
 
-    // Keep the decoded model consistent.
-    if let Some(s) = file.strings.get_mut(id as usize) {
-        s.value = new_value.to_string();
-    }
-    file.header.overflow_string_count = overflow_count;
-    file.header.string_storage_size = storage_size;
+    commit_image_checked(file, rebuilt, |after| validate(after, &strings, &pinned))
+}
 
-    let out = commit_image(file, rebuilt)?;
-    Ok(out)
+// Small table, overflow table and storage, in file order, padded to 4.
+fn push_tables_and_storage(region: &mut Vec<u8>, layout: &StringLayout) {
+    for e in &layout.small {
+        region.extend_from_slice(&e.to_le_bytes());
+    }
+    for (off, len) in &layout.overflow {
+        region.extend_from_slice(&off.to_le_bytes());
+        region.extend_from_slice(&len.to_le_bytes());
+    }
+    region.extend_from_slice(&layout.storage);
+    while !region.len().is_multiple_of(4) {
+        region.push(0);
+    }
 }
 
 // Append a new string to the string table. Rebuilds the entire string region
 // (kinds, identifier hashes, small table, overflow table, storage) and
 // relocates the tail. The new string gets id = old `string_count`; every
-// existing id is stable. Returns `(raw_image, new_id)`.
+// existing id is stable, and the new entry is pinned to bytes of its own.
+// Returns `(raw_image, new_id)`.
 //
 // `is_identifier`: true for property/symbol names (adds a Jenkins hash slot);
 // false for plain string literals.
@@ -452,103 +335,41 @@ pub fn add_string(
     _format: &BytecodeFormat,
     value: &str,
     is_identifier: bool,
-    _opts: &PatchOptions,
+    opts: &PatchOptions,
 ) -> Result<(Vec<u8>, u32)> {
     let new_id = file.header.string_count;
-
-    let locs = read_all_string_locs(file)?;
     let raw = file
         .raw_bytes
         .clone()
         .ok_or_else(|| Error::Write("no raw_bytes".into()))?;
 
-    // Derive section boundaries.
+    // Derive section boundaries. The rebuild uses kinds_off as the splice origin
+    // and array_off as the splice end; the middle two are checked for presence.
     let kinds_off = section_offset(file, "string_kinds")
         .ok_or_else(|| Error::Write("string_kinds section missing".into()))?
         as usize;
-    // These section offsets are computed to validate presence; the rebuild uses
-    // kinds_off as the splice origin and array_off as the splice end.
-    let _ids_off = section_offset(file, "identifier_hashes")
-        .ok_or_else(|| Error::Write("identifier_hashes section missing".into()))?
-        as usize;
-    let _small_off = section_offset(file, "small_string_table")
-        .ok_or_else(|| Error::Write("small_string_table section missing".into()))?
-        as usize;
-    let storage_off = section_offset(file, "string_storage")
-        .ok_or_else(|| Error::Write("string_storage section missing".into()))?
-        as usize;
+    section_offset(file, "identifier_hashes")
+        .ok_or_else(|| Error::Write("identifier_hashes section missing".into()))?;
+    section_offset(file, "small_string_table")
+        .ok_or_else(|| Error::Write("small_string_table section missing".into()))?;
     let array_off = section_offset(file, "array_buffer")
         .or_else(|| section_offset(file, "literal_value_buffer"))
         .ok_or_else(|| Error::Write("post-string section missing".into()))?
         as usize;
-
     if array_off < kinds_off {
         return Err(Error::Write("unexpected string section order".into()));
     }
-    let old_region_len = array_off - kinds_off;
 
     // A duplicate value is allowed (ids are append-only, so it still gets a new
     // id); the CLI notes it. The library stays silent so programmatic callers
     // get no unsolicited stderr output.
-
-    // ---- Rebuild storage + small/overflow tables (N+1 entries) ----
-    let mut new_storage: Vec<u8> = Vec::new();
-    let mut new_small: Vec<u32> = Vec::with_capacity(locs.len() + 1);
-    let mut new_overflow: Vec<(u32, u32)> = Vec::new();
-
-    // Existing entries.
-    for loc in locs.iter() {
-        let byte_len = if loc.is_utf16 {
-            loc.len_field as usize * 2
-        } else {
-            loc.len_field as usize
-        };
-        let start = storage_off + loc.storage_off as usize;
-        if start + byte_len > raw.len() {
-            return Err(Error::Write("string storage OOB during rebuild".into()));
-        }
-        let bytes = &raw[start..start + byte_len];
-        let off = new_storage.len() as u32;
-        new_storage.extend_from_slice(bytes);
-        if off >= 0x80_0000 || loc.len_field >= 0xff {
-            let ov_index = new_overflow.len() as u32;
-            new_overflow.push((off, loc.len_field));
-            let e = (0xffu32 << 24) | ((ov_index & 0x7f_ffff) << 1) | (loc.is_utf16 as u32);
-            new_small.push(e);
-        } else {
-            let e =
-                ((loc.len_field & 0xff) << 24) | ((off & 0x7f_ffff) << 1) | (loc.is_utf16 as u32);
-            new_small.push(e);
-        }
-    }
-
-    // Append the new entry.
-    let needs_utf16 = value.bytes().any(|b| b > 0x7f);
-    let (new_bytes, new_len_field, new_is_utf16) = if needs_utf16 {
-        let units: Vec<u16> = value.encode_utf16().collect();
-        let mut b = Vec::with_capacity(units.len() * 2);
-        for u in &units {
-            b.extend_from_slice(&u.to_le_bytes());
-        }
-        (b, units.len() as u32, true)
-    } else {
-        (value.as_bytes().to_vec(), value.len() as u32, false)
-    };
-    let new_off = new_storage.len() as u32;
-    new_storage.extend_from_slice(&new_bytes);
-    if new_off >= 0x80_0000 || new_len_field >= 0xff {
-        let ov_index = new_overflow.len() as u32;
-        new_overflow.push((new_off, new_len_field));
-        let e = (0xffu32 << 24) | ((ov_index & 0x7f_ffff) << 1) | (new_is_utf16 as u32);
-        new_small.push(e);
-    } else {
-        let e =
-            ((new_len_field & 0xff) << 24) | ((new_off & 0x7f_ffff) << 1) | (new_is_utf16 as u32);
-        new_small.push(e);
-    }
+    let mut strings = current_strings(file)?;
+    strings.push(StoredString::encode(value));
+    let pinned = BTreeSet::from([new_id as usize]);
+    let layout = lay_out(&strings, &pinned, opts.string_packing())?;
 
     // ---- Rebuild string_kinds ----
-    use crate::file::{StringKindEntry, StringKindType, StringTableEntry};
+    use crate::file::{StringKindEntry, StringKindType};
 
     let new_kind = if is_identifier {
         StringKindType::Identifier
@@ -556,20 +377,12 @@ pub fn add_string(
         StringKindType::String
     };
     let mut new_kinds = file.string_kinds.clone();
-    if let Some(last) = new_kinds.last_mut() {
-        if last.kind == new_kind {
-            last.count += 1;
-        } else {
-            new_kinds.push(StringKindEntry {
-                kind: new_kind,
-                count: 1,
-            });
-        }
-    } else {
-        new_kinds.push(StringKindEntry {
+    match new_kinds.last_mut() {
+        Some(last) if last.kind == new_kind => last.count += 1,
+        _ => new_kinds.push(StringKindEntry {
             kind: new_kind,
             count: 1,
-        });
+        }),
     }
 
     // ---- Rebuild identifier_hashes ----
@@ -579,9 +392,9 @@ pub fn add_string(
     }
 
     // ---- Assemble the new region block ----
-    // Order: string_kinds ++ identifier_hashes ++ small_string_table ++ overflow_string_table ++ string_storage
+    // Order: string_kinds ++ identifier_hashes ++ small_string_table ++
+    // overflow_string_table ++ string_storage.
     let mut region: Vec<u8> = Vec::new();
-
     // String kinds (each entry is u32: high bit = kind, low 31 = count).
     for k in &new_kinds {
         let raw_k = match k.kind {
@@ -590,38 +403,11 @@ pub fn add_string(
         };
         region.extend_from_slice(&raw_k.to_le_bytes());
     }
-    while !region.len().is_multiple_of(4) {
-        region.push(0);
-    }
-
-    // Identifier hashes.
     for h in &new_id_hashes {
         region.extend_from_slice(&h.to_le_bytes());
     }
-    while !region.len().is_multiple_of(4) {
-        region.push(0);
-    }
-
-    // Small string table.
-    for e in &new_small {
-        region.extend_from_slice(&e.to_le_bytes());
-    }
-
-    // Overflow string table.
-    for (off, len) in &new_overflow {
-        region.extend_from_slice(&off.to_le_bytes());
-        region.extend_from_slice(&len.to_le_bytes());
-    }
-
-    // String storage.
-    let storage_size = new_storage.len() as u32;
-    let overflow_count = new_overflow.len() as u32;
-    region.extend_from_slice(&new_storage);
-    while !region.len().is_multiple_of(4) {
-        region.push(0);
-    }
-
-    let delta = region.len() as i64 - old_region_len as i64;
+    push_tables_and_storage(&mut region, &layout);
+    let delta = region.len() as i64 - (array_off - kinds_off) as i64;
 
     // ---- Splice: [..kinds_off] + region + [array_off..] ----
     let mut rebuilt = Vec::with_capacity((raw.len() as i64 + delta) as usize);
@@ -632,14 +418,11 @@ pub fn add_string(
     // ---- Update header counts ----
     // string_kind_count at bytes 44..48, identifier_count at 48..52, string_count
     // at 52..56, overflow_string_count at 56..60, string_storage_size at 60..64.
-    let new_string_kind_count = new_kinds.len() as u32;
-    let new_identifier_count = new_id_hashes.len() as u32;
-    let new_string_count = new_id + 1;
-    rebuilt[44..48].copy_from_slice(&new_string_kind_count.to_le_bytes());
-    rebuilt[48..52].copy_from_slice(&new_identifier_count.to_le_bytes());
-    rebuilt[52..56].copy_from_slice(&new_string_count.to_le_bytes());
-    rebuilt[56..60].copy_from_slice(&overflow_count.to_le_bytes());
-    rebuilt[60..64].copy_from_slice(&storage_size.to_le_bytes());
+    rebuilt[44..48].copy_from_slice(&(new_kinds.len() as u32).to_le_bytes());
+    rebuilt[48..52].copy_from_slice(&(new_id_hashes.len() as u32).to_le_bytes());
+    rebuilt[52..56].copy_from_slice(&(new_id + 1).to_le_bytes());
+    rebuilt[56..60].copy_from_slice(&(layout.overflow.len() as u32).to_le_bytes());
+    rebuilt[60..64].copy_from_slice(&(layout.storage.len() as u32).to_le_bytes());
 
     // ---- Shift downstream offsets by delta ----
     relocate(
@@ -652,82 +435,61 @@ pub fn add_string(
         },
     )?;
 
-    // ---- Sync in-memory model ----
-    file.strings.push(StringTableEntry {
-        value: value.to_string(),
-        is_utf16: new_is_utf16,
-        is_identifier,
-    });
-    file.string_kinds = new_kinds;
-    file.identifier_hashes = new_id_hashes;
-    file.header.string_kind_count = new_string_kind_count;
-    file.header.identifier_count = new_identifier_count;
-    file.header.string_count = new_string_count;
-    file.header.overflow_string_count = overflow_count;
-    file.header.string_storage_size = storage_size;
-
-    let out = commit_image(file, rebuilt)?;
+    let out = commit_image_checked(file, rebuilt, |after| validate(after, &strings, &pinned))?;
     Ok((out, new_id))
 }
 
-// Replace the value of string table entry `id`. Same-length edits patch storage
-// in place; length changes rebuild the string tables and relocate the tail.
-// Hermes packs strings so ranges can overlap (`done`/`next` share storage). We
-// refuse in-place same-length patches that would corrupt another entry's range.
+// Replace the value of string table entry `id`. Same-length ASCII edits patch
+// storage in place; anything else rebuilds the string tables and relocates the
+// tail. Hermes packs strings so ranges can overlap (`done` inside `undone`), so
+// an entry sharing any byte with another is never overwritten in place: it is
+// rebuilt instead, which pins it to bytes of its own.
 pub fn patch_string_by_id(
     file: &mut BytecodeFile,
     _format: &BytecodeFormat,
     id: u32,
     new_value: &str,
-    _options: &PatchOptions,
+    options: &PatchOptions,
 ) -> Result<Vec<u8>> {
-    // UTF-16 entries are re-encoded, so they always take the rebuild path.
-    if file
-        .strings
-        .get(id as usize)
-        .map(|s| s.is_utf16)
-        .unwrap_or(false)
-    {
-        return patch_string_resize(file, id, new_value);
+    let packing = options.string_packing();
+    let Some(entry) = file.strings.get(id as usize) else {
+        return Err(Error::Write(format!("string id {id} out of range")));
+    };
+    // A UTF-16 entry, or a value that needs UTF-16, is re-encoded: rebuild.
+    if entry.is_utf16 || !new_value.is_ascii() {
+        return patch_string_resize(file, id, new_value, packing);
     }
     let (abs_off, old_len) = locate_string_bytes(file, id)?;
-    let new_bytes = new_value.as_bytes();
-    if new_bytes.len() != old_len {
-        return patch_string_resize(file, id, new_value);
+    if new_value.len() != old_len {
+        return patch_string_resize(file, id, new_value, packing);
     }
-    // Overlap guard: any other UTF-8 entry whose [start,end) intersects ours.
-    let our_end = abs_off + old_len;
-    for other in 0..file.strings.len() as u32 {
-        if other == id {
-            continue;
-        }
-        if file.strings[other as usize].is_utf16 {
-            continue;
-        }
-        let Ok((o_off, o_len)) = locate_string_bytes(file, other) else {
-            continue;
-        };
-        let o_end = o_off + o_len;
-        let overlaps = abs_off < o_end && o_off < our_end;
-        if overlaps {
-            // Storage is shared with another entry, so an in place overwrite
-            // would corrupt it. Rebuild the string table unpacked instead, which
-            // gives this entry its own storage.
-            return patch_string_resize(file, id, new_value);
-        }
+    // Overlap guard: any other entry whose bytes intersect ours, read from the
+    // tables in one pass.
+    let storage_off = section_offset(file, "string_storage")
+        .ok_or_else(|| Error::Write("string_storage section missing".into()))?
+        as usize;
+    let locs = read_all_string_locs(file)?;
+    let shared = locs.iter().enumerate().any(|(other, loc)| {
+        let start = storage_off + loc.storage_off as usize;
+        let end = start + loc.len_field as usize * if loc.is_utf16 { 2 } else { 1 };
+        other != id as usize && start < end && abs_off < end && start < abs_off + old_len
+    });
+    if shared {
+        return patch_string_resize(file, id, new_value, packing);
     }
+
+    let mut expected = current_strings(file)?;
+    expected[id as usize] = StoredString::encode(new_value);
     let mut raw = file
         .raw_bytes
         .clone()
         .ok_or_else(|| Error::Write("no raw_bytes".into()))?;
-    raw[abs_off..abs_off + old_len].copy_from_slice(new_bytes);
+    raw[abs_off..abs_off + old_len].copy_from_slice(new_value.as_bytes());
     // An identifier's precomputed hash tracks its text, so refresh it here too.
     update_identifier_hash(file, &mut raw, id, new_value)?;
-    if let Some(s) = file.strings.get_mut(id as usize) {
-        s.value = new_value.to_string();
-    }
-    let out = commit_image(file, raw)?;
-    Ok(out)
+    commit_image_checked(file, raw, |after| {
+        validate(after, &expected, &BTreeSet::new())
+    })
 }
 
 // Replace the first string table entry whose value equals `old` with `new`.
@@ -1373,5 +1135,58 @@ mod tests {
             err.to_string().contains("not found"),
             "error should say the value was not found, got: {err}"
         );
+    }
+
+    fn plain() -> BytecodeFile {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/plain.v96.hbc");
+        BytecodeFile::parse_auto(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    fn id_of(file: &BytecodeFile, value: &str) -> u32 {
+        file.strings.iter().position(|s| s.value == value).unwrap() as u32
+    }
+
+    // hermesc -O overlapped `alpha` with `global` ("...globalpha..."), so the
+    // first same-length patch must rebuild rather than overwrite `global`'s
+    // tail. That rebuild pins `alpha` to bytes of its own, so the *next*
+    // same-length patch is in place -- which is what the pin set is for: without
+    // it, a packed rebuild could re-share the entry and every later patch would
+    // bounce back to a full rebuild.
+    #[test]
+    fn a_rebuilt_entry_is_pinned_so_the_next_patch_is_in_place() {
+        let mut file = plain();
+        let format = BytecodeFormat::for_version(file.header.version).unwrap();
+        let id = id_of(&file, "alpha");
+        let opts = PatchOptions::default();
+
+        let first = patch_string_by_id(&mut file, &format, id, "omega", &opts).unwrap();
+        assert_eq!(file.strings[id as usize].value, "omega");
+        assert!(
+            file.strings.iter().any(|s| s.value == "global"),
+            "global survived"
+        );
+
+        let second = patch_string_by_id(&mut file, &format, id, "sigma", &opts).unwrap();
+        assert_eq!(file.strings[id as usize].value, "sigma");
+        assert_eq!(first.len(), second.len());
+        let changed = first.iter().zip(&second).filter(|(a, b)| a != b).count();
+        assert!(
+            changed <= 5 + 20,
+            "{changed} bytes changed: the second patch rebuilt instead of writing in place"
+        );
+    }
+
+    // Same byte length is not same storage: `bé` is 3 UTF-8 bytes like `bob`,
+    // but Hermes stores it as 2 UTF-16 code units. `bob` owns its bytes, so this
+    // used to take the in-place path and write UTF-8 into an ASCII entry.
+    #[test]
+    fn a_non_ascii_value_of_the_same_byte_length_is_re_encoded() {
+        let mut file = plain();
+        let format = BytecodeFormat::for_version(file.header.version).unwrap();
+        let id = id_of(&file, "bob");
+        assert_eq!("bé".len(), "bob".len());
+        patch_string_by_id(&mut file, &format, id, "bé", &PatchOptions::default()).unwrap();
+        assert_eq!(file.strings[id as usize].value, "bé");
+        assert!(file.strings[id as usize].is_utf16);
     }
 }

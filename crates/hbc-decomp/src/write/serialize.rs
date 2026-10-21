@@ -112,14 +112,27 @@ pub fn finalize_raw_image(mut buf: Vec<u8>) -> Result<Vec<u8>> {
 // measurable on the fixtures. Callers were already told to pay it (I2) -- this
 // just stops them having to remember.
 pub fn commit_image(file: &mut BytecodeFile, buf: Vec<u8>) -> Result<Vec<u8>> {
+    commit_image_checked(file, buf, |_| Ok(()))
+}
+
+// `commit_image`, plus an op-specific check of the reparsed image. `file` is
+// replaced only when the image reparses *and* passes `check`, so a refused write
+// leaves the caller's file as it was.
+pub fn commit_image_checked(
+    file: &mut BytecodeFile,
+    buf: Vec<u8>,
+    check: impl FnOnce(&BytecodeFile) -> Result<()>,
+) -> Result<Vec<u8>> {
     let out = finalize_raw_image(buf)?;
     // Note this also promotes "the finalized image reparses" from something the
     // individual op tests assert to something every write op checks, always.
     let refreshed = BytecodeFile::parse_auto(&out).map_err(|e| {
         Error::Write(format!(
-            "write produced an image that does not reparse: {e}. The edit reached              finalization, so this is a malformed layout rather than a rejected input."
+            "write produced an image that does not reparse: {e}. The edit reached \
+             finalization, so this is a malformed layout rather than a rejected input."
         ))
     })?;
+    check(&refreshed)?;
     *file = refreshed;
     Ok(out)
 }
