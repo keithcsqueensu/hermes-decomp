@@ -268,6 +268,16 @@ harness counts a top-level declaration anywhere in the file as covering a refere
 module. The module-level `let React` was `SessionDetails`' own slot, which it now declares
 itself, and the 14 references are in another module where `React` was never bound.
 
+Discord 350.8 (v98): I3 `Undeclared` 5,517 → 337, undeclared references 50,514 → 49,673. Its
+`worse:` lists 7 names (`collapsed`, `parentId`, `adContentId`, `force_survey_id`, `c42`,
+`_false`, `onConfirmActivityLaunchChecksAlertOpen`). Every one has an I1 violation in both
+versions: a body reads a slot under a name its owner does not use. In K4.3 each of those
+reads resolved to an unrelated module-level `let` of the same spelling, the catch-all for
+another function's undeclared write (F91991 reads slot 34861:1 as `collapsed`, while the owner
+calls it `closure_1` and the module `let collapsed` belonged to an unrelated
+`collapsed = tmp4[0]`). That function now declares its own variable, so the read is
+unbound instead of reading the wrong variable. Giving the slot one name is K4.6.
+
 Round trip: `capture_vs_local` added (a capture beside a same-named local, I2), recorded as
 a known failure on v96 for K4.7. K4.4a's own shape did not reproduce in a small snippet: on
 the bundles it comes from the late per-body renamers (K4.6b).
