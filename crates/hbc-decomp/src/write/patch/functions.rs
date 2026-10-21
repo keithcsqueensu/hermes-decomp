@@ -59,11 +59,10 @@ pub fn patch_function_body(
         // debug-built bundles, which is where it should.
         // `debug_info_offset == 0` means the file carries no debug section at all, so
         // there is nothing for the edit to invalidate and refusing would be theatre.
-        // That case is not hypothetical: `create` emits no debug info but sets flags
-        // `0x12` on its legacy global function, which includes FLAG_HAS_DEBUG_INFO --
-        // the image claims debug info it does not have (the modern path emits `0x22`
-        // and does not claim it). Keying on both means the guard follows the data
-        // rather than a flag that can be wrong.
+        // That case was not hypothetical: `create` used to set flags `0x12` on its
+        // legacy global function, which includes FLAG_HAS_DEBUG_INFO -- an image
+        // claiming debug info it does not have. It no longer does, but a flag can be
+        // wrong in any file, so the guard follows the data rather than the flag.
         if !options.allow_stale_debug_info && file.header.debug_info_offset != 0 {
             if let Some(fh) = file.function_headers.get(function_id as usize) {
                 if fh.flags() & crate::format::FLAG_HAS_DEBUG_INFO != 0 {
