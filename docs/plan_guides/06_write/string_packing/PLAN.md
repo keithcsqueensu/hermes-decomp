@@ -141,7 +141,8 @@ turns the overlap guard from "usually true after a rebuild" into "never true for
 
 ## Plan
 
-**Status: P0 and P1 shipped** (`write/patch/string_storage.rs`); P2–P4 open. Before them, at
+**Status: P0, P1 and P2 shipped** (`write/patch/string_storage.rs`); P3 and P4 open. P2's
+section records how it was built and measured; the P1 notes below are kept as they were. Before them, at
 `81c4e2a`, rebuilt storage was emitted unpacked and nothing checked the finished blob's entries
 against the intended text (`commit_image` reparsed the image but compared nothing).
 
@@ -207,7 +208,28 @@ separately.
 P0's validator passes; every pinned id has a byte range intersecting no other entry; the
 reparsed file's string table is value-identical to the input's.
 
-### P2 — Substring containment
+### P2 — Substring containment — ✅ **shipped**
+
+**As shipped.** Not the automaton: an Aho-Corasick automaton over the ~63,000 distinct strings
+of the CoachRx bundle had not finished *building* after two minutes, before any scanning. What
+shipped is a suffix array (SA-IS, linear; checked against a naive sort on 3,000 random texts)
+over all distinct strings joined with a separator, on bytes for ASCII and on code units for
+UTF-16, so every occurrence it can find is unit-aligned. A string occurs inside another exactly
+when a suffix *adjacent* to its own in the array also starts with it, so each string costs two
+comparisons of its own length; the occurrence cannot cross a separator, so it lies inside one
+other string, which is strictly longer (exact duplicates are merged first) and the parent
+chains cannot cycle. No trigram prune is needed. Suffix merging is containment at the tail,
+so P1's sort is gone; the pin set is unchanged. **[measured]**:
+
+```
+                  hermesc    unpacked rebuild      P1 (suffix)      P2 (containment)
+Equinox 11.43.0   4,268,968  4,706,190 (+437,222)  4,604,500 (23%)  4,383,862 (322,328, 74%)
+CoachRx 2.1.223   2,423,416  2,728,604 (+305,188)  2,662,404 (22%)  2,511,506 (217,098, 71%)
+```
+
+That beats the P2 target below (it predicted ~310 KB for P1 + P2 on 11.39.0). A whole
+`patch-string` on the 17 MB bundle now takes 0.56 s and grows it by 114,880 bytes, against
+0.15 s and 437,204 bytes unpacked.
 
 **Goal.** The largest single component, ~210 KB.
 

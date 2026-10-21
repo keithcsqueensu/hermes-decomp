@@ -324,7 +324,7 @@ fn appending_a_string_shifts_every_function_offset_uniformly() {
     );
 }
 
-// string_packing/PLAN.md P1 at full scale: a rebuild that packs suffixes must
+// string_packing/PLAN.md P1 + P2 at full scale: a rebuild that packs must
 // recover a real share of what the unpacked rebuild costs against hermesc's own
 // (fully optimised) layout, and every entry must still read back as before --
 // which `add_string` checks on every write (P0), so success here is that check
@@ -363,12 +363,13 @@ fn a_packed_rebuild_recovers_storage_the_unpacked_one_spends() {
         packed < unpacked,
         "packing saved nothing: the sort is backwards"
     );
-    // Suffix merge is about a quarter of what hermesc's three-stage packer
-    // finds (plan: ~100 KB of ~431 KB on 11.39.0). Well under that means the
-    // merge is missing containers it should find.
+    // Containment (P1 + P2) finds about three quarters of what hermesc's
+    // three-stage packer does: 74% on Equinox 11.43.0, 71% on CoachRx 2.1.223.
+    // The rest is overlap chaining (P3). Well under that means containers are
+    // being missed; suffixes alone reach only ~23%.
     assert!(
-        recovered * 5 >= cost,
-        "packing recovered {recovered} of {cost}; expected at least a fifth"
+        recovered * 10 >= cost * 6,
+        "packing recovered {recovered} of {cost}; expected at least 60%"
     );
 }
 

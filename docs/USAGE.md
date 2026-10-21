@@ -185,12 +185,13 @@ never written in place (that would change the other string too), so it takes the
 rebuild instead.
 
 **String table rebuilds.** `patch-string` (when not in place) and `add-string`
-rebuild the whole string storage. The rebuild shares storage between a string and
-any string it is a suffix of, and gives the entry being written bytes of its own,
-so a later same-length patch of it is in place. `hermesc -O` shares more than that
-(substrings anywhere, and overlaps), so a rebuilt bundle is still somewhat larger:
-on Equinox 11.43.0 a rebuild grows the file by ~335 KB, where giving every string
-its own storage (`--unpacked-strings`) costs ~437 KB. Either way, every entry is
+rebuild the whole string storage. A string that occurs anywhere inside another is
+stored at that occurrence instead of being written again, and the entry being
+written gets bytes of its own, so a later same-length patch of it is in place.
+`hermesc -O` also overlaps the tail of one string with the head of the next, so a
+rebuilt bundle is still a little larger: on Equinox 11.43.0 a rebuild grows the
+file by ~115 KB (0.6 s), where giving every string its own storage
+(`--unpacked-strings`) costs ~437 KB. Either way, every entry is
 read back and compared with its intended text before the file is written; a
 mismatch is an error, not a corrupt bundle.
 

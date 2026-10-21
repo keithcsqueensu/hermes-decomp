@@ -112,7 +112,7 @@ missing VM into a failure rather than a skip (R21). `n/a` means the command prod
 |---|---|---|---|---|---|
 | `add-string` | Yes | Yes (v98) | ✅ ran | ✅ | full modern branch (`strings.rs:541`) |
 | `patch-string` same-length | Layout-agnostic | Yes (v96) | ✅ ran | ✅ | in-place; `locate_string_bytes` via sections |
-| `patch-string` resize | Yes | Yes (v96 grow) | ✅ grow **+ shrink** | ✅ | modern debug-off=108 confirmed **[source]**; shrink was a listed gap, now measured; suffix-packed with the entry pinned, every entry validated (string_packing P0/P1) |
+| `patch-string` resize | Yes | Yes (v96 grow) | ✅ grow **+ shrink** | ✅ | modern debug-off=108 confirmed **[source]**; shrink was a listed gap, now measured; containment-packed with the entry pinned, every entry validated (string_packing P0–P2) |
 | `patch-string` ASCII→UTF-16 | Yes | Yes (v96) | ✅ ran (`élan`) | ✅ | I7 forced-resize path, measured on modern |
 | `patch-string --old` (replace) | Yes | Yes (v96) | ✅ ran | ✅ | by-value lookup tested (`strings.rs:857`) |
 | `retarget-string` | Layout-agnostic | Yes (v96) | ✅ ran | ✅ | small table + id hash only; refuses overflow |
@@ -201,11 +201,11 @@ harness gate.
   big enough — need no new code; the third (append) is an 8-byte table entry plus the same
   downstream shift `add_string` already performs, and should be taken as the occasion to stop
   copying that shift (R26). Transplant-and-run is measured on a real v96 engine.
-- **String packing** → `string_packing/PLAN.md`. **P0 + P1 shipped**: every string write is
-  validated entry by entry before it is committed, and rebuilds share suffix storage with the
-  written entry pinned (~102 KB of the ~437 KB the unpacked rebuild cost on 11.43.0). P2
-  (substring containment, ~210 KB) and P3 (overlap chaining) remain, to be decided on the
-  re-measured number.
+- **String packing** → `string_packing/PLAN.md`. **P0–P2 shipped**: every string write is
+  validated entry by entry before it is committed, and rebuilds store any string contained in
+  another at that occurrence, with the written entry pinned: 322 KB of the 437 KB the
+  unpacked rebuild cost on 11.43.0. Only P3 (overlap chaining, the remaining ~115 KB) is
+  open, and the plan already says not to build it without a reason.
 - **Encoding an overflow string entry** → R2. Detection is verified against 1,449 real entries;
   *writing* one is still unimplemented, and `create` refuses it.
 - **CLI argument-resolution coverage** → R17, relocated to `../07_frontends/RISKS.md` § CLI
@@ -350,9 +350,10 @@ definition's `expected_ty`, and `write_operand` range-checks every narrowing —
 Intentional constraints. Do not "fix" these without a deliberate decision — several are
 load-bearing for keeping the crate pure-Rust or the edits surgical.
 
-- **Rebuilt string storage is only suffix-packed.** Since P1 a rebuild shares storage between
-  a string and any string it is a suffix of (`patch/string_storage.rs`), but not substrings at
-  other offsets or overlaps, so patched files are still larger than `hermesc -O` output. The
+- **Rebuilt string storage is packed by containment, not overlap.** Since P2 a rebuild stores
+  any string that occurs inside another at that occurrence (`patch/string_storage.rs`), but
+  does not chain one string's tail into the next one's head, so patched files are still ~115 KB
+  larger than `hermesc -O` output on 11.43.0. The
   entry being written is pinned to private bytes, which is what keeps same-length patches of
   it in place. `PatchOptions::unpacked_strings` / `--unpacked-strings` emit the old fully
   unpacked layout. Before P1: Measured on the 11.39.0 bundle: **+431,479 B, 10.2% of
