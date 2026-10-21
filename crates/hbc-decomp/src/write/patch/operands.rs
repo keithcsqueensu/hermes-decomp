@@ -7,7 +7,7 @@ use crate::file::BytecodeFile;
 use crate::io::ByteReader;
 use crate::opcode::{BytecodeFormat, Operand, OperandType};
 
-use crate::write::serialize::commit_image;
+use crate::write::serialize::{commit_image, HeaderEdit};
 
 use super::PatchOptions;
 
@@ -253,7 +253,7 @@ pub fn patch_string_operand(
         None
     };
 
-    let out = commit_image(file, out)?;
+    let out = commit_image(file, out, HeaderEdit::default())?;
     Ok((out, status, warning))
 }
 

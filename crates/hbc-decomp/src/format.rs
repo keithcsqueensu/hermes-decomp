@@ -327,7 +327,7 @@ pub enum FunctionHeaderLayout {
     Modern12,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BytecodeHeader {
     pub magic: u64,
     pub version: u32,
