@@ -327,7 +327,16 @@ Three causes, one under the other:
 | `closure_L_S` | 7,796 | 374 |
 | `closure_N$K` (disambiguated) | — | 4,678 |
 | bare `let closure_…;` declarations | 1,940 | 1,091 |
+| undeclared identifier references ¹ | 7,157 | 3,124 |
+| — of which placeholders | 4,244 | 220 |
 | output | 42,408,553 B / 981,719 lines | 42,458,760 B / 981,444 lines |
+
+¹ References no scope declares, per module (`eslint-scope` over `acorn`, split at
+`// === Module` markers, names on node's `globalThis` excluded). Only modules that parse as ES
+modules are counted: 1,653 do not, in both outputs alike, covering ~374k of ~981k lines. This
+is not the counter behind upstream's v0.2.3 figures (331,732 → 85,079), and the two are not
+comparable. W10's old comment recorded that keying on the bake record had once *raised*
+undeclared names (127,349 → 130,029); with the levels exact and names allocated, it lowers them.
 
 The 4,678 `$` names are each a variable that previously shared its name with an ancestor's.
 React Native's `genMethod` is the visible case: before, its promise wrapper called
