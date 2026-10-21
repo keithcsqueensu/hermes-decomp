@@ -77,6 +77,42 @@ fn slice_from(storage: &[u8], offset: u32, length: u32) -> &[u8] {
 }
 
 // Dump a structural table to a human-readable, labeled string.
+// For each RegExp table entry, the pattern and flags strings of the first
+// `CreateRegExp` that uses it -- the `/.../` the entry was compiled from.
+fn regexp_sources(file: &BytecodeFile) -> Vec<Option<(String, String)>> {
+    let mut out = vec![None; file.reg_exp_table.len()];
+    let Ok(format) = BytecodeFormat::for_version(file.header.version) else {
+        return out;
+    };
+    let string = |v: Option<u32>| {
+        v.and_then(|id| file.strings.get(id as usize))
+            .map(|s| s.value.clone())
+    };
+    for id in 0..file.function_headers.len() as u32 {
+        let Ok(insns) = file.decode_function_instructions(&format, id) else {
+            continue;
+        };
+        for insn in insns {
+            let name = format
+                .definitions
+                .get(insn.opcode as usize)
+                .map(|d| d.name.as_str());
+            if name != Some("CreateRegExp") {
+                continue;
+            }
+            let op = |i: usize| insn.operands.get(i).and_then(|o| o.value.as_u32());
+            if let Some(slot) = op(3).and_then(|i| out.get_mut(i as usize)) {
+                if slot.is_none() {
+                    if let (Some(p), Some(f)) = (string(op(1)), string(op(2))) {
+                        *slot = Some((p, f));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn dump_table(file: &BytecodeFile, kind: TableKind) -> String {
     let mut out = String::new();
     match kind {
@@ -114,6 +150,7 @@ pub fn dump_table(file: &BytecodeFile, kind: TableKind) -> String {
                 file.reg_exp_storage.len()
             ));
             out.push_str("----------------------------------------\n");
+            let sources = regexp_sources(file);
             for (i, entry) in file.reg_exp_table.iter().enumerate() {
                 let bytes = slice_from(&file.reg_exp_storage, entry.offset, entry.length);
                 out.push_str(&format!(
@@ -122,6 +159,25 @@ pub fn dump_table(file: &BytecodeFile, kind: TableKind) -> String {
                     entry.length,
                     hex_preview(bytes, 16)
                 ));
+                if let Some((pattern, flags)) = &sources[i] {
+                    out.push_str(&format!("    /{pattern}/{flags}\n"));
+                }
+                match crate::regex::decode_regex(bytes) {
+                    Ok(prog) => {
+                        let h = prog.header;
+                        out.push_str(&format!(
+                            "    groups={} loops={} flags={:?} constraints={:#x}\n",
+                            h.marked_count,
+                            h.loop_count,
+                            crate::regex::flags_text(h.syntax_flags),
+                            h.constraints
+                        ));
+                        for line in prog.listing().lines() {
+                            out.push_str(&format!("    {line}\n"));
+                        }
+                    }
+                    Err(e) => out.push_str(&format!("    (does not decode: {e})\n")),
+                }
             }
         }
         TableKind::ObjShapes => {
@@ -260,21 +316,40 @@ pub fn dump_table_json(file: &BytecodeFile, kind: TableKind) -> Value {
                     .collect(),
             )
         }
-        TableKind::RegExp => Value::Array(
-            file.reg_exp_table
-                .iter()
-                .enumerate()
-                .map(|(i, e)| {
-                    let bytes = slice_from(&file.reg_exp_storage, e.offset, e.length);
-                    json!({
-                        "index": i,
-                        "offset": e.offset,
-                        "length": e.length,
-                        "bytecode_hex": bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        TableKind::RegExp => {
+            let sources = regexp_sources(file);
+            Value::Array(
+                file.reg_exp_table
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        let bytes = slice_from(&file.reg_exp_storage, e.offset, e.length);
+                        let mut v = json!({
+                            "index": i,
+                            "offset": e.offset,
+                            "length": e.length,
+                            "bytecode_hex": bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                        });
+                        if let Some((pattern, flags)) = &sources[i] {
+                            v["pattern"] = json!(pattern);
+                            v["flags"] = json!(flags);
+                        }
+                        match crate::regex::decode_regex(bytes) {
+                            Ok(prog) => {
+                                let h = prog.header;
+                                v["capture_groups"] = json!(h.marked_count);
+                                v["loops"] = json!(h.loop_count);
+                                v["syntax_flags"] = json!(crate::regex::flags_text(h.syntax_flags));
+                                v["constraints"] = json!(h.constraints);
+                                v["listing"] = json!(prog.listing().lines().collect::<Vec<_>>());
+                            }
+                            Err(err) => v["decode_error"] = json!(err.to_string()),
+                        }
+                        v
                     })
-                })
-                .collect(),
-        ),
+                    .collect(),
+            )
+        }
         TableKind::ObjShapes => Value::Array(
             file.obj_shape_table
                 .iter()

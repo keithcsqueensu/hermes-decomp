@@ -83,6 +83,7 @@ pub mod io;
 pub mod modern_layout;
 pub mod opcode;
 pub mod pipeline;
+pub mod regex;
 pub mod util;
 
 pub mod analysis;

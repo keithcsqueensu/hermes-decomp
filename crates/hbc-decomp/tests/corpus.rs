@@ -995,3 +995,32 @@ fn disassembly_matches_hbcdump() {
         "  {compared} of {n} functions match hbcdump instruction for instruction          ({unalignable} skipped: hbcdump split a string literal across lines)"
     );
 }
+
+// unmodeled_regions/PLAN.md P3: every RegExp in a production bundle decodes,
+// every byte of each entry belongs to an instruction, and each program holds to
+// its own header -- jumps on instruction boundaries, capture groups within
+// markedCount, loop ids within loopCount, ending in Goal. Truncation alone is a
+// weak signal; these together are what says the format model is right.
+#[test]
+fn every_regexp_in_the_bundle_decodes_and_checks() {
+    let (bytes, _) = corpus_or_skip!();
+    let file = BytecodeFile::parse_auto(&bytes).expect("corpus parses");
+    let mut opcodes = BTreeSet::new();
+    for (i, e) in file.reg_exp_table.iter().enumerate() {
+        let entry = &file.reg_exp_storage[e.offset as usize..(e.offset + e.length) as usize];
+        let prog = hbc_decomp::regex::decode_regex(entry)
+            .unwrap_or_else(|err| panic!("regexp {i}: {err}"));
+        prog.check()
+            .unwrap_or_else(|err| panic!("regexp {i}: {err}\n{}", prog.listing()));
+        for (_, insn) in &prog.insns {
+            let name = format!("{insn:?}");
+            opcodes.insert(name.split(['(', ' ', '{']).next().unwrap().to_string());
+        }
+    }
+    println!(
+        "  {} regexps decoded and checked; {} distinct opcodes: {}",
+        file.reg_exp_table.len(),
+        opcodes.len(),
+        opcodes.into_iter().collect::<Vec<_>>().join(" ")
+    );
+}
