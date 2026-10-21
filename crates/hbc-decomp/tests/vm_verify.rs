@@ -418,6 +418,82 @@ fn string_write_ops_preserve_program_behaviour() {
     }
 }
 
+/// R2 -- overflow records the write path writes are the ones the engine reads.
+/// A 300-character value cannot fit a small entry's 8-bit length, so the
+/// rebuild gives it an overflow record, and the program has to print it whole.
+#[test]
+fn an_overflowed_string_written_by_a_rebuild_runs() {
+    let long = "Z".repeat(300);
+    for version in FIXTURE_VERSIONS {
+        let mut file = BytecodeFile::parse_auto(&fixture("plain", version)).unwrap();
+        let format = format_for(&file);
+        let out = patch_string_replace(&mut file, &format, "alpha", &long, &Default::default())
+            .expect("grow to an overflowed entry");
+        assert!(
+            file.header.overflow_string_count >= 1,
+            "v{version}: no overflow record"
+        );
+        assert_runs(
+            version,
+            &out,
+            &format!("hi bob {long}\n10"),
+            &format!("str-overflow-v{version}"),
+        );
+    }
+}
+
+/// R2 -- `create` used to refuse a string needing an overflow record and wrote
+/// non-ASCII text as UTF-8 into an ASCII entry. String 0 names the created
+/// global, so a stub that throws makes the engine print that name in its stack
+/// trace: the name coming back whole proves the engine read the overflow record
+/// and the UTF-16 entry `create` wrote. (`create` emits no identifiers, so the
+/// log stub's property lookup throws -- which is what makes the name visible.
+/// v96 is not run with the stub: `inject-stub` on a created v96 image fails to
+/// load, before this change too; the created v96 images run clean.)
+#[test]
+fn create_writes_overflowed_and_utf16_strings_the_engine_reads() {
+    let long = "L".repeat(300);
+    for name in [long.as_str(), "héllo wörld"] {
+        for version in FIXTURE_VERSIONS {
+            let image = create_minimal(&CreateOptions {
+                version,
+                strings: vec![name.to_string(), "print".to_string()],
+                ..Default::default()
+            })
+            .unwrap_or_else(|e| panic!("create v{version}: {e}"));
+            let parsed = BytecodeFile::parse_auto(&image).expect("created image reparses");
+            assert_eq!(parsed.strings[0].value, name, "v{version}");
+            assert_eq!(parsed.strings[0].is_utf16, !name.is_ascii(), "v{version}");
+            if version == 96 {
+                assert_runs(version, &image, "", &format!("create-strings-v{version}"));
+                continue;
+            }
+            let mut file = parsed;
+            let format = format_for(&file);
+            let stubbed = inject_stub(
+                &mut file,
+                &format,
+                0,
+                InjectStubKind::LogEntry,
+                &Default::default(),
+            )
+            .expect("inject log stub");
+            let Some(vm) = vm_for(version) else {
+                common::skip_or_fail(Oracle::Vm, Some(version), "no VM for create-strings");
+                continue;
+            };
+            let run = run_on_vm(&vm, &stubbed, &format!("create-strings-v{version}"));
+            assert!(
+                run.stderr.contains(&format!("at {name} ("))
+                    || run.stdout.contains(&format!("at {name} (")),
+                "v{version}: the engine did not name the global {name:?}\nstdout: {}\nstderr: {}",
+                run.stdout,
+                run.stderr
+            );
+        }
+    }
+}
+
 fn bytes_string_count(bytes: &[u8]) -> u32 {
     BytecodeFile::parse_auto(bytes).unwrap().header.string_count
 }

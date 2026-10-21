@@ -11,7 +11,7 @@ pub mod functions;
 pub mod inject;
 pub mod operands;
 pub mod regexp;
-mod string_storage;
+pub(crate) mod string_storage;
 pub mod strings;
 
 pub use functions::{patch_function_body, patch_function_bytes};

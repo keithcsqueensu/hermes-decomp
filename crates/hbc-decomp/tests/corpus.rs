@@ -129,11 +129,18 @@ fn overflow_entries_are_found_by_the_length_sentinel() {
     println!("  corpus: {overflowed} overflowed entries, {utf16} UTF-16 entries");
 }
 
-/// `retarget_string` documents that it refuses overflowed entries (v1 scope).
-/// Assert that against real ones, and that it does *not* refuse ordinary entries —
-/// a refusal that fires on everything would satisfy the first half alone.
+/// R2: retarget copies the small entry, and an overflowed one carries the index
+/// of its overflow record, so retargeting to and from real overflowed entries
+/// works (it was refused until the readers indexed records the way the engine
+/// does). Each write is checked entry by entry before it is returned (P0); here
+/// the moved values are checked too.
+///
+/// Reading a record by the entry's index rather than by counting overflowed
+/// entries in table order changes nothing on a file whose records are numbered
+/// in table order -- which is how hermesc writes them, asserted here -- and is
+/// the only correct reading once an entry is retargeted.
 #[test]
-fn retarget_refuses_overflowed_entries_and_accepts_normal_ones() {
+fn retarget_works_to_and_from_overflowed_entries() {
     let (bytes, _) = corpus_or_skip!();
     let file = BytecodeFile::parse_auto(&bytes).expect("corpus parses");
     let format = BytecodeFormat::for_version(file.header.version).expect("opcode table");
@@ -144,6 +151,11 @@ fn retarget_refuses_overflowed_entries_and_accepts_normal_ones() {
     for i in 0..(size / 4) {
         let raw = u32::from_le_bytes(bytes[off + i * 4..off + i * 4 + 4].try_into().unwrap());
         if (raw >> 24) & 0xff == 0xff {
+            assert_eq!(
+                (raw >> 1) & 0x7f_ffff,
+                overflowed_ids.len() as u32,
+                "string {i}: hermesc numbers overflow records in table order"
+            );
             overflowed_ids.push(i as u32);
         } else {
             normal_ids.push(i as u32);
@@ -154,22 +166,25 @@ fn retarget_refuses_overflowed_entries_and_accepts_normal_ones() {
         "corpus has no overflowed entries"
     );
 
-    // A handful of each is enough; every op now re-derives the model, so these are
+    // A handful of each is enough; every op re-derives the model, so these are
     // full write cycles rather than cheap probes.
-    let target = normal_ids[0];
+    let normal = normal_ids[0];
     for &id in overflowed_ids.iter().take(5) {
         let mut f = BytecodeFile::parse_auto(&bytes).unwrap();
-        let err = retarget_string(&mut f, &format, id, target, &PatchOptions::default())
-            .expect_err("retarget must refuse an overflowed source entry");
-        assert!(
-            err.to_string().contains("overflow"),
-            "string {id} is overflowed; the refusal should say so, got: {err}"
+        retarget_string(&mut f, &format, id, normal, &PatchOptions::default())
+            .unwrap_or_else(|e| panic!("retarget from overflowed {id}: {e}"));
+        assert_eq!(
+            f.strings[id as usize].value,
+            file.strings[normal as usize].value
         );
-    }
-    for &id in normal_ids.iter().skip(1).take(5) {
+
         let mut f = BytecodeFile::parse_auto(&bytes).unwrap();
-        retarget_string(&mut f, &format, id, target, &PatchOptions::default())
-            .unwrap_or_else(|e| panic!("string {id} is not overflowed but was refused: {e}"));
+        retarget_string(&mut f, &format, normal, id, &PatchOptions::default())
+            .unwrap_or_else(|e| panic!("retarget to overflowed {id}: {e}"));
+        assert_eq!(
+            f.strings[normal as usize].value,
+            file.strings[id as usize].value
+        );
     }
 }
 

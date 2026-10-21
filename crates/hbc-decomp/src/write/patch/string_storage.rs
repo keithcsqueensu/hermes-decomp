@@ -18,12 +18,13 @@ use std::collections::BTreeSet;
 
 use crate::error::{Error, Result};
 use crate::file::BytecodeFile;
+use crate::format::SmallStringEntry;
 use crate::write::serialize::section_offset;
 
 /// One string as it is stored: its bytes, the table's length field (characters
 /// for ASCII, code units for UTF-16) and its encoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct StoredString {
+pub(crate) struct StoredString {
     pub bytes: Vec<u8>,
     pub len_field: u32,
     pub is_utf16: bool,
@@ -57,15 +58,9 @@ pub(super) struct StrLoc {
     pub is_utf16: bool,
 }
 
-const UTF16: u32 = 0x1;
-const OFF_SHIFT: u32 = 1;
-const OFF_MASK: u32 = 0x7f_ffff;
-const LEN_SHIFT: u32 = 24;
-const LEN_MASK: u32 = 0xff;
-const LEN_OVERFLOW: u32 = 0xff;
-const OFF_OVERFLOW: u32 = 0x800000;
-
 // Read the storage offset + length field of every string from the raw tables.
+// An overflowed entry names its record by index (`SmallStringEntry`), as the
+// engine reads it, so records may be shared or out of table order.
 pub(super) fn read_all_string_locs(file: &BytecodeFile) -> Result<Vec<StrLoc>> {
     let raw = file
         .raw_bytes
@@ -74,40 +69,41 @@ pub(super) fn read_all_string_locs(file: &BytecodeFile) -> Result<Vec<StrLoc>> {
     let small_off = section_offset(file, "small_string_table")
         .ok_or_else(|| Error::Write("small_string_table section missing".into()))?
         as usize;
-    let overflow_off = section_offset(file, "overflow_string_table").map(|o| o as usize);
+    let u32_at = |pos: usize| {
+        raw.get(pos..pos + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let records = file.header.overflow_string_count as usize;
+    let overflow: Vec<(u32, u32)> = match section_offset(file, "overflow_string_table") {
+        Some(base) => (0..records)
+            .map(|i| {
+                let at = base as usize + i * 8;
+                u32_at(at).zip(u32_at(at + 4))
+            })
+            .collect::<Option<_>>()
+            .ok_or_else(|| Error::Write("overflow string table OOB".into()))?,
+        None if records == 0 => Vec::new(),
+        None => return Err(Error::Write("overflow string table missing".into())),
+    };
 
-    let mut out = Vec::with_capacity(file.strings.len());
-    let mut overflow_index = 0usize;
-    for i in 0..file.strings.len() {
-        let slot = small_off + i * 4;
-        if slot + 4 > raw.len() {
-            return Err(Error::Write("small string table OOB".into()));
-        }
-        let raw_e = u32::from_le_bytes(raw[slot..slot + 4].try_into().unwrap());
-        let is_utf16 = (raw_e & UTF16) != 0;
-        let offset = (raw_e >> OFF_SHIFT) & OFF_MASK;
-        let length = (raw_e >> LEN_SHIFT) & LEN_MASK;
-        let (off, len) = if length == LEN_OVERFLOW || offset == OFF_OVERFLOW {
-            let ov_base =
-                overflow_off.ok_or_else(|| Error::Write("overflow string table missing".into()))?;
-            let ov_slot = ov_base + overflow_index * 8;
-            if ov_slot + 8 > raw.len() {
-                return Err(Error::Write("overflow string table OOB".into()));
-            }
-            let o = u32::from_le_bytes(raw[ov_slot..ov_slot + 4].try_into().unwrap());
-            let l = u32::from_le_bytes(raw[ov_slot + 4..ov_slot + 8].try_into().unwrap());
-            overflow_index += 1;
-            (o, l)
-        } else {
-            (offset, length)
-        };
-        out.push(StrLoc {
-            storage_off: off,
-            len_field: len,
-            is_utf16,
-        });
-    }
-    Ok(out)
+    (0..file.strings.len())
+        .map(|i| {
+            let raw_e = u32_at(small_off + i * 4)
+                .ok_or_else(|| Error::Write("small string table OOB".into()))?;
+            let entry = SmallStringEntry::decode(raw_e);
+            let (storage_off, len_field) = entry.resolve(&overflow).ok_or_else(|| {
+                Error::Write(format!(
+                    "string {i}: overflow record {} missing",
+                    entry.offset
+                ))
+            })?;
+            Ok(StrLoc {
+                storage_off,
+                len_field,
+                is_utf16: entry.is_utf16,
+            })
+        })
+        .collect()
 }
 
 fn byte_len(loc: &StrLoc) -> usize {
@@ -141,20 +137,20 @@ pub(super) fn current_strings(file: &BytecodeFile) -> Result<Vec<StoredString>> 
 
 /// How a rebuild lays out string storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Packing {
+pub(crate) enum Packing {
     Packed,
     Unpacked,
 }
 
 /// A rebuilt string table: the small and overflow tables and the storage.
-pub(super) struct StringLayout {
+pub(crate) struct StringLayout {
     pub small: Vec<u32>,
     pub overflow: Vec<(u32, u32)>,
     pub storage: Vec<u8>,
 }
 
 /// Lay out `strings` (indexed by id) into fresh storage and tables.
-pub(super) fn lay_out(
+pub(crate) fn lay_out(
     strings: &[StoredString],
     pinned: &BTreeSet<usize>,
     packing: Packing,
@@ -174,21 +170,18 @@ pub(super) fn lay_out(
         pack_group(strings, &ids, pinned, packing, &mut storage, &mut offsets);
     }
 
+    // An offset or length the small entry cannot hold gets an overflow record,
+    // numbered in table order as hermesc numbers them.
     let mut small = Vec::with_capacity(strings.len());
     let mut overflow = Vec::new();
     for (s, &off) in strings.iter().zip(&offsets) {
-        let utf16 = s.is_utf16 as u32;
-        // An offset or length the small entry cannot hold goes in the overflow
-        // table; the small entry then stores the overflow index and length 0xff.
-        if off >= OFF_OVERFLOW || s.len_field >= LEN_OVERFLOW {
-            let ov_index = overflow.len() as u32;
+        let next = overflow.len() as u32;
+        let (entry, needs_record) =
+            SmallStringEntry::for_string(s.is_utf16, off, s.len_field, next);
+        if needs_record {
             overflow.push((off, s.len_field));
-            small.push((LEN_OVERFLOW << LEN_SHIFT) | ((ov_index & OFF_MASK) << OFF_SHIFT) | utf16);
-        } else {
-            small.push(
-                ((s.len_field & LEN_MASK) << LEN_SHIFT) | ((off & OFF_MASK) << OFF_SHIFT) | utf16,
-            );
         }
+        small.push(entry.encode());
     }
     u32::try_from(storage.len())
         .map_err(|_| Error::Write("string storage larger than 4 GiB".into()))?;
@@ -548,12 +541,9 @@ mod tests {
 
     // Read entry `i` back out of a layout the way the engine does.
     fn read_back(l: &StringLayout, strings: &[StoredString], i: usize) -> Vec<u8> {
-        let e = l.small[i];
-        let (off, len) = if (e >> LEN_SHIFT) == LEN_OVERFLOW {
-            l.overflow[((e >> OFF_SHIFT) & OFF_MASK) as usize]
-        } else {
-            ((e >> OFF_SHIFT) & OFF_MASK, e >> LEN_SHIFT)
-        };
+        let (off, len) = SmallStringEntry::decode(l.small[i])
+            .resolve(&l.overflow)
+            .unwrap();
         let n = len as usize * if strings[i].is_utf16 { 2 } else { 1 };
         l.storage[off as usize..off as usize + n].to_vec()
     }
@@ -561,7 +551,11 @@ mod tests {
     fn assert_reads_back(l: &StringLayout, strings: &[StoredString]) {
         for (i, s) in strings.iter().enumerate() {
             assert_eq!(read_back(l, strings, i), s.bytes, "entry {i}");
-            assert_eq!(l.small[i] & UTF16 != 0, s.is_utf16, "entry {i} encoding");
+            assert_eq!(
+                SmallStringEntry::decode(l.small[i]).is_utf16,
+                s.is_utf16,
+                "entry {i} encoding"
+            );
         }
     }
 
@@ -596,7 +590,7 @@ mod tests {
         assert_reads_back(&l, &strings);
         // undone + one inside it, then done on its own.
         assert_eq!(l.storage.len(), 6 + 4);
-        let off = |i: usize| ((l.small[i] >> OFF_SHIFT) & OFF_MASK) as usize;
+        let off = |i: usize| SmallStringEntry::decode(l.small[i]).offset as usize;
         assert_eq!(
             off(0),
             6,
@@ -614,7 +608,7 @@ mod tests {
             let l = lay_out(&strings, &BTreeSet::new(), packing).unwrap();
             assert_reads_back(&l, &strings);
             for (i, s) in strings.iter().enumerate() {
-                let off = (l.small[i] >> OFF_SHIFT) & OFF_MASK;
+                let off = SmallStringEntry::decode(l.small[i]).offset;
                 if s.is_utf16 {
                     assert_eq!(off % 2, 0, "{packing:?}: entry {i} at odd offset {off}");
                     assert!(

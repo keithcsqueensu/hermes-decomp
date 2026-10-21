@@ -13,6 +13,7 @@ use crate::opcode::BytecodeFormat;
 
 use super::footer::{append_footer, rehash_footer};
 use super::header_write::{write_function_header_legacy_small, write_legacy_header};
+use super::patch::string_storage::{lay_out, Packing, StoredString, StringLayout};
 
 #[derive(Debug, Clone, Default)]
 pub struct SerializeOptions {
@@ -137,7 +138,32 @@ pub fn commit_image_checked(
     Ok(out)
 }
 
-// ---- create-from-scratch helpers (legacy layout, non-overflow headers) ----
+// ---- create-from-scratch helpers ----
+
+// The string tables `create` emits, laid out as a string-table rebuild lays them
+// out, unpacked (`create` is upstream's non-optimising path): a string too long
+// for a small entry, or too far into storage, gets an overflow record, and a
+// non-ASCII one is stored as UTF-16. Both used to be refused or mis-encoded.
+fn create_string_tables(strings: &[String]) -> Result<StringLayout> {
+    let stored: Vec<StoredString> = strings.iter().map(|s| StoredString::encode(s)).collect();
+    lay_out(&stored, &Default::default(), Packing::Unpacked)
+}
+
+// Small table, overflow table, storage: the sections between the identifier
+// hashes and the buffers, each 4-aligned.
+fn push_string_tables(buf: &mut Vec<u8>, tables: &StringLayout) {
+    for e in &tables.small {
+        buf.extend_from_slice(&e.to_le_bytes());
+    }
+    align4(buf);
+    for (off, len) in &tables.overflow {
+        buf.extend_from_slice(&off.to_le_bytes());
+        buf.extend_from_slice(&len.to_le_bytes());
+    }
+    align4(buf);
+    buf.extend_from_slice(&tables.storage);
+    align4(buf);
+}
 
 // Build a minimal v96-style legacy HBC: one global function with the given body
 // and string table. Used by `create` and tests.
@@ -157,23 +183,7 @@ pub fn build_minimal_legacy(
     }
 
     // Header is written last-pass with correct sizes; build body sections first.
-    let mut string_storage = Vec::new();
-    let mut small_entries = Vec::new();
-    for s in strings {
-        let offset = string_storage.len() as u32;
-        let bytes = s.as_bytes();
-        let length = bytes.len() as u32;
-        if length >= 0xff || offset >= 0x800000 {
-            return Err(Error::Write(
-                "create: string too long for small-table entry (overflow table not implemented)"
-                    .into(),
-            ));
-        }
-        string_storage.extend_from_slice(bytes);
-        // isUTF16=0 | offset<<1 | length<<24
-        let raw = (length << 24) | ((offset & 0x7f_ffff) << 1);
-        small_entries.push(raw);
-    }
+    let tables = create_string_tables(strings)?;
 
     // String kinds: one run of String kind covering all strings.
     let string_kind_raw: u32 = strings.len() as u32; // high bit 0 = String
@@ -194,18 +204,7 @@ pub fn build_minimal_legacy(
     // identifier hashes: empty
     align4(&mut buf);
 
-    // small string table
-    for e in &small_entries {
-        buf.extend_from_slice(&e.to_le_bytes());
-    }
-    align4(&mut buf);
-
-    // overflow string table: empty
-    align4(&mut buf);
-
-    // string storage
-    buf.extend_from_slice(&string_storage);
-    align4(&mut buf);
+    push_string_tables(&mut buf, &tables);
 
     // array buffer empty, obj keys empty, obj values empty
     // bigints empty for version with bigint fields, still emit zero-size sections
@@ -250,8 +249,8 @@ pub fn build_minimal_legacy(
         1, // string_kind_count
         0, // identifier_count
         strings.len() as u32,
-        0, // overflow_string_count
-        string_storage.len() as u32,
+        tables.overflow.len() as u32,
+        tables.storage.len() as u32,
         version >= 87,
         0,
         0, // bigint
@@ -296,23 +295,7 @@ pub fn build_minimal_modern(
         ));
     }
 
-    let mut string_storage = Vec::new();
-    let mut small_entries = Vec::new();
-    for s in strings {
-        let offset = string_storage.len() as u32;
-        let bytes = s.as_bytes();
-        let length = bytes.len() as u32;
-        if length >= 0xff || offset >= 0x80_0000 {
-            return Err(Error::Write(
-                "create: string too long for small-table entry (overflow table not implemented)"
-                    .into(),
-            ));
-        }
-        string_storage.extend_from_slice(bytes);
-        // isUTF16=0 | offset<<1 | length<<24
-        let raw = (length << 24) | ((offset & 0x7f_ffff) << 1);
-        small_entries.push(raw);
-    }
+    let tables = create_string_tables(strings)?;
     let string_kind_raw: u32 = strings.len() as u32; // high bit 0 = String
 
     // Placeholder 128 byte header, filled after layout.
@@ -330,18 +313,7 @@ pub fn build_minimal_modern(
     // identifier hashes: empty
     align4(&mut buf);
 
-    // small string table
-    for e in &small_entries {
-        buf.extend_from_slice(&e.to_le_bytes());
-    }
-    align4(&mut buf);
-
-    // overflow string table: empty
-    align4(&mut buf);
-
-    // string storage
-    buf.extend_from_slice(&string_storage);
-    align4(&mut buf);
+    push_string_tables(&mut buf, &tables);
 
     // Empty modern buffer/table sections (literal_value_buffer, obj_key_buffer,
     // obj_shape_table, bigints, regexp, cjs, function_source) are all zero-sized.
@@ -395,8 +367,10 @@ pub fn build_minimal_modern(
         1, // string_kind_count
         0, // identifier_count
         strings.len() as u32,
-        string_storage.len() as u32,
+        tables.storage.len() as u32,
     )?;
+    // write_modern_header leaves overflow_string_count (byte 56) at 0.
+    buf[56..60].copy_from_slice(&(tables.overflow.len() as u32).to_le_bytes());
 
     append_footer(&mut buf)?;
     let len = buf.len() as u32;

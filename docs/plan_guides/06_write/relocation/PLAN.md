@@ -102,7 +102,7 @@ The demand for a structured path, in full:
   refused unless `allow_stale_debug_info` (`functions.rs:71`, R24). Also body-relative, not a
   file relocation; insertions (`inject-stub`) relocate the line table instead
   (`patch/debug_reloc.rs`).
-- **`create` cannot emit overflow string entries** (`serialize.rs:155`, `:294`). A serializer
+- **`create` could not emit overflow string entries** (fixed since, R2). A serializer
   limit, not a relocation one.
 - **No op inserts or removes a function.** This is the only shipped-adjacent case a structured
   rebuild would genuinely serve, and nothing asks for it yet.

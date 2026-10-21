@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use crate::file::structure::{
     ShapeTableEntry, StringKindEntry, StringKindType, StringTableEntry, TableEntry,
 };
+use crate::format::SmallStringEntry;
 use crate::io::ByteReader;
 
 // --- String-kind entry bitfields (one u32 per kind run) ---
@@ -12,26 +13,8 @@ const STRING_KIND_TYPE_BIT: u32 = 1 << 31;
 // Mask for the run-length portion (low 31 bits) of a string-kind entry.
 const STRING_KIND_COUNT_MASK: u32 = 0x7fff_ffff;
 
-// --- Small string-table entry bitfields (one u32 per string) ---
-// Bit layout:
-//   bit 0       : isUTF16
-//   bits 1..=23 : storage offset (23 bits)
-//   bits 24..=31: length (8 bits)
-// Sentinels signal that the real offset/length live in the overflow table.
-// isUTF16 flag (bit 0) of a small string-table entry.
-const STRING_ENTRY_UTF16_BIT: u32 = 0x1;
-// Shift to reach the 23-bit storage offset (bits 1..=23).
-const STRING_ENTRY_OFFSET_SHIFT: u32 = 1;
-// Mask for the 23-bit storage offset after shifting.
-const STRING_ENTRY_OFFSET_MASK: u32 = 0x7f_ffff;
-// Shift to reach the 8-bit length (bits 24..=31).
-const STRING_ENTRY_LENGTH_SHIFT: u32 = 24;
-// Mask for the 8-bit length after shifting.
-const STRING_ENTRY_LENGTH_MASK: u32 = 0xff;
-// Length sentinel (all 8 bits set): real length is in the overflow table.
-const STRING_ENTRY_LENGTH_OVERFLOW: u32 = 0xff;
-// Offset sentinel (top of the 23-bit range): real offset is in the overflow table.
-const STRING_ENTRY_OFFSET_OVERFLOW: u32 = 0x800000;
+// Small string-table entries (one u32 per string) are decoded by
+// `crate::format::SmallStringEntry`, which every write path uses too.
 
 pub fn parse_string_kinds(reader: &mut ByteReader<'_>, count: u32) -> Result<Vec<StringKindEntry>> {
     let mut entries = Vec::with_capacity(reader.capacity_hint(count as usize));
@@ -139,7 +122,7 @@ pub fn decode_string_table(
     }
 
     let mut strings = Vec::with_capacity(count);
-    let mut overflow_index = 0usize;
+
     let mut invalid = 0usize;
 
     for i in 0..count {
@@ -148,21 +131,17 @@ pub fn decode_string_table(
             .copied()
             .ok_or_else(|| Error::Parse("string table entry missing".to_string()))?;
 
-        let is_utf16 = (raw & STRING_ENTRY_UTF16_BIT) != 0;
-        let offset = (raw >> STRING_ENTRY_OFFSET_SHIFT) & STRING_ENTRY_OFFSET_MASK;
-        let length = (raw >> STRING_ENTRY_LENGTH_SHIFT) & STRING_ENTRY_LENGTH_MASK;
-
-        let (offset, length) =
-            if length == STRING_ENTRY_LENGTH_OVERFLOW || offset == STRING_ENTRY_OFFSET_OVERFLOW {
-                let (ov_offset, ov_length) = overflow_entries
-                    .get(overflow_index)
-                    .copied()
-                    .ok_or_else(|| Error::Parse("overflow string entry missing".to_string()))?;
-                overflow_index += 1;
-                (ov_offset, ov_length)
-            } else {
-                (offset, length)
-            };
+        // An overflowed entry names its record by index, as the engine reads it;
+        // records need not be in table order, nor used once each.
+        let entry = SmallStringEntry::decode(raw);
+        let is_utf16 = entry.is_utf16;
+        let (offset, length) = entry.resolve(overflow_entries).ok_or_else(|| {
+            Error::Parse(format!(
+                "string {i}: overflow record {} missing ({} records)",
+                entry.offset,
+                overflow_entries.len()
+            ))
+        })?;
 
         let value = if is_utf16 {
             // saturating math: an overflowing offset/length just fails the
