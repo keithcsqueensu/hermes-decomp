@@ -424,3 +424,30 @@ fn nested_block_write_invalidates_recorded_props() {
         other => panic!("expected jsx expr, got {other:?}"),
     }
 }
+
+// A tag is printed like any other reference to its variable: a slot named
+// after its module (`react-native`) is bound as `react_native`.
+#[test]
+fn a_variable_tag_is_sanitised_like_its_binding() {
+    let var = |n: &str| Expression::Value(Value::Binding(Binding::Variable(n.into())));
+    let jsx = |tag| {
+        let mut e = Expression::call(
+            Expression::member(var("React"), "createElement"),
+            vec![tag, Expression::constant(Constant::Null)],
+        );
+        JSXReconstructor::new().visit_expression(&mut e);
+        match e {
+            Expression::JSXElement { tag, .. } => tag,
+            other => panic!("expected JSX, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        jsx(Expression::member(var("react-native"), "View")),
+        "react_native.View"
+    );
+    assert_eq!(jsx(var("react-native")), "react_native");
+    assert_eq!(
+        jsx(Expression::constant(Constant::String("my-element".into()))),
+        "my-element"
+    );
+}

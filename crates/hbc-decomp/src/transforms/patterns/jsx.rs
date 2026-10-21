@@ -75,9 +75,14 @@ fn build_jsx_element(callee: &Expression, arguments: &[Expression]) -> Option<Ex
     // JSX tags must be identifiers or member paths (or string HTML tags).
     // Calls like `importDefault(36)` are valid createElement first-args but NOT
     // valid JSX tag forms, leave those as jsx()/createElement() calls.
+    // A variable tag is printed the way every other reference to it is:
+    // sanitised. A slot named after its module (`react-native`) is bound as
+    // `import react_native`, and `<react-native.View>` was not even JSX.
     let tag_name = match &arguments[0] {
         Expression::Value(Value::Constant(Constant::String(s))) => s.clone(),
-        Expression::Value(Value::Binding(Binding::Variable(v))) => v.name.clone(),
+        Expression::Value(Value::Binding(Binding::Variable(v))) => {
+            crate::util::sanitize_identifier(&v.name)
+        }
         Expression::Member {
             object, property, ..
         } => {
@@ -86,7 +91,7 @@ fn build_jsx_element(callee: &Expression, arguments: &[Expression]) -> Option<Ex
                 PropertyKey::Ident(prop_name),
             ) = (object.as_ref(), property)
             {
-                format!("{obj_name}.{prop_name}")
+                format!("{}.{prop_name}", crate::util::sanitize_identifier(obj_name))
             } else {
                 return None;
             }
