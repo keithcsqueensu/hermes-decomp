@@ -51,9 +51,9 @@ impl MutVisitor for ShortCircuitVisitor {
             // that shape left the whole pattern standing.
             let first_target = match &stmts[i] {
                 Statement::Assign { target, .. } => Some(target.clone()),
-                Statement::Let { name, .. } => {
-                    Some(AssignTarget::Binding(Binding::Variable(name.clone())))
-                }
+                Statement::Let { name, .. } => Some(AssignTarget::Binding(Binding::Variable(
+                    name.clone().into(),
+                ))),
                 _ => None,
             };
             // The value just stored, when re-reading it is the same as
@@ -318,13 +318,13 @@ mod tests {
 
     fn named_assign(name: &str, value: Expression) -> Statement {
         Statement::Assign {
-            target: AssignTarget::Binding(Binding::Variable(name.to_string())),
+            target: AssignTarget::Binding(Binding::Variable(name.into())),
             value,
         }
     }
 
     fn var(name: &str) -> Expression {
-        Expression::Value(Value::Binding(Binding::Variable(name.to_string())))
+        Expression::Value(Value::Binding(Binding::Variable(name.into())))
     }
 
     #[test]
@@ -480,7 +480,7 @@ mod repeated_condition_tests {
     use crate::ir::{Constant, UnaryOp};
 
     fn var(n: &str) -> Expression {
-        Expression::Value(Value::Binding(Binding::Variable(n.to_string())))
+        Expression::Value(Value::Binding(Binding::Variable(n.into())))
     }
     fn is_symbol(negated: bool) -> Expression {
         Expression::binary(

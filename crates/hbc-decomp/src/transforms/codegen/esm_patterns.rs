@@ -136,7 +136,7 @@ impl Codegen {
             {
                 // Variable used as export name, only accept if it looks like a
                 // real export identifier (not a generic register).
-                n.clone()
+                n.name.clone()
             }
             _ => return None,
         };

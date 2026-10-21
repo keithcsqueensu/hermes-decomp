@@ -197,7 +197,7 @@ fn resolve_target(target: AssignTarget, info: &Resolver) -> AssignTarget {
                 crate::ir::Value::closure_var_name(level, slot)
             };
             info.record(&name, level, slot);
-            AssignTarget::Binding(Binding::Variable(name))
+            AssignTarget::Binding(Binding::Variable(name.into()))
         }
         AssignTarget::Member { object, property } => AssignTarget::Member {
             object: resolve_expr(object, info),
@@ -280,7 +280,7 @@ fn resolve_expr(expr: Expression, info: &Resolver) -> Expression {
                 crate::ir::Value::closure_var_name(level, slot)
             };
             info.record(&name, level, slot);
-            Expression::Value(Value::Binding(Binding::Variable(name)))
+            Expression::Value(Value::Binding(Binding::Variable(name.into())))
         }
         Expression::Binary { op, left, right } => Expression::Binary {
             op,

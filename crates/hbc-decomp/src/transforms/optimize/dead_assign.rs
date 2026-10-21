@@ -199,7 +199,7 @@ enum Key {
 fn target_key(target: &AssignTarget) -> Option<Key> {
     match target {
         AssignTarget::Binding(Binding::Register(r)) => Some(Key::Reg(*r)),
-        AssignTarget::Binding(Binding::Variable(name)) => Some(Key::Var(name.clone())),
+        AssignTarget::Binding(Binding::Variable(name)) => Some(Key::Var(name.name.clone())),
         _ => None,
     }
 }

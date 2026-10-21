@@ -108,7 +108,7 @@ pub(super) fn collect_existing_binding_names(stmts: &[Statement], out: &mut Hash
                 target: AssignTarget::Binding(Binding::Variable(name)),
                 ..
             } => {
-                out.insert(name.clone());
+                out.insert(name.name.clone());
             }
             Statement::If {
                 then_body,

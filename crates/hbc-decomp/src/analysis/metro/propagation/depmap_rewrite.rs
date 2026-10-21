@@ -151,7 +151,7 @@ fn collect_depmap_aliases(
             match stmt {
                 Statement::Let { name, value, .. }
                 | Statement::Assign {
-                    target: AssignTarget::Binding(Binding::Variable(name)),
+                    target: AssignTarget::Binding(Binding::Variable(crate::ir::Var { name, .. })),
                     value,
                 } => {
                     if expr_is_depmap_root(value, aliases, roles) {
@@ -248,7 +248,7 @@ fn collect_reused(
             let bound = match s {
                 Statement::Let { name, value, .. }
                 | Statement::Assign {
-                    target: AssignTarget::Binding(Binding::Variable(name)),
+                    target: AssignTarget::Binding(Binding::Variable(crate::ir::Var { name, .. })),
                     value,
                 } => Some((name, value)),
                 _ => None,
@@ -280,7 +280,7 @@ pub(super) fn expr_is_depmap_root(
 ) -> bool {
     match expr {
         Expression::Value(Value::Binding(Binding::Variable(n))) => {
-            aliases.contains(n) || is_dep_array_name(n, roles)
+            aliases.contains(n.as_str()) || is_dep_array_name(n, roles)
         }
         Expression::Value(Value::Parameter(idx)) => roles.deps_idx == Some(*idx),
         _ => false,

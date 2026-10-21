@@ -44,13 +44,13 @@ struct Refs<'a>(&'a mut HashSet<String>);
 impl<'b> Visitor<'b> for Refs<'_> {
     fn visit_assign_target(&mut self, t: &'b AssignTarget) {
         if let AssignTarget::Binding(Binding::Variable(n)) = t {
-            self.0.insert(n.clone());
+            self.0.insert(n.name.clone());
         }
         self.walk_assign_target(t);
     }
     fn visit_expression(&mut self, e: &'b Expression) {
         if let Expression::Value(Value::Binding(Binding::Variable(n))) = e {
-            self.0.insert(n.clone());
+            self.0.insert(n.name.clone());
         }
         self.walk_expression(e);
     }

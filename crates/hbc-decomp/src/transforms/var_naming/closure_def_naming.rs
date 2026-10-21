@@ -254,7 +254,7 @@ fn infer_from_member(object: &Expression, property: &PropertyKey) -> Option<Stri
         if let Expression::Value(Value::Binding(Binding::Variable(obj_name))) = object {
             if !is_closure_name(obj_name) && !is_generic_var_name(obj_name) && obj_name.len() <= 25
             {
-                return Some(obj_name.clone());
+                return Some(obj_name.name.clone());
             }
         }
         return None;

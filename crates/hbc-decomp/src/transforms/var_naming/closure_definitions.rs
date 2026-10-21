@@ -606,7 +606,7 @@ impl ObjectKeyHits {
         match value {
             Expression::Value(Value::Binding(Binding::Variable(n))) => self.0.push(ObjectKeyHit {
                 key,
-                var: Some(n.clone()),
+                var: Some(n.name.clone()),
                 param: None,
             }),
             Expression::Value(Value::Parameter(idx)) => self.0.push(ObjectKeyHit {
@@ -725,7 +725,7 @@ fn collect_names_in_stmt(stmt: &Statement, names: &mut std::collections::HashSet
         Statement::Assign { target, value } => {
             if let AssignTarget::Binding(Binding::Variable(v)) = target {
                 if !is_closure_name(v) {
-                    names.insert(v.clone());
+                    names.insert(v.name.clone());
                 }
             }
             collect_names_in_expr(value, names);
@@ -846,7 +846,7 @@ fn collect_names_in_expr(expr: &Expression, names: &mut std::collections::HashSe
     match expr {
         Expression::Value(Value::Binding(Binding::Variable(v))) => {
             if !is_closure_name(v) {
-                names.insert(v.clone());
+                names.insert(v.name.clone());
             }
         }
         Expression::Call { callee, arguments } => {
@@ -896,7 +896,7 @@ mod tests {
     use crate::ir::{ObjectProperty, PropertyKey};
 
     fn var(name: &str) -> Expression {
-        Expression::Value(Value::Binding(Binding::Variable(name.to_string())))
+        Expression::Value(Value::Binding(Binding::Variable(name.into())))
     }
 
     fn object_with(key: &str, value: Expression) -> Expression {

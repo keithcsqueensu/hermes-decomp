@@ -35,7 +35,7 @@ pub fn simplify_arguments_copy(stmts: Vec<Statement>) -> Vec<Statement> {
                 value,
             } => {
                 if is_arguments_length(value) {
-                    Some(name.clone())
+                    Some(name.name.clone())
                 } else {
                     None
                 }
@@ -59,7 +59,7 @@ pub fn simplify_arguments_copy(stmts: Vec<Statement>) -> Vec<Statement> {
                         value,
                     } => {
                         if is_empty_new_array(value) {
-                            Some((name.clone(), false, None))
+                            Some((name.name.clone(), false, None))
                         } else {
                             None
                         }
@@ -81,7 +81,7 @@ pub fn simplify_arguments_copy(stmts: Vec<Statement>) -> Vec<Statement> {
                             let spread_args = Expression::Array {
                                 elements: vec![Some(Expression::Spread(Box::new(
                                     Expression::Value(Value::Binding(Binding::Variable(
-                                        "arguments".to_string(),
+                                        "arguments".into(),
                                     ))),
                                 )))],
                             };
@@ -93,7 +93,9 @@ pub fn simplify_arguments_copy(stmts: Vec<Statement>) -> Vec<Statement> {
                                 });
                             } else {
                                 result.push(Statement::Assign {
-                                    target: AssignTarget::Binding(Binding::Variable(array_name)),
+                                    target: AssignTarget::Binding(Binding::Variable(
+                                        array_name.into(),
+                                    )),
                                     value: spread_args,
                                 });
                             }
@@ -119,7 +121,7 @@ pub fn simplify_arguments_copy(stmts: Vec<Statement>) -> Vec<Statement> {
                             name: array_name,
                             value: Expression::New {
                                 callee: Box::new(Expression::Value(Value::Binding(
-                                    Binding::Variable("Array".to_string()),
+                                    Binding::Variable("Array".into()),
                                 ))),
                                 arguments: vec![],
                             },
@@ -127,10 +129,10 @@ pub fn simplify_arguments_copy(stmts: Vec<Statement>) -> Vec<Statement> {
                         }
                     } else {
                         Statement::Assign {
-                            target: AssignTarget::Binding(Binding::Variable(array_name)),
+                            target: AssignTarget::Binding(Binding::Variable(array_name.into())),
                             value: Expression::New {
                                 callee: Box::new(Expression::Value(Value::Binding(
-                                    Binding::Variable("Array".to_string()),
+                                    Binding::Variable("Array".into()),
                                 ))),
                                 arguments: vec![],
                             },

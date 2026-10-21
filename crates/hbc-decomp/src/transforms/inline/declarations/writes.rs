@@ -21,7 +21,7 @@ fn count_writes_stmt(
             target: AssignTarget::Binding(Binding::Variable(name)),
             ..
         } => {
-            *writes.entry(name.clone()).or_insert(0) += 1;
+            *writes.entry(name.name.clone()).or_insert(0) += 1;
         }
         Statement::Assign {
             target: AssignTarget::Binding(Binding::Register(r)),

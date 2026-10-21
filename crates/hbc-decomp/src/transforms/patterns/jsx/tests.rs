@@ -5,7 +5,7 @@ use crate::ir::{AssignTarget, VarKind};
 fn test_classic_jsx_element() {
     let mut expr = Expression::call(
         Expression::member(
-            Expression::Value(Value::Binding(Binding::Variable("React".to_string()))),
+            Expression::Value(Value::Binding(Binding::Variable("React".into()))),
             "createElement",
         ),
         vec![

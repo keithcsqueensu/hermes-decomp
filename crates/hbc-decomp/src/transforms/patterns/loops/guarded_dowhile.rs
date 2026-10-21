@@ -138,7 +138,7 @@ fn loop_var_init(stmt: &Statement) -> Option<(String, Expression)> {
         Statement::Assign {
             target: AssignTarget::Binding(Binding::Variable(name)),
             value,
-        } => Some((name.clone(), value.clone())),
+        } => Some((name.name.clone(), value.clone())),
         _ => None,
     }
 }
@@ -423,7 +423,7 @@ mod tests {
     use crate::ir::{BinaryOp, Constant};
 
     fn var(n: &str) -> Expression {
-        Expression::Value(Value::Binding(Binding::Variable(n.to_string())))
+        Expression::Value(Value::Binding(Binding::Variable(n.into())))
     }
     fn lt(l: Expression, r: Expression) -> Expression {
         Expression::Binary {
@@ -444,7 +444,7 @@ mod tests {
     }
     fn assign(name: &str, v: Expression) -> Statement {
         Statement::Assign {
-            target: AssignTarget::Binding(Binding::Variable(name.to_string())),
+            target: AssignTarget::Binding(Binding::Variable(name.into())),
             value: v,
         }
     }

@@ -29,7 +29,7 @@ pub fn value_from_expr(
         }
         Expression::Value(Value::Constant(c)) => Some(ClosureSlotValue::Constant(format!("{c}"))),
         Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) => {
-            Some(ClosureSlotValue::Variable(name.clone()))
+            Some(ClosureSlotValue::Variable(name.name.clone()))
         }
         Expression::Value(Value::Parameter(i)) => {
             Some(ClosureSlotValue::Variable(format!("arg{i}")))
@@ -44,7 +44,7 @@ pub fn value_from_expr(
                 if prop == "default" {
                     match &**object {
                         Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) => {
-                            return Some(ClosureSlotValue::Variable(name.clone()));
+                            return Some(ClosureSlotValue::Variable(name.name.clone()));
                         }
                         Expression::Value(Value::Binding(crate::ir::Binding::Register(r))) => {
                             if let Some(rv) = reg_values {

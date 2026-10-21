@@ -452,13 +452,13 @@ struct Refs<'a>(&'a mut BTreeSet<String>);
 impl<'b> Visitor<'b> for Refs<'_> {
     fn visit_assign_target(&mut self, t: &'b crate::ir::AssignTarget) {
         if let crate::ir::AssignTarget::Binding(Binding::Variable(n)) = t {
-            self.0.insert(n.clone());
+            self.0.insert(n.name.clone());
         }
         self.walk_assign_target(t);
     }
     fn visit_expression(&mut self, e: &'b Expression) {
         if let Expression::Value(Value::Binding(Binding::Variable(n))) = e {
-            self.0.insert(n.clone());
+            self.0.insert(n.name.clone());
         }
         self.walk_expression(e);
     }
@@ -472,7 +472,7 @@ impl<'b> Visitor<'b> for Bound<'_> {
     }
     fn visit_assign_target(&mut self, t: &'b crate::ir::AssignTarget) {
         if let crate::ir::AssignTarget::Binding(Binding::Variable(n)) = t {
-            self.0.insert(n.clone());
+            self.0.insert(n.name.clone());
         }
         self.walk_assign_target(t);
     }
@@ -550,7 +550,7 @@ impl MutVisitor for Replace<'_> {
     fn visit_expression(&mut self, e: &mut Expression) {
         if let Expression::Function { id, .. } = e {
             if let Some(name) = self.names.get(&id.0) {
-                *e = Expression::Value(Value::Binding(Binding::Variable(name.clone())));
+                *e = Expression::Value(Value::Binding(Binding::Variable(name.clone().into())));
                 return;
             }
         }

@@ -33,7 +33,7 @@ fn hint_inner(
     match arg {
         Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) => {
             if !is_generic_name(name) {
-                return Some(name.clone());
+                return Some(name.name.clone());
             }
             resolve(name, value_defs, depth)
         }
@@ -89,7 +89,7 @@ fn object_hint(
         Expression::Value(Value::Binding(crate::ir::Binding::Variable(name)))
             if !is_generic_name(name) =>
         {
-            Some(name.clone())
+            Some(name.name.clone())
         }
         Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) => {
             resolve(name, value_defs, depth)
@@ -107,7 +107,7 @@ mod tests {
     use crate::ir::{Expression, PropertyKey, Value};
 
     fn var(n: &str) -> Expression {
-        Expression::Value(Value::Binding(crate::ir::Binding::Variable(n.to_string())))
+        Expression::Value(Value::Binding(crate::ir::Binding::Variable(n.into())))
     }
 
     fn method_call(obj: Expression, method: &str) -> Expression {

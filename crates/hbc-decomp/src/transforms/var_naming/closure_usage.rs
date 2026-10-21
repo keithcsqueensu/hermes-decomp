@@ -220,7 +220,7 @@ fn record_object_key_for_value(
     if let Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) = value {
         if is_closure_name(name) {
             usage
-                .entry(name.clone())
+                .entry(name.name.clone())
                 .or_default()
                 .object_keys
                 .push(key.to_string());
@@ -392,12 +392,12 @@ fn collect_closure_usage_in_expr(
                 if is_closure_name(name) {
                     match property {
                         PropertyKey::Index(_) | PropertyKey::Computed(_) => {
-                            usage.entry(name.clone()).or_default().indexed_accesses += 1;
+                            usage.entry(name.name.clone()).or_default().indexed_accesses += 1;
                         }
                         _ => {
                             if let Some(prop) = ident_from_property(property) {
                                 if !is_invocation_method(&prop) {
-                                    let info = usage.entry(name.clone()).or_default();
+                                    let info = usage.entry(name.name.clone()).or_default();
                                     info.properties.push(prop);
                                 }
                             }
@@ -425,7 +425,7 @@ fn collect_closure_usage_in_expr(
                         match property {
                             // closure_N[i](…), indexed table / TurboModule shape
                             PropertyKey::Index(_) | PropertyKey::Computed(_) => {
-                                let info = usage.entry(name.clone()).or_default();
+                                let info = usage.entry(name.name.clone()).or_default();
                                 info.indexed_accesses += 1;
                                 info.called_as_function = true;
                             }
@@ -433,10 +433,12 @@ fn collect_closure_usage_in_expr(
                                 if let Some(method) = ident_from_property(property) {
                                     if is_invocation_method(&method) {
                                         // closure_N.call(...) / .apply(...)
-                                        usage.entry(name.clone()).or_default().called_as_function =
-                                            true;
+                                        usage
+                                            .entry(name.name.clone())
+                                            .or_default()
+                                            .called_as_function = true;
                                     } else {
-                                        let info = usage.entry(name.clone()).or_default();
+                                        let info = usage.entry(name.name.clone()).or_default();
                                         info.methods.push(method);
                                     }
                                 }
@@ -449,7 +451,10 @@ fn collect_closure_usage_in_expr(
             if let Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) = &**callee
             {
                 if is_closure_name(name) {
-                    usage.entry(name.clone()).or_default().called_as_function = true;
+                    usage
+                        .entry(name.name.clone())
+                        .or_default()
+                        .called_as_function = true;
                 }
             }
             collect_closure_usage_in_expr(callee, usage);
@@ -504,7 +509,7 @@ fn collect_closure_usage_in_expr(
                 inner.as_ref()
             {
                 if is_closure_name(name) {
-                    usage.entry(name.clone()).or_default().spread = true;
+                    usage.entry(name.name.clone()).or_default().spread = true;
                 }
             }
             collect_closure_usage_in_expr(inner, usage);

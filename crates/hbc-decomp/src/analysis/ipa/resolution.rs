@@ -99,7 +99,9 @@ fn resolve_unique_by_name(name: &str, func_name_index: &FunctionNameIndex) -> Op
 
 pub(super) fn get_base_name(expr: &Expression) -> Option<String> {
     match expr {
-        Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) => Some(name.clone()),
+        Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) => {
+            Some(name.name.clone())
+        }
         Expression::Value(Value::Binding(crate::ir::Binding::Register(r))) => Some(format!("r{r}")),
         _ => None,
     }
@@ -121,7 +123,7 @@ pub(super) fn extract_name_from_callee(callee: &Expression) -> Option<String> {
         | Expression::Member {
             property: PropertyKey::Ident(prop),
             ..
-        } => prop.clone(),
+        } => prop.clone().into(),
         _ => return None,
     };
 
@@ -190,7 +192,7 @@ pub(super) fn extract_object_name_from_method_call(callee: &Expression) -> Optio
         {
             // Filter out generic names
             if !super::inference::is_generic_name(name) {
-                return Some(name.clone());
+                return Some(name.name.clone());
             }
         }
     }
@@ -210,7 +212,7 @@ pub(super) fn extract_method_object_name(callee: &Expression) -> Option<String> 
             object.as_ref()
         {
             if !super::inference::is_generic_name(name) {
-                return Some(name.clone());
+                return Some(name.name.clone());
             }
         }
     }

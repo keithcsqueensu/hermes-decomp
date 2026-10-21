@@ -28,7 +28,7 @@ pub fn transform_spread_rest(stmts: &mut Vec<Statement>) {
             if let Some(args) = is_builtin_call(value, "copyRestArgs") {
                 let all_args = || Expression::Array {
                     elements: vec![Some(Expression::Spread(Box::new(Expression::Value(
-                        Value::Binding(Binding::Variable("arguments".to_string())),
+                        Value::Binding(Binding::Variable("arguments".into())),
                     ))))],
                 };
                 let n_is_zero = matches!(

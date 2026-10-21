@@ -143,7 +143,9 @@ fn callee_is_require(
     roles: &FactoryRoles,
 ) -> bool {
     match callee {
-        Expression::Value(Value::Binding(Binding::Variable(name))) => require_names.contains(name),
+        Expression::Value(Value::Binding(Binding::Variable(name))) => {
+            require_names.contains(name.as_str())
+        }
         Expression::Value(Value::Parameter(idx)) => *idx == roles.require_idx,
         _ => false,
     }
@@ -159,7 +161,7 @@ fn loose_dep_index(expr: &Expression, deps: &[u32], loose: &HashSet<String>) -> 
     let Expression::Value(Value::Binding(Binding::Variable(name))) = object.as_ref() else {
         return None;
     };
-    if !loose.contains(name) {
+    if !loose.contains(name.as_str()) {
         return None;
     }
     let idx = match property {

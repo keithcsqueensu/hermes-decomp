@@ -284,7 +284,7 @@ pub fn handle_catch(inst: &Instruction) -> Option<FlowResult> {
     Some(FlowResult::Statement(Statement::Assign {
         target: crate::ir::AssignTarget::Binding(Binding::Register(dst)),
         value: Expression::Value(crate::ir::Value::Binding(Binding::Variable(
-            "__exception".to_string(),
+            "__exception".into(),
         ))),
     }))
 }

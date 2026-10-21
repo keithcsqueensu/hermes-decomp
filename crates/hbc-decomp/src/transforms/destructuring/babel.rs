@@ -98,7 +98,7 @@ fn helper_anchor(stmt: &Statement) -> Option<(String, Expression)> {
     let (name, value) = match stmt {
         Statement::Let { name, value, .. } => (name, value),
         Statement::Assign {
-            target: AssignTarget::Binding(crate::ir::Binding::Variable(name)),
+            target: AssignTarget::Binding(crate::ir::Binding::Variable(crate::ir::Var { name, .. })),
             value,
         } => (name, value),
         _ => return None,
@@ -185,7 +185,7 @@ fn collect_reads(
 fn indexed_read(stmt: &Statement, tmp: &str) -> Option<(AssignTarget, usize)> {
     let (target, value) = match stmt {
         Statement::Let { name, value, .. } => (
-            AssignTarget::Binding(crate::ir::Binding::Variable(name.clone())),
+            AssignTarget::Binding(crate::ir::Binding::Variable(name.clone().into())),
             value,
         ),
         Statement::Assign { target, value } => (target.clone(), value),

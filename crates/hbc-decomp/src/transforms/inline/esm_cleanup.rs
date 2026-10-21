@@ -124,7 +124,7 @@ pub(super) fn inline_hoisted_aliases_and_trim(stmts: Vec<Statement>) -> Vec<Stat
         match stmt {
             // const tmp = arg0; or tmp = arg0;
             Statement::Assign {
-                target: AssignTarget::Binding(Binding::Variable(name)),
+                target: AssignTarget::Binding(Binding::Variable(crate::ir::Var { name, .. })),
                 value,
             }
             | Statement::Let { name, value, .. } => {

@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn test_chain_access_inline() {
         // r0 = obj.a; r1 = r0.b; return r1;
-        let obj = Expression::Value(Value::Binding(Binding::Variable("obj".to_string())));
+        let obj = Expression::Value(Value::Binding(Binding::Variable("obj".into())));
         let stmts = vec![
             Statement::Assign {
                 target: AssignTarget::Binding(Binding::Register(0)),
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn test_multi_use_not_inlined() {
         // r0 = obj.a; r1 = r0.b; r2 = r0.c; (r0 used twice)
-        let obj = Expression::Value(Value::Binding(Binding::Variable("obj".to_string())));
+        let obj = Expression::Value(Value::Binding(Binding::Variable("obj".into())));
         let stmts = vec![
             Statement::Assign {
                 target: AssignTarget::Binding(Binding::Register(0)),

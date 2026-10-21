@@ -147,7 +147,7 @@ fn rename_target(target: AssignTarget, names: &BTreeMap<u32, String>) -> AssignT
     match target {
         AssignTarget::Binding(Binding::Register(r)) => {
             if let Some(name) = names.get(&r) {
-                AssignTarget::Binding(Binding::Variable(name.clone()))
+                AssignTarget::Binding(Binding::Variable(name.clone().into()))
             } else {
                 AssignTarget::Binding(Binding::Register(r))
             }
@@ -216,7 +216,7 @@ fn rename_expr(expr: Expression, names: &BTreeMap<u32, String>) -> Expression {
     match expr {
         Expression::Value(Value::Binding(Binding::Register(r))) => {
             if let Some(name) = names.get(&r) {
-                Expression::Value(Value::Binding(Binding::Variable(name.clone())))
+                Expression::Value(Value::Binding(Binding::Variable(name.clone().into())))
             } else {
                 Expression::Value(Value::Binding(Binding::Register(r)))
             }
@@ -451,8 +451,8 @@ fn rename_variables_in_stmt(stmt: &mut Statement, renames: &BTreeMap<String, Str
 fn rename_variables_in_target(target: &mut AssignTarget, renames: &BTreeMap<String, String>) {
     match target {
         AssignTarget::Binding(Binding::Variable(name)) => {
-            if let Some(new_name) = renames.get(name) {
-                *name = new_name.clone();
+            if let Some(new_name) = renames.get(name.as_str()) {
+                name.name = new_name.clone();
             }
         }
         AssignTarget::Member { object, .. } => rename_variables_in_expr(object, renames),
@@ -467,8 +467,8 @@ fn rename_variables_in_target(target: &mut AssignTarget, renames: &BTreeMap<Stri
 fn rename_variables_in_expr(expr: &mut Expression, renames: &BTreeMap<String, String>) {
     match expr {
         Expression::Value(Value::Binding(Binding::Variable(name))) => {
-            if let Some(new_name) = renames.get(name) {
-                *name = new_name.clone();
+            if let Some(new_name) = renames.get(name.as_str()) {
+                name.name = new_name.clone();
             }
         }
         Expression::Binary { left, right, .. } => {

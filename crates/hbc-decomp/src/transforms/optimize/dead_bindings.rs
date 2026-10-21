@@ -185,7 +185,7 @@ struct ReadCounter<'a> {
 impl<'a> Visitor<'a> for ReadCounter<'a> {
     fn visit_expression(&mut self, e: &'a Expression) {
         if let Expression::Value(Value::Binding(Binding::Variable(name))) = e {
-            *self.reads.entry(name.clone()).or_insert(0) += 1;
+            *self.reads.entry(name.name.clone()).or_insert(0) += 1;
         }
         self.walk_expression(e);
     }

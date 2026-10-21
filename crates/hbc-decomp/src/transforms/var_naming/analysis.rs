@@ -32,7 +32,7 @@ pub fn analyze_stmt(namer: &mut VariableNamer, stmt: &Statement) {
                 if is_generic {
                     if let Some(name) = infer_name_from_expr(value) {
                         // Don't rename if we infer the same generic name
-                        if name != *v && !name.starts_with(v) {
+                        if name != *v && !name.starts_with(v.as_str()) {
                             log::debug!("Variable '{v}' inferred name '{name}' from expression");
                             namer.suggest_name(v, &name);
                         }

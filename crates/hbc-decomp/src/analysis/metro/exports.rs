@@ -27,7 +27,7 @@ impl ExportAnalyzer {
         for stmt in stmts {
             if let Statement::Assign { target, value } = stmt {
                 if let AssignTarget::Binding(Binding::Variable(name)) = target {
-                    definitions.insert(name.clone(), value);
+                    definitions.insert(name.name.clone(), value);
                 } else if let AssignTarget::Binding(Binding::Register(r)) = target {
                     definitions.insert(format!("r{r}"), value);
                 }
@@ -62,7 +62,7 @@ impl<'a> ExpressionTracer<'a> {
         }
         match expr {
             Expression::Value(Value::Binding(Binding::Variable(name))) => {
-                if let Some(def) = self.definitions.get(name) {
+                if let Some(def) = self.definitions.get(name.as_str()) {
                     self.resolve_bounded(def, depth - 1)
                 } else {
                     expr
@@ -274,7 +274,7 @@ fn get_base_and_prop(target: &AssignTarget) -> Option<(String, String)> {
 
 fn get_var_name(expr: &Expression) -> Option<String> {
     match expr {
-        Expression::Value(Value::Binding(Binding::Variable(n))) => Some(n.clone()),
+        Expression::Value(Value::Binding(Binding::Variable(n))) => Some(n.name.clone()),
         Expression::Value(Value::Binding(Binding::Register(r))) => Some(format!("r{r}")),
         Expression::Value(Value::Parameter(idx)) => Some(format!("p{idx}")), // Normalized param name?
         // Note: Earlier pipeline/propagation normalization might have changed "argN" to "pN" or kept "argN".

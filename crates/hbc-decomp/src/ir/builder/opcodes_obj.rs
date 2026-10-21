@@ -92,7 +92,7 @@ pub fn handle_create_class(
             };
             let extends_marker = Statement::Expr(Expression::Call {
                 callee: Box::new(Expression::Value(crate::ir::Value::Binding(
-                    Binding::Variable(EXTENDS_MARKER.to_string()),
+                    Binding::Variable(EXTENDS_MARKER.to_string().into()),
                 ))),
                 arguments: vec![
                     Expression::Value(crate::ir::Value::Binding(Binding::Register(class_reg))),
@@ -530,7 +530,7 @@ pub fn handle_iterator_begin(inst: &Instruction) -> Option<Statement> {
                 object: Box::new(source),
                 property: PropertyKey::Computed(Box::new(Expression::Member {
                     object: Box::new(Expression::Value(crate::ir::Value::Binding(
-                        Binding::Variable("Symbol".to_string()),
+                        Binding::Variable("Symbol".into()),
                     ))),
                     property: PropertyKey::Ident("iterator".to_string()),
                     optional: false,
@@ -579,7 +579,7 @@ pub fn handle_get_pname_list(inst: &Instruction) -> Option<Statement> {
         value: Expression::Call {
             callee: Box::new(Expression::member(
                 Expression::Value(crate::ir::Value::Binding(Binding::Variable(
-                    "Object".to_string(),
+                    "Object".into(),
                 ))),
                 "keys",
             )),

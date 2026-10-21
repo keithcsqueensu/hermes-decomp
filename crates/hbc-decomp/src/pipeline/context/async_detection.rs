@@ -413,7 +413,7 @@ fn detect_async_wrapper_pattern(stmts: &[Statement]) -> Option<u32> {
             Statement::Assign {
                 target: AssignTarget::Binding(crate::ir::Binding::Variable(name)),
                 value,
-            } => extract_generator_from_call(value).map(|id| (name.clone(), id))?,
+            } => extract_generator_from_call(value).map(|id| (name.name.clone(), id))?,
             _ => return None,
         };
 
@@ -494,7 +494,7 @@ fn async_helper_assignment(stmt: &Statement) -> Option<(String, u32)> {
         Statement::Assign {
             target: AssignTarget::Binding(crate::ir::Binding::Variable(name)),
             value,
-        } => extract_function_from_async_helper_call(value).map(|id| (name.clone(), id)),
+        } => extract_function_from_async_helper_call(value).map(|id| (name.name.clone(), id)),
         _ => None,
     }
 }

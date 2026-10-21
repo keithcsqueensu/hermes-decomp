@@ -141,7 +141,7 @@ fn bound_name_and_value(stmt: &Statement) -> Option<(String, &Expression)> {
         Statement::Assign {
             target: AssignTarget::Binding(Binding::Variable(name)),
             value,
-        } => Some((name.clone(), value)),
+        } => Some((name.name.clone(), value)),
         _ => None,
     }
 }
@@ -179,7 +179,7 @@ fn stepper_call_binding(
 
 fn simple_callee_name(callee: &Expression) -> Option<String> {
     match callee {
-        Expression::Value(Value::Binding(Binding::Variable(n))) => Some(n.clone()),
+        Expression::Value(Value::Binding(Binding::Variable(n))) => Some(n.name.clone()),
         Expression::Member {
             property: PropertyKey::Ident(n),
             ..
@@ -207,7 +207,7 @@ fn value_from_cursor(
     let Expression::Value(Value::Binding(Binding::Variable(obj))) = object.as_ref() else {
         return None;
     };
-    if cursor.contains_key(obj) {
+    if cursor.contains_key(obj.as_str()) {
         Some(name)
     } else {
         None

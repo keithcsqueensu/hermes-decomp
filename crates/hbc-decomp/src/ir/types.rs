@@ -59,17 +59,180 @@ impl fmt::Display for Constant {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Binding {
     Register(u32),
-    Variable(String),
+    Variable(Var),
     ClosureVar { level: u32, slot: u32 },
 }
 
+// Which environment slot a variable is: slot `slot` of scope `owner`, where the
+// owner is a function id or a synthetic block-scope id (`ClosureContext`). It is
+// absolute, so it means the same thing in any body a statement is moved into,
+// unlike the `level` of a `ClosureVar`, which counts hops from the body holding it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SlotRef {
+    pub owner: u32,
+    pub slot: u32,
+}
+
+// A named variable, and, once `resolve_closures` has baked an environment slot
+// into a name, which slot that name stands for.
+//
+// The name is still what tells two variables apart: equality, ordering and
+// hashing look at `name` alone. Every pass after W6 compares variables by
+// spelling, and a pass that rebuilds a `Var` from a string drops the slot, so
+// counting the slot in equality would make a stamped read and an unstamped write
+// of the same variable stop matching. A pass that wants identity asks for `slot`.
+//
+// A rename that assigns through `name` keeps `slot`, which is what lets the
+// identity survive the passes that know nothing about it. `Deref` to the name
+// keeps the reads that only ever wanted the string unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Var {
+    pub name: String,
+    pub slot: Option<SlotRef>,
+}
+
+impl Var {
+    pub fn new(name: impl Into<String>) -> Self {
+        Var {
+            name: name.into(),
+            slot: None,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl PartialEq for Var {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for Var {}
+
+impl std::hash::Hash for Var {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state)
+    }
+}
+
+impl PartialOrd for Var {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Var {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.name.cmp(&other.name)
+    }
+}
+
+impl PartialEq<str> for Var {
+    fn eq(&self, other: &str) -> bool {
+        self.name == other
+    }
+}
+
+impl PartialEq<&str> for Var {
+    fn eq(&self, other: &&str) -> bool {
+        self.name == *other
+    }
+}
+
+impl PartialEq<String> for Var {
+    fn eq(&self, other: &String) -> bool {
+        &self.name == other
+    }
+}
+
+impl PartialEq<Var> for str {
+    fn eq(&self, other: &Var) -> bool {
+        self == other.name
+    }
+}
+
+impl PartialEq<Var> for &str {
+    fn eq(&self, other: &Var) -> bool {
+        *self == other.name
+    }
+}
+
+impl PartialEq<Var> for String {
+    fn eq(&self, other: &Var) -> bool {
+        *self == other.name
+    }
+}
+
+impl std::ops::Deref for Var {
+    type Target = String;
+    fn deref(&self) -> &String {
+        &self.name
+    }
+}
+
+impl std::ops::DerefMut for Var {
+    fn deref_mut(&mut self) -> &mut String {
+        &mut self.name
+    }
+}
+
+impl std::borrow::Borrow<str> for Var {
+    fn borrow(&self) -> &str {
+        &self.name
+    }
+}
+
+impl AsRef<str> for Var {
+    fn as_ref(&self) -> &str {
+        &self.name
+    }
+}
+
+impl From<String> for Var {
+    fn from(name: String) -> Self {
+        Var::new(name)
+    }
+}
+
+impl From<&str> for Var {
+    fn from(name: &str) -> Self {
+        Var::new(name)
+    }
+}
+
+impl From<&String> for Var {
+    fn from(name: &String) -> Self {
+        Var::new(name.clone())
+    }
+}
+
+impl From<Var> for String {
+    fn from(var: Var) -> Self {
+        var.name
+    }
+}
+
+impl fmt::Display for Var {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
 impl Binding {
+    /// A variable binding with no slot identity.
+    pub fn var(name: impl Into<String>) -> Self {
+        Binding::Variable(Var::new(name))
+    }
+
     /// The name this binding renders as, which is also how two bindings are
     /// told apart once registers have been named.
     pub fn name(&self) -> String {
         match self {
             Binding::Register(r) => format!("r{r}"),
-            Binding::Variable(n) => n.clone(),
+            Binding::Variable(n) => n.name.clone(),
             Binding::ClosureVar { level, slot } => Value::closure_var_name(*level, *slot),
         }
     }
@@ -171,6 +334,23 @@ mod binding_tests {
             Value::Binding(Binding::ClosureVar { level: 1, slot: 2 }).as_binding(),
             Some(Binding::ClosureVar { level: 1, slot: 2 })
         );
+    }
+
+    // The slot rides along with the name without changing what the name means
+    // to the passes that compare by spelling, and a rename through `name` keeps it.
+    #[test]
+    fn a_var_compares_by_name_and_a_rename_keeps_its_slot() {
+        use super::{SlotRef, Var};
+        let slot = SlotRef { owner: 4, slot: 2 };
+        let mut stamped = Var {
+            name: "closure_2".into(),
+            slot: Some(slot),
+        };
+        assert_eq!(stamped, Var::from("closure_2"));
+        assert_eq!(stamped, "closure_2");
+        stamped.name = "status".into();
+        assert_eq!(stamped.slot, Some(slot));
+        assert_eq!(stamped.to_string(), "status");
     }
 
     #[test]

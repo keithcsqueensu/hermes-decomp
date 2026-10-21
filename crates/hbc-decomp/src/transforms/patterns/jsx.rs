@@ -77,7 +77,7 @@ fn build_jsx_element(callee: &Expression, arguments: &[Expression]) -> Option<Ex
     // valid JSX tag forms, leave those as jsx()/createElement() calls.
     let tag_name = match &arguments[0] {
         Expression::Value(Value::Constant(Constant::String(s))) => s.clone(),
-        Expression::Value(Value::Binding(Binding::Variable(v))) => v.clone(),
+        Expression::Value(Value::Binding(Binding::Variable(v))) => v.name.clone(),
         Expression::Member {
             object, property, ..
         } => {

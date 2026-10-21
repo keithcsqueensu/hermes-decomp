@@ -293,7 +293,7 @@ pub fn handle_call_builtin(inst: &Instruction, frame_size: u32, version: u32) ->
                 dst,
                 Expression::Call {
                     callee: Box::new(Expression::Value(Value::Binding(Binding::Variable(
-                        "require".to_string(),
+                        "require".into(),
                     )))),
                     arguments,
                 },
@@ -314,7 +314,7 @@ pub fn handle_call_builtin(inst: &Instruction, frame_size: u32, version: u32) ->
                     dst,
                     Expression::Call {
                         callee: Box::new(Expression::Value(Value::Binding(Binding::Variable(
-                            format!("__builtin{builtin_idx}"),
+                            format!("__builtin{builtin_idx}").into(),
                         )))),
                         arguments,
                     },
@@ -416,7 +416,7 @@ pub fn handle_call_require(inst: &Instruction) -> Option<Statement> {
         target: AssignTarget::Binding(Binding::Register(dst)),
         value: Expression::Call {
             callee: Box::new(Expression::Value(Value::Binding(Binding::Variable(
-                "require".to_string(),
+                "require".into(),
             )))),
             arguments: vec![arg_expr],
         },
@@ -434,7 +434,7 @@ pub fn handle_direct_eval(inst: &Instruction) -> Option<Statement> {
         target: AssignTarget::Binding(Binding::Register(dst)),
         value: Expression::Call {
             callee: Box::new(Expression::Value(Value::Binding(Binding::Variable(
-                "eval".to_string(),
+                "eval".into(),
             )))),
             arguments: vec![source],
         },

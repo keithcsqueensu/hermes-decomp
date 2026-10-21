@@ -31,7 +31,7 @@ fn scan_first_use(stmts: &[Statement], first_seen: &mut BTreeMap<String, bool>) 
                     first_seen.entry(r).or_insert(true);
                 }
                 if let AssignTarget::Binding(Binding::Variable(name)) = target {
-                    first_seen.entry(name.clone()).or_insert(false);
+                    first_seen.entry(name.name.clone()).or_insert(false);
                 } else {
                     for r in target_var_reads(target) {
                         first_seen.entry(r).or_insert(true);
@@ -122,7 +122,7 @@ fn expr_var_reads(expr: &Expression) -> Vec<String> {
     impl<'b> Visitor<'b> for R {
         fn visit_expression(&mut self, e: &'b Expression) {
             if let Expression::Value(Value::Binding(Binding::Variable(n))) = e {
-                self.0.push(n.clone());
+                self.0.push(n.name.clone());
             }
             self.walk_expression(e);
         }
@@ -163,9 +163,9 @@ pub(super) fn collect_scope_info(
         } = stmt
         {
             if in_loop {
-                assigned_in_loop.insert(name.clone());
+                assigned_in_loop.insert(name.name.clone());
             } else {
-                assigned_out_loop.insert(name.clone());
+                assigned_out_loop.insert(name.name.clone());
             }
         }
         if !in_loop {
@@ -278,7 +278,7 @@ fn stmt_var_refs(stmt: &Statement) -> Vec<String> {
     match stmt {
         Statement::Assign { target, value } => {
             if let crate::ir::AssignTarget::Binding(Binding::Variable(n)) = target {
-                names.push(n.clone());
+                names.push(n.name.clone());
             }
             collect_expr_vars(value, &mut names);
         }
@@ -305,7 +305,7 @@ pub(super) fn collect_expr_vars(expr: &Expression, out: &mut Vec<String>) {
     impl<'a, 'b> Visitor<'b> for VarCollector<'a> {
         fn visit_expression(&mut self, e: &'b Expression) {
             if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
-                self.0.push(v.clone());
+                self.0.push(v.name.clone());
             }
             self.walk_expression(e);
         }
@@ -333,8 +333,8 @@ pub(super) fn names_assigned_in_nested_bodies_and_used_outside(stmts: &[Statemen
             ..
         } = stmt
         {
-            if !seen_nested.contains(name) {
-                assigned_at_top_first.insert(name.clone());
+            if !seen_nested.contains(name.as_str()) {
+                assigned_at_top_first.insert(name.name.clone());
             }
         }
         visit_nested_bodies(stmt, &mut |body| {
@@ -390,7 +390,7 @@ fn collect_assigned(stmts: &[Statement], out: &mut Vec<String>) {
         } = stmt
         {
             if !out.contains(name) {
-                out.push(name.clone());
+                out.push(name.name.clone());
             }
         }
         visit_nested_bodies(stmt, &mut |body| collect_assigned(body, out));

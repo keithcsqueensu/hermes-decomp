@@ -248,7 +248,7 @@ impl Statement {
 
     pub fn assign_var(name: impl Into<String>, value: Expression) -> Self {
         Statement::Assign {
-            target: AssignTarget::Binding(Binding::Variable(name.into())),
+            target: AssignTarget::Binding(Binding::Variable(name.into().into())),
             value,
         }
     }

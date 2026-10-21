@@ -38,7 +38,7 @@ fn rewrite_stmt(
             count += rewrite_target(target, deps, aliases, roles);
             if let AssignTarget::Binding(Binding::Variable(name)) = target {
                 if super::expr_is_depmap_root(value, aliases, roles) {
-                    aliases.insert(name.clone());
+                    aliases.insert(name.name.clone());
                 }
             }
         }
@@ -246,7 +246,7 @@ fn try_resolve_depmap_index(
 
     let base_is_dep = match object.as_ref() {
         Expression::Value(Value::Binding(Binding::Variable(name))) => {
-            aliases.contains(name) || is_dep_array_name(name, roles)
+            aliases.contains(name.as_str()) || is_dep_array_name(name, roles)
         }
         Expression::Value(Value::Parameter(idx)) => roles.deps_idx == Some(*idx),
         _ => false,

@@ -217,7 +217,7 @@ mod tests {
                 Expression::binary(
                     BinaryOp::Add,
                     Expression::register(1),
-                    Expression::Value(Value::Binding(Binding::Variable("x".to_string()))),
+                    Expression::Value(Value::Binding(Binding::Variable("x".into()))),
                 ),
             ),
             Statement::assign_reg(

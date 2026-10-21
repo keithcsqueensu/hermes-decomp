@@ -112,7 +112,7 @@ pub(super) fn infer_name_from_define_property(
                                             )) = ret_val
                                             {
                                                 if is_meaningful_name(v) {
-                                                    return Some(v.clone());
+                                                    return Some(v.name.clone());
                                                 }
                                             }
                                             let ret_key = match ret_val {
@@ -121,7 +121,7 @@ pub(super) fn infer_name_from_define_property(
                                                 )) => Some(format!("r{r}")),
                                                 Expression::Value(Value::Binding(
                                                     crate::ir::Binding::Variable(v),
-                                                )) => Some(v.clone()),
+                                                )) => Some(v.name.clone()),
                                                 _ => None,
                                             };
                                             if let Some(key) = ret_key {
@@ -154,7 +154,7 @@ pub(super) fn infer_name_from_define_property(
                             &prop.value
                         {
                             if is_meaningful_name(v) {
-                                return Some(v.clone());
+                                return Some(v.name.clone());
                             }
                         }
                     }

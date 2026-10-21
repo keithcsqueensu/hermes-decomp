@@ -2,7 +2,9 @@ use crate::ir::{Expression, PropertyKey, Value};
 
 pub fn get_function_name(expr: &Expression) -> Option<String> {
     match expr {
-        Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) => Some(name.clone()),
+        Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) => {
+            Some(name.name.clone())
+        }
         Expression::Member {
             property: PropertyKey::Ident(name),
             ..

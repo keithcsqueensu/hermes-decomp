@@ -60,7 +60,7 @@ pub fn handle_create_generator(inst: &crate::Instruction) -> Option<FlowResult> 
             target: crate::ir::AssignTarget::Binding(Binding::Register(dst)),
             value: Expression::Call {
                 callee: Box::new(Expression::Value(crate::ir::Value::Binding(
-                    Binding::Variable("CreateGenerator".to_string()),
+                    Binding::Variable("CreateGenerator".into()),
                 ))),
                 arguments: vec![Expression::Value(crate::ir::Value::Binding(
                     Binding::Register(env),

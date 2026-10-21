@@ -9,7 +9,7 @@ use super::info::encode_level_slot;
 use super::resolve_closures;
 
 fn var(s: &str) -> Expression {
-    Expression::Value(Value::Binding(crate::ir::Binding::Variable(s.to_string())))
+    Expression::Value(Value::Binding(crate::ir::Binding::Variable(s.into())))
 }
 
 fn func(id: u32) -> Expression {

@@ -30,10 +30,10 @@ impl ClosureContext {
                     }
                     if let AssignTarget::Binding(Binding::Variable(vname)) = target {
                         named_values.insert(
-                            vname.clone(),
+                            vname.name.clone(),
                             ClosureSlotValue::Function {
                                 id: id.0,
-                                name: name.clone().or_else(|| Some(vname.clone())),
+                                name: name.clone().or_else(|| Some(vname.name.clone())),
                             },
                         );
                     }
@@ -49,7 +49,7 @@ impl ClosureContext {
 
                 if let AssignTarget::Binding(Binding::Variable(name)) = target {
                     if let Some(val) = Self::resolve_store_value(value, reg_values, named_values) {
-                        named_values.insert(name.clone(), val);
+                        named_values.insert(name.name.clone(), val);
                     }
                 }
 

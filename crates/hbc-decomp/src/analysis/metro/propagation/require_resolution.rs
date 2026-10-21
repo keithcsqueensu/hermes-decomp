@@ -43,7 +43,7 @@ pub(super) fn resolve_require_module(
                         Some(format!("r{r}"))
                     }
                     Expression::Value(Value::Binding(crate::ir::Binding::Variable(n))) => {
-                        Some(n.clone())
+                        Some(n.name.clone())
                     }
                     _ => None,
                 };
@@ -82,7 +82,7 @@ pub(super) fn resolve_require_module(
                             Some(format!("r{r}"))
                         }
                         Expression::Value(Value::Binding(crate::ir::Binding::Variable(n))) => {
-                            Some(n.clone())
+                            Some(n.name.clone())
                         }
                         Expression::Value(Value::Parameter(i)) => Some(format!("arg{i}")),
                         _ => None,

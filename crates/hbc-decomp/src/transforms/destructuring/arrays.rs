@@ -79,7 +79,7 @@ fn extract_slice_call(stmt: &Statement) -> Option<(AssignTarget, Expression, i64
     let (target, value) = match stmt {
         Statement::Assign { target, value } => (target.clone(), value),
         Statement::Let { name, value, .. } => (
-            AssignTarget::Binding(Binding::Variable(name.clone())),
+            AssignTarget::Binding(Binding::Variable(name.clone().into())),
             value,
         ),
         _ => return None,

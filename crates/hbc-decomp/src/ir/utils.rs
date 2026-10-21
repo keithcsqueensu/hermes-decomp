@@ -68,7 +68,7 @@ pub fn stmt_uses_register(stmt: &Statement, reg: u32) -> bool {
 pub fn target_to_key(target: &AssignTarget) -> Option<String> {
     match target {
         AssignTarget::Binding(Binding::Register(r)) => Some(format!("r{r}")),
-        AssignTarget::Binding(Binding::Variable(name)) => Some(name.clone()),
+        AssignTarget::Binding(Binding::Variable(name)) => Some(name.name.clone()),
         // The one spelling every other site prints and matches against
         // (`Value::closure_var_name`): a level-0 slot is `closure_5`, not
         // `closure_0_5`. A key spelled differently could never match the name it
@@ -82,7 +82,7 @@ pub fn target_to_key(target: &AssignTarget) -> Option<String> {
 
 pub fn get_value_name(expr: &Expression) -> Option<String> {
     match expr {
-        Expression::Value(Value::Binding(Binding::Variable(n))) => Some(n.clone()),
+        Expression::Value(Value::Binding(Binding::Variable(n))) => Some(n.name.clone()),
         Expression::Value(Value::Binding(Binding::Register(r))) => Some(format!("r{r}")),
         Expression::Value(Value::Parameter(idx)) => Some(format!("arg{idx}")),
         _ => None,

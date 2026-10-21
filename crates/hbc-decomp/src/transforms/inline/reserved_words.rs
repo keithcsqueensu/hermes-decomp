@@ -173,7 +173,7 @@ fn rename_reserved_in_target(target: &mut AssignTarget) {
     match target {
         AssignTarget::Binding(Binding::Variable(name)) => {
             if is_reserved(name) {
-                *name = format!("_{name}");
+                name.name = format!("_{name}");
             }
         }
         AssignTarget::Member { object, .. } => rename_reserved_in_expr(object),
@@ -189,7 +189,7 @@ fn rename_reserved_in_expr(expr: &mut Expression) {
     match expr {
         Expression::Value(Value::Binding(Binding::Variable(name))) => {
             if is_reserved(name) {
-                *name = format!("_{name}");
+                name.name = format!("_{name}");
             }
         }
         Expression::Binary { left, right, .. } => {
@@ -262,13 +262,13 @@ pub fn make_sanitized_names_distinct(stmts: &mut [Statement]) {
     impl<'a> Visitor<'a> for Names {
         fn visit_expression(&mut self, e: &'a Expression) {
             if let Expression::Value(Value::Binding(Binding::Variable(n))) = e {
-                self.0.insert(n.clone());
+                self.0.insert(n.name.clone());
             }
             self.walk_expression(e);
         }
         fn visit_assign_target(&mut self, t: &'a AssignTarget) {
             if let AssignTarget::Binding(Binding::Variable(n)) = t {
-                self.0.insert(n.clone());
+                self.0.insert(n.name.clone());
             }
             self.walk_assign_target(t);
         }

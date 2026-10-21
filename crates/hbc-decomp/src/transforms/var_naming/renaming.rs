@@ -132,14 +132,14 @@ fn rename_target(namer: &VariableNamer, target: AssignTarget) -> AssignTarget {
         AssignTarget::Binding(Binding::Register(r)) => {
             let key = format!("r{r}");
             if let Some(name) = namer.inferred_names.get(&key) {
-                AssignTarget::Binding(Binding::Variable(name.clone()))
+                AssignTarget::Binding(Binding::Variable(name.clone().into()))
             } else {
                 AssignTarget::Binding(Binding::Register(r))
             }
         }
         AssignTarget::Binding(Binding::Variable(v)) => {
-            if let Some(name) = namer.inferred_names.get(&v) {
-                AssignTarget::Binding(Binding::Variable(name.clone()))
+            if let Some(name) = namer.inferred_names.get(v.as_str()) {
+                AssignTarget::Binding(Binding::Variable(name.clone().into()))
             } else {
                 AssignTarget::Binding(Binding::Variable(v))
             }
@@ -161,14 +161,14 @@ fn rename_expr(namer: &VariableNamer, expr: Expression) -> Expression {
         Expression::Value(Value::Binding(Binding::Register(r))) => {
             let key = format!("r{r}");
             if let Some(name) = namer.inferred_names.get(&key) {
-                Expression::Value(Value::Binding(Binding::Variable(name.clone())))
+                Expression::Value(Value::Binding(Binding::Variable(name.clone().into())))
             } else {
                 Expression::Value(Value::Binding(Binding::Register(r)))
             }
         }
         Expression::Value(Value::Binding(Binding::Variable(v))) => {
-            if let Some(name) = namer.inferred_names.get(&v) {
-                Expression::Value(Value::Binding(Binding::Variable(name.clone())))
+            if let Some(name) = namer.inferred_names.get(v.as_str()) {
+                Expression::Value(Value::Binding(Binding::Variable(name.clone().into())))
             } else {
                 Expression::Value(Value::Binding(Binding::Variable(v)))
             }

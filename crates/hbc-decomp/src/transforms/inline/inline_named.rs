@@ -61,7 +61,7 @@ fn collect_immutable_aliases(
             let alias = match s {
                 Statement::Let { name, value, .. } => Some((name, value)),
                 Statement::Assign {
-                    target: AssignTarget::Binding(Binding::Variable(name)),
+                    target: AssignTarget::Binding(Binding::Variable(crate::ir::Var { name, .. })),
                     value,
                 } => Some((name, value)),
                 _ => None,
@@ -70,10 +70,10 @@ fn collect_immutable_aliases(
                 if v != name
                     && is_inlinable_name(name)
                     && self.def_count.get(name).copied() == Some(1)
-                    && self.def_count.get(v).copied().unwrap_or(0) == 0
+                    && self.def_count.get(v.as_str()).copied().unwrap_or(0) == 0
                     && !self.out.contains_key(name)
                 {
-                    self.out.insert(name.clone(), v.clone());
+                    self.out.insert(name.clone(), v.name.clone());
                 }
             }
             self.walk_statement(s);
@@ -201,7 +201,7 @@ fn inline_named_with_candidates(
             Statement::Assign {
                 target: AssignTarget::Binding(Binding::Variable(name)),
                 value,
-            } => Some((name.clone(), value.clone(), false)),
+            } => Some((name.name.clone(), value.clone(), false)),
             Statement::Let { name, value, .. } => Some((name.clone(), value.clone(), true)),
             _ => None,
         };
@@ -247,7 +247,7 @@ fn inline_named_with_candidates(
                 } else {
                     // Not simple enough: emit as normal
                     let mut stmt = Statement::Assign {
-                        target: AssignTarget::Binding(Binding::Variable(name.clone())),
+                        target: AssignTarget::Binding(Binding::Variable(name.clone().into())),
                         value,
                     };
                     apply_pending_to_stmt(&mut stmt, &mut pending);
@@ -417,7 +417,7 @@ fn flush_pending_blocked_by(
     for name in blocked {
         if let Some(value) = pending.remove(&name) {
             result.push(Statement::Assign {
-                target: AssignTarget::Binding(Binding::Variable(name)),
+                target: AssignTarget::Binding(Binding::Variable(name.into())),
                 value,
             });
         }
@@ -467,7 +467,7 @@ fn assigned_variable_names(stmt: &Statement) -> Vec<String> {
     impl<'a> Visitor<'a> for C {
         fn visit_assign_target(&mut self, target: &'a AssignTarget) {
             if let AssignTarget::Binding(Binding::Variable(name)) = target {
-                self.0.push(name.clone());
+                self.0.push(name.name.clone());
             }
             self.walk_assign_target(target);
         }

@@ -26,7 +26,7 @@ pub fn extract_property_access(
                 return Some((
                     *object.clone(),
                     property.clone(),
-                    AssignTarget::Binding(Binding::Variable(name.clone())),
+                    AssignTarget::Binding(Binding::Variable(name.clone().into())),
                 ));
             }
             None

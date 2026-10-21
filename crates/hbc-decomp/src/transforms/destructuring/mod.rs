@@ -387,12 +387,10 @@ mod tests {
 
     #[test]
     fn test_three_properties_destructuring() {
-        let obj = Expression::Value(Value::Binding(crate::ir::Binding::Variable(
-            "data".to_string(),
-        )));
+        let obj = Expression::Value(Value::Binding(crate::ir::Binding::Variable("data".into())));
         let stmts = vec![
             Statement::Assign {
-                target: AssignTarget::Binding(crate::ir::Binding::Variable("x".to_string())),
+                target: AssignTarget::Binding(crate::ir::Binding::Variable("x".into())),
                 value: Expression::Member {
                     object: Box::new(obj.clone()),
                     property: PropertyKey::Ident("x".to_string()),
@@ -400,7 +398,7 @@ mod tests {
                 },
             },
             Statement::Assign {
-                target: AssignTarget::Binding(crate::ir::Binding::Variable("y".to_string())),
+                target: AssignTarget::Binding(crate::ir::Binding::Variable("y".into())),
                 value: Expression::Member {
                     object: Box::new(obj.clone()),
                     property: PropertyKey::Ident("y".to_string()),
@@ -408,7 +406,7 @@ mod tests {
                 },
             },
             Statement::Assign {
-                target: AssignTarget::Binding(crate::ir::Binding::Variable("z".to_string())),
+                target: AssignTarget::Binding(crate::ir::Binding::Variable("z".into())),
                 value: Expression::Member {
                     object: Box::new(obj.clone()),
                     property: PropertyKey::Ident("z".to_string()),
@@ -443,12 +441,10 @@ mod tests {
     #[test]
     fn test_default_value_destructuring() {
         use crate::ir::{BinaryOp, Constant, Value};
-        let obj = Expression::Value(Value::Binding(crate::ir::Binding::Variable(
-            "param".to_string(),
-        )));
+        let obj = Expression::Value(Value::Binding(crate::ir::Binding::Variable("param".into())));
         let stmts = vec![
             Statement::Assign {
-                target: AssignTarget::Binding(crate::ir::Binding::Variable("x".to_string())),
+                target: AssignTarget::Binding(crate::ir::Binding::Variable("x".into())),
                 value: Expression::Member {
                     object: Box::new(obj.clone()),
                     property: PropertyKey::Ident("x".to_string()),
@@ -459,18 +455,18 @@ mod tests {
                 condition: Expression::Binary {
                     op: BinaryOp::StrictEq,
                     left: Box::new(Expression::Value(Value::Binding(
-                        crate::ir::Binding::Variable("x".to_string()),
+                        crate::ir::Binding::Variable("x".into()),
                     ))),
                     right: Box::new(Expression::constant(Constant::Undefined)),
                 },
                 then_body: vec![Statement::Assign {
-                    target: AssignTarget::Binding(crate::ir::Binding::Variable("x".to_string())),
+                    target: AssignTarget::Binding(crate::ir::Binding::Variable("x".into())),
                     value: Expression::constant(Constant::Integer(42)),
                 }],
                 else_body: vec![],
             },
             Statement::Assign {
-                target: AssignTarget::Binding(crate::ir::Binding::Variable("y".to_string())),
+                target: AssignTarget::Binding(crate::ir::Binding::Variable("y".into())),
                 value: Expression::Member {
                     object: Box::new(obj.clone()),
                     property: PropertyKey::Ident("y".to_string()),

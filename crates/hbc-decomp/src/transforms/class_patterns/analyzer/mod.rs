@@ -502,7 +502,7 @@ impl<'a> ClassAnalyzer<'a> {
                     {
                         if let Some(builder) = self.classes.get_mut(&class_name) {
                             builder.super_class = Some(Expression::Value(Value::Binding(
-                                Binding::Variable(super_name),
+                                Binding::Variable(super_name.into()),
                             )));
                         }
                         self.consume(&class_name, idx);
@@ -636,7 +636,7 @@ mod candidate_tests {
             },
             Statement::Expr(Expression::Call {
                 callee: Box::new(Expression::Value(Value::Binding(Binding::Variable(
-                    crate::ir::EXTENDS_MARKER.to_string(),
+                    crate::ir::EXTENDS_MARKER.into(),
                 )))),
                 arguments: vec![reg(4), reg(3)],
             }),

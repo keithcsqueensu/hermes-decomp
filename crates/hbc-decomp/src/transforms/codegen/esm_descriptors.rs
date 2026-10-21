@@ -14,7 +14,7 @@ impl Codegen {
         // Case 1: Descriptor is a variable reference → lookup in descriptor_vars
         match descriptor {
             Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) => {
-                if let Some(info) = descriptor_vars.get(name) {
+                if let Some(info) = descriptor_vars.get(name.as_str()) {
                     return info.getter_return.clone().or(info.value_prop.clone());
                 }
             }
@@ -161,7 +161,7 @@ impl Codegen {
         // Return the variable name of the descriptor
         match &args[desc_idx] {
             Expression::Value(Value::Binding(crate::ir::Binding::Variable(name))) => {
-                Some(name.clone())
+                Some(name.name.clone())
             }
             Expression::Value(Value::Binding(crate::ir::Binding::Register(r))) => {
                 Some(format!("r{r}"))
@@ -252,14 +252,14 @@ impl Codegen {
                     value,
                 } => {
                     if let Some(mod_name) = self.resolve_require_module(value) {
-                        import_var = Some(name.clone());
+                        import_var = Some(name.name.clone());
                         module_name = Some(mod_name);
                     }
                     if module_name.is_none() {
                         if let Expression::Call { arguments, .. } = value {
                             for arg in Self::effective_args(arguments) {
                                 if let Some(mod_name) = self.resolve_require_module(arg) {
-                                    import_var = Some(name.clone());
+                                    import_var = Some(name.name.clone());
                                     module_name = Some(mod_name);
                                     break;
                                 }
@@ -339,7 +339,7 @@ impl Codegen {
                             var_name,
                         ))) = arg
                         {
-                            return Some(var_name.clone());
+                            return Some(var_name.name.clone());
                         }
                     }
                 }

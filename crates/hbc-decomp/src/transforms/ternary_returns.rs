@@ -187,9 +187,7 @@ mod tests {
     #[test]
     fn test_if_else_return_to_ternary() {
         let stmts = vec![Statement::If {
-            condition: Expression::Value(Value::Binding(crate::ir::Binding::Variable(
-                "x".to_string(),
-            ))),
+            condition: Expression::Value(Value::Binding(crate::ir::Binding::Variable("x".into()))),
             then_body: vec![Statement::Return(Some(Expression::constant(
                 Constant::Integer(1),
             )))],
@@ -213,7 +211,7 @@ mod tests {
         let stmts = vec![
             Statement::If {
                 condition: Expression::Value(Value::Binding(crate::ir::Binding::Variable(
-                    "x".to_string(),
+                    "x".into(),
                 ))),
                 then_body: vec![Statement::Return(Some(Expression::constant(
                     Constant::Integer(1),
@@ -239,11 +237,11 @@ mod tests {
         let complex_expr = Expression::Call {
             callee: Box::new(Expression::Call {
                 callee: Box::new(Expression::Value(Value::Binding(
-                    crate::ir::Binding::Variable("f".to_string()),
+                    crate::ir::Binding::Variable("f".into()),
                 ))),
                 arguments: vec![Expression::Call {
                     callee: Box::new(Expression::Value(Value::Binding(
-                        crate::ir::Binding::Variable("g".to_string()),
+                        crate::ir::Binding::Variable("g".into()),
                     ))),
                     arguments: vec![Expression::constant(Constant::Integer(1))],
                 }],
@@ -252,9 +250,7 @@ mod tests {
         };
 
         let stmts = vec![Statement::If {
-            condition: Expression::Value(Value::Binding(crate::ir::Binding::Variable(
-                "x".to_string(),
-            ))),
+            condition: Expression::Value(Value::Binding(crate::ir::Binding::Variable("x".into()))),
             then_body: vec![Statement::Return(Some(complex_expr.clone()))],
             else_body: vec![Statement::Return(Some(complex_expr))],
         }];

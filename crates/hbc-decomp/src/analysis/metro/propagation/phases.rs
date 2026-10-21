@@ -65,7 +65,7 @@ pub(super) fn reverse_require_naming(
                                     Some(format!("r{r}"))
                                 }
                                 Expression::Value(Value::Binding(Binding::Variable(n))) => {
-                                    Some(n.clone())
+                                    Some(n.name.clone())
                                 }
                                 Expression::Value(Value::Parameter(i)) => Some(format!("arg{i}")),
                                 _ => None,
@@ -84,10 +84,10 @@ pub(super) fn reverse_require_naming(
                             }
                         }
                         Expression::Value(Value::Binding(Binding::Variable(v))) => {
-                            if let Some(prop) = reg_props.get(v) {
+                            if let Some(prop) = reg_props.get(v.as_str()) {
                                 reg_props.insert(name.clone(), prop.clone());
                             }
-                            if let Some(param) = reg_params.get(v) {
+                            if let Some(param) = reg_params.get(v.as_str()) {
                                 reg_params.insert(name.clone(), *param);
                             }
                         }
@@ -225,7 +225,7 @@ pub(super) fn propagate_reexport_names(
                                 Some(format!("r{r}"))
                             }
                             Expression::Value(Value::Binding(Binding::Variable(n))) => {
-                                Some(n.clone())
+                                Some(n.name.clone())
                             }
                             Expression::Value(Value::Parameter(i)) => Some(format!("arg{i}")),
                             _ => None,
@@ -488,7 +488,7 @@ pub(crate) fn propagate_module_names_to_closures(
                                     Some(format!("r{r}"))
                                 }
                                 Expression::Value(Value::Binding(Binding::Variable(n))) => {
-                                    Some(n.clone())
+                                    Some(n.name.clone())
                                 }
                                 Expression::Value(Value::Parameter(i)) => Some(format!("arg{i}")),
                                 _ => None,
@@ -507,10 +507,10 @@ pub(crate) fn propagate_module_names_to_closures(
                             }
                         }
                         Expression::Value(Value::Binding(Binding::Variable(v))) => {
-                            if let Some(prop) = reg_props.get(v) {
+                            if let Some(prop) = reg_props.get(v.as_str()) {
                                 reg_props.insert(name.clone(), prop.clone());
                             }
-                            if let Some(param) = reg_params.get(v) {
+                            if let Some(param) = reg_params.get(v.as_str()) {
                                 reg_params.insert(name.clone(), *param);
                             }
                         }
@@ -609,7 +609,7 @@ fn closure_slot_owner(
 fn name_stored_in_slot(value: &Expression) -> Option<String> {
     match value {
         Expression::Value(Value::Binding(Binding::Variable(name))) if stored_name_ok(name) => {
-            Some(name.clone())
+            Some(name.name.clone())
         }
         Expression::Value(Value::Constant(crate::ir::Constant::String(s))) if stored_name_ok(s) => {
             Some(s.clone())
@@ -630,7 +630,7 @@ fn name_stored_in_slot(value: &Expression) -> Option<String> {
                 return None;
             }
             if prop == "default" {
-                Some(base.clone())
+                Some(base.name.clone())
             } else if stored_name_ok(prop) {
                 Some(prop.clone())
             } else {

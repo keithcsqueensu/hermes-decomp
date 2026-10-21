@@ -26,7 +26,7 @@ impl<'a, 'c> Visitor<'a> for VarCounter<'c> {
         match stmt {
             Statement::Assign { target, value } => {
                 if let AssignTarget::Binding(Binding::Variable(name)) = target {
-                    *self.defs.entry(name.clone()).or_insert(0) += 1;
+                    *self.defs.entry(name.name.clone()).or_insert(0) += 1;
                 }
                 self.visit_assign_target(target);
                 self.visit_expression(value);
@@ -41,7 +41,7 @@ impl<'a, 'c> Visitor<'a> for VarCounter<'c> {
 
     fn visit_expression(&mut self, expr: &'a Expression) {
         if let Expression::Value(Value::Binding(Binding::Variable(name))) = expr {
-            *self.uses.entry(name.clone()).or_insert(0) += 1;
+            *self.uses.entry(name.name.clone()).or_insert(0) += 1;
         }
         // Don't recurse into function bodies
         if matches!(expr, Expression::Function { .. }) {
@@ -69,7 +69,7 @@ impl<'p> MutVisitor for VarSubstitutor<'p> {
     fn visit_expression(&mut self, expr: &mut Expression) {
         self.walk_expression(expr);
         if let Expression::Value(Value::Binding(Binding::Variable(name))) = expr {
-            if let Some(replacement) = self.pending.get(name) {
+            if let Some(replacement) = self.pending.get(name.as_str()) {
                 *expr = replacement.clone();
             }
         }
@@ -141,7 +141,7 @@ pub(super) fn flush_pending(
     let items = std::mem::take(pending);
     for (name, value) in items {
         result.push(Statement::Assign {
-            target: AssignTarget::Binding(Binding::Variable(name)),
+            target: AssignTarget::Binding(Binding::Variable(name.into())),
             value,
         });
     }
@@ -159,7 +159,7 @@ pub(super) fn remove_used_from_pending(
     impl<'a> Visitor<'a> for UsedVarCollector {
         fn visit_expression(&mut self, expr: &'a Expression) {
             if let Expression::Value(Value::Binding(Binding::Variable(name))) = expr {
-                self.names.push(name.clone());
+                self.names.push(name.name.clone());
             }
             self.walk_expression(expr);
         }

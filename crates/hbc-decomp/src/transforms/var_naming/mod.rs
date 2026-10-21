@@ -59,13 +59,13 @@ fn existing_names(stmts: &[Statement]) -> std::collections::HashSet<String> {
     impl<'b> Visitor<'b> for C<'_> {
         fn visit_expression(&mut self, e: &'b Expression) {
             if let Expression::Value(Value::Binding(crate::ir::Binding::Variable(n))) = e {
-                self.0.insert(n.clone());
+                self.0.insert(n.name.clone());
             }
             self.walk_expression(e);
         }
         fn visit_assign_target(&mut self, t: &'b AssignTarget) {
             if let AssignTarget::Binding(crate::ir::Binding::Variable(n)) = t {
-                self.0.insert(n.clone());
+                self.0.insert(n.name.clone());
             }
             self.walk_assign_target(t);
         }
@@ -106,12 +106,12 @@ mod tests {
             Statement::Assign {
                 target: AssignTarget::Member {
                     object: Expression::Value(Value::Binding(crate::ir::Binding::Variable(
-                        "obj".to_string(),
+                        "obj".into(),
                     ))),
                     property: "variations".to_string(),
                 },
                 value: Expression::Value(Value::Binding(crate::ir::Binding::Variable(
-                    "obj1".to_string(),
+                    "obj1".into(),
                 ))),
             },
         ];
@@ -134,10 +134,10 @@ mod tests {
             target: AssignTarget::Binding(crate::ir::Binding::Register(0)),
             value: Expression::Call {
                 callee: Box::new(Expression::Value(Value::Binding(
-                    crate::ir::Binding::Variable("fetch".to_string()),
+                    crate::ir::Binding::Variable("fetch".into()),
                 ))),
                 arguments: vec![Expression::Value(Value::Binding(
-                    crate::ir::Binding::Variable("url".to_string()),
+                    crate::ir::Binding::Variable("url".into()),
                 ))],
             },
         }];
@@ -160,7 +160,7 @@ mod tests {
             target: AssignTarget::Binding(crate::ir::Binding::Register(0)),
             value: Expression::Member {
                 object: Box::new(Expression::Value(Value::Binding(
-                    crate::ir::Binding::Variable("obj".to_string()),
+                    crate::ir::Binding::Variable("obj".into()),
                 ))),
                 property: PropertyKey::Ident("length".to_string()),
                 optional: false,
@@ -217,7 +217,7 @@ mod tests {
             target: AssignTarget::Binding(crate::ir::Binding::Register(0)),
             value: Expression::New {
                 callee: Box::new(Expression::Value(Value::Binding(
-                    crate::ir::Binding::Variable("Date".to_string()),
+                    crate::ir::Binding::Variable("Date".into()),
                 ))),
                 arguments: vec![],
             },
@@ -242,10 +242,10 @@ mod tests {
             value: Expression::Binary {
                 op: crate::ir::BinaryOp::Add,
                 left: Box::new(Expression::Value(Value::Binding(
-                    crate::ir::Binding::Variable("a".to_string()),
+                    crate::ir::Binding::Variable("a".into()),
                 ))),
                 right: Box::new(Expression::Value(Value::Binding(
-                    crate::ir::Binding::Variable("b".to_string()),
+                    crate::ir::Binding::Variable("b".into()),
                 ))),
             },
         }];
@@ -268,7 +268,7 @@ mod tests {
             target: AssignTarget::Binding(crate::ir::Binding::Register(0)),
             value: Expression::Member {
                 object: Box::new(Expression::Value(Value::Binding(
-                    crate::ir::Binding::Variable("items".to_string()),
+                    crate::ir::Binding::Variable("items".into()),
                 ))),
                 property: PropertyKey::Index(0),
                 optional: false,
@@ -294,7 +294,7 @@ mod tests {
                 target: AssignTarget::Binding(crate::ir::Binding::Register(0)),
                 value: Expression::Call {
                     callee: Box::new(Expression::Value(Value::Binding(
-                        crate::ir::Binding::Variable("fetch".to_string()),
+                        crate::ir::Binding::Variable("fetch".into()),
                     ))),
                     arguments: vec![],
                 },
@@ -303,7 +303,7 @@ mod tests {
                 target: AssignTarget::Binding(crate::ir::Binding::Register(1)),
                 value: Expression::Call {
                     callee: Box::new(Expression::Value(Value::Binding(
-                        crate::ir::Binding::Variable("fetch".to_string()),
+                        crate::ir::Binding::Variable("fetch".into()),
                     ))),
                     arguments: vec![],
                 },

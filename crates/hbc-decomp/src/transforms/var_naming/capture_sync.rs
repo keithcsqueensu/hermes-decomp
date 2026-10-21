@@ -110,13 +110,13 @@ struct Refs(HashSet<String>);
 impl<'a> Visitor<'a> for Refs {
     fn visit_assign_target(&mut self, t: &'a AssignTarget) {
         if let AssignTarget::Binding(Binding::Variable(n)) = t {
-            self.0.insert(n.clone());
+            self.0.insert(n.name.clone());
         }
         self.walk_assign_target(t);
     }
     fn visit_expression(&mut self, e: &'a crate::ir::Expression) {
         if let crate::ir::Expression::Value(crate::ir::Value::Binding(Binding::Variable(n))) = e {
-            self.0.insert(n.clone());
+            self.0.insert(n.name.clone());
         }
         self.walk_expression(e);
     }
@@ -127,7 +127,7 @@ struct Bound(HashSet<String>);
 impl<'a> Visitor<'a> for Bound {
     fn visit_assign_target(&mut self, t: &'a AssignTarget) {
         if let AssignTarget::Binding(Binding::Variable(n)) = t {
-            self.0.insert(n.clone());
+            self.0.insert(n.name.clone());
         }
         self.walk_assign_target(t);
     }

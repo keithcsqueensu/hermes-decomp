@@ -241,7 +241,7 @@ impl MutVisitor for LoaderRewriter<'_> {
             if self.keys.contains(&key) {
                 if let Some(name) = self.bindings.get(&key) {
                     *e = Expression::Value(Value::Binding(crate::ir::Binding::Variable(
-                        name.clone(),
+                        name.clone().into(),
                     )));
                     return;
                 }

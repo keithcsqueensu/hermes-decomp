@@ -164,7 +164,7 @@ fn named_member_fill(stmt: &Statement, obj: &ObjRef) -> Option<(String, Expressi
     };
     let obj_now = match object {
         Expression::Value(Value::Binding(Binding::Register(r))) => ObjRef::Register(*r),
-        Expression::Value(Value::Binding(Binding::Variable(n))) => ObjRef::Name(n.clone()),
+        Expression::Value(Value::Binding(Binding::Variable(n))) => ObjRef::Name(n.name.clone()),
         _ => return None,
     };
     if !obj_ref_eq(&obj_now, obj) {
@@ -215,7 +215,7 @@ fn rewrite_slot_index_names_in(
             let obj_now = match object {
                 Expression::Value(Value::Binding(Binding::Register(r))) => ObjRef::Register(*r),
                 Expression::Value(Value::Binding(Binding::Variable(name))) => {
-                    ObjRef::Name(name.clone())
+                    ObjRef::Name(name.name.clone())
                 }
                 _ => return None,
             };
@@ -294,7 +294,7 @@ fn object_ident_keys(stmt: &Statement) -> Option<(ObjRef, Vec<String>)> {
         Statement::Assign {
             target: AssignTarget::Binding(Binding::Variable(name)),
             value: Expression::Object { properties },
-        } if !properties.is_empty() => (ObjRef::Name(name.clone()), properties),
+        } if !properties.is_empty() => (ObjRef::Name(name.name.clone()), properties),
         Statement::Let {
             name,
             value: Expression::Object { properties },
@@ -334,7 +334,7 @@ fn object_literal_def(stmt: &Statement) -> Option<(ObjRef, usize)> {
         Statement::Assign {
             target: AssignTarget::Binding(Binding::Variable(name)),
             value: Expression::Object { properties },
-        } if !properties.is_empty() => Some((ObjRef::Name(name.clone()), properties.len())),
+        } if !properties.is_empty() => Some((ObjRef::Name(name.name.clone()), properties.len())),
         Statement::Let {
             name,
             value: Expression::Object { properties },
@@ -404,7 +404,7 @@ fn record_defs(stmt: &Statement, regs: &mut Vec<u32>, vars: &mut Vec<String>) {
         Statement::Assign {
             target: AssignTarget::Binding(Binding::Variable(n)),
             ..
-        } => vars.push(n.clone()),
+        } => vars.push(n.name.clone()),
         Statement::Let { name, .. } => vars.push(name.clone()),
         _ => {}
     }

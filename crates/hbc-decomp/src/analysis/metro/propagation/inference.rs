@@ -50,10 +50,12 @@ pub(super) fn infer_module_name_from_stmts(
         }
         let function_name = match value {
             Expression::Function { name: Some(n), .. } => Some(n.clone()),
-            Expression::Value(Value::Binding(Binding::Variable(v))) => match var_defs.get(v) {
-                Some(Expression::Function { name: Some(n), .. }) => Some(n.clone()),
-                _ => None,
-            },
+            Expression::Value(Value::Binding(Binding::Variable(v))) => {
+                match var_defs.get(v.as_str()) {
+                    Some(Expression::Function { name: Some(n), .. }) => Some(n.clone()),
+                    _ => None,
+                }
+            }
             _ => None,
         };
         if let Some(n) = function_name {
@@ -99,10 +101,12 @@ pub(super) fn default_export_function_name(stmts: &[Statement]) -> Option<String
         }
         let function_name = match value {
             Expression::Function { name: Some(n), .. } => Some(n.clone()),
-            Expression::Value(Value::Binding(Binding::Variable(v))) => match var_defs.get(v) {
-                Some(Expression::Function { name: Some(n), .. }) => Some(n.clone()),
-                _ => None,
-            },
+            Expression::Value(Value::Binding(Binding::Variable(v))) => {
+                match var_defs.get(v.as_str()) {
+                    Some(Expression::Function { name: Some(n), .. }) => Some(n.clone()),
+                    _ => None,
+                }
+            }
             _ => None,
         };
         if let Some(n) = function_name {
@@ -178,7 +182,7 @@ fn infer_module_name_from_stmts_heuristic(
                         if property == "default" {
                             if let Expression::Value(Value::Binding(Binding::Variable(v))) = value {
                                 if is_meaningful_name(v) && is_meaningful_require_name(v) {
-                                    return Some(v.clone());
+                                    return Some(v.name.clone());
                                 }
                             }
                         }
@@ -521,7 +525,7 @@ pub(super) fn infer_from_expr(
         // A call's callee names the helper, not the value.
         Expression::Value(Value::Binding(Binding::Variable(name))) => {
             if is_meaningful_name(name) && is_meaningful_require_name(name) {
-                Some(name.clone())
+                Some(name.name.clone())
             } else {
                 None
             }

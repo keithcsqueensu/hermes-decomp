@@ -25,7 +25,7 @@ pub fn fold_object_literals(stmts: Vec<Statement>) -> Vec<Statement> {
             Statement::Assign {
                 target: AssignTarget::Binding(Binding::Variable(name)),
                 value: Expression::Object { properties },
-            } => (name.clone(), properties.clone(), false, None),
+            } => (name.name.clone(), properties.clone(), false, None),
             _ => {
                 let mut s = stmt;
                 fold_object_literals_recurse(&mut s);
@@ -80,7 +80,7 @@ pub fn fold_object_literals(stmts: Vec<Statement>) -> Vec<Statement> {
                 }
             } else {
                 Statement::Assign {
-                    target: AssignTarget::Binding(Binding::Variable(obj_name)),
+                    target: AssignTarget::Binding(Binding::Variable(obj_name.into())),
                     value: obj_expr,
                 }
             };
@@ -165,7 +165,7 @@ pub fn fold_array_literals(stmts: Vec<Statement>) -> Vec<Statement> {
             Statement::Assign {
                 target: AssignTarget::Binding(Binding::Variable(name)),
                 value: Expression::Array { elements },
-            } => (name.clone(), elements.clone(), false, None),
+            } => (name.name.clone(), elements.clone(), false, None),
             _ => {
                 let mut s = stmt;
                 fold_array_literals_recurse(&mut s);
@@ -220,7 +220,7 @@ pub fn fold_array_literals(stmts: Vec<Statement>) -> Vec<Statement> {
                 }
             } else {
                 Statement::Assign {
-                    target: AssignTarget::Binding(Binding::Variable(arr_name)),
+                    target: AssignTarget::Binding(Binding::Variable(arr_name.into())),
                     value: arr_expr,
                 }
             };

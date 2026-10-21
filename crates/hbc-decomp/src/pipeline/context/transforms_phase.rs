@@ -257,7 +257,7 @@ impl PipelineContext {
             }
             fn visit_statement(&mut self, st: &'b Statement) {
                 if let Statement::Let { name, .. } = st {
-                    self.assigned.insert(Binding::Variable(name.clone()));
+                    self.assigned.insert(Binding::Variable(name.clone().into()));
                 }
                 self.walk_statement(st);
             }
@@ -532,7 +532,7 @@ fn drop_unread_bookkeeping(stmts: Vec<crate::ir::Statement>) -> Vec<crate::ir::S
     impl Visitor<'_> for Reads<'_> {
         fn visit_expression(&mut self, e: &Expression) {
             if let Expression::Value(Value::Binding(crate::ir::Binding::Variable(n))) = e {
-                *self.0.entry(n.clone()).or_insert(0) += 1;
+                *self.0.entry(n.name.clone()).or_insert(0) += 1;
             }
             self.walk_expression(e);
         }
@@ -549,7 +549,7 @@ fn drop_unread_bookkeeping(stmts: Vec<crate::ir::Statement>) -> Vec<crate::ir::S
         .filter(|stmt| match stmt {
             Statement::Let { name, value, .. }
             | Statement::Assign {
-                target: AssignTarget::Binding(crate::ir::Binding::Variable(name)),
+                target: AssignTarget::Binding(crate::ir::Binding::Variable(crate::ir::Var { name, .. })),
                 value,
             } => {
                 if !is_bookkeeping_name(name) {
@@ -658,13 +658,13 @@ mod generator_wrapper_tests {
 
     fn assign(target: &str, value: Expression) -> Statement {
         Statement::Assign {
-            target: AssignTarget::Binding(Binding::Variable(target.to_string())),
+            target: AssignTarget::Binding(Binding::Variable(target.into())),
             value,
         }
     }
 
     fn read(name: &str) -> Expression {
-        Expression::Value(Value::Binding(Binding::Variable(name.to_string())))
+        Expression::Value(Value::Binding(Binding::Variable(name.into())))
     }
 
     fn drop_stores(body: Vec<Statement>) -> Vec<Statement> {
@@ -764,11 +764,11 @@ mod generator_wrapper_tests {
         let inner = vec![Statement::Return(Some(read("closure_9")))];
         assert!(!PipelineContext::body_reads_binding(
             &inner,
-            &Binding::Variable("closure_0".to_string())
+            &Binding::Variable("closure_0".into())
         ));
         assert!(PipelineContext::body_reads_binding(
             &inner,
-            &Binding::Variable("closure_9".to_string())
+            &Binding::Variable("closure_9".into())
         ));
     }
 }

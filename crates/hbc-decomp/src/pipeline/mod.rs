@@ -196,7 +196,7 @@ fn collect_existing_var_names(
     impl<'a, 'b> Visitor<'b> for C<'a> {
         fn visit_expression(&mut self, e: &'b Expression) {
             if let Expression::Value(Value::Binding(Binding::Variable(n))) = e {
-                self.0.insert(n.clone());
+                self.0.insert(n.name.clone());
             }
             self.walk_expression(e);
         }
@@ -214,7 +214,7 @@ fn collect_existing_var_names(
     fn collect_target_names(t: &AssignTarget, out: &mut std::collections::HashSet<String>) {
         match t {
             AssignTarget::Binding(Binding::Variable(n)) => {
-                out.insert(n.clone());
+                out.insert(n.name.clone());
             }
             AssignTarget::DestructuringArray(elems) => {
                 for e in elems.iter().flatten() {

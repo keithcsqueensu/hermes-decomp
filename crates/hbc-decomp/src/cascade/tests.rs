@@ -37,7 +37,7 @@ fn decoder_body(items: &[&str]) -> Vec<Statement> {
         },
         Statement::Return(Some(Expression::Member {
             object: Box::new(Expression::Value(Value::Binding(Binding::Variable(
-                "table".to_string(),
+                "table".into(),
             )))),
             property: crate::ir::PropertyKey::Computed(Box::new(Expression::Value(
                 Value::Parameter(0),
@@ -255,7 +255,7 @@ fn an_array_with_a_hole_is_not_a_string_table() {
         },
         Statement::Return(Some(Expression::Member {
             object: Box::new(Expression::Value(Value::Binding(Binding::Variable(
-                "table".to_string(),
+                "table".into(),
             )))),
             property: crate::ir::PropertyKey::Computed(Box::new(Expression::Value(
                 Value::Parameter(0),

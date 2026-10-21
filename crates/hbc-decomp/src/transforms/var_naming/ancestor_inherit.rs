@@ -125,7 +125,7 @@ fn written_names(stmts: &[Statement]) -> HashSet<String> {
     impl<'a> Visitor<'a> for W {
         fn visit_assign_target(&mut self, t: &'a AssignTarget) {
             if let AssignTarget::Binding(crate::ir::Binding::Variable(n)) = t {
-                self.0.insert(n.clone());
+                self.0.insert(n.name.clone());
             }
             self.walk_assign_target(t);
         }
@@ -178,9 +178,9 @@ fn collect_names(stmts: &[Statement], all: &mut HashSet<String>, closures: &mut 
     impl<'b> Visitor<'b> for C<'_> {
         fn visit_expression(&mut self, e: &'b Expression) {
             if let Expression::Value(Value::Binding(crate::ir::Binding::Variable(n))) = e {
-                self.0.insert(n.clone());
+                self.0.insert(n.name.clone());
                 if crate::ir::placeholder::has_prefix(n) {
-                    self.1.insert(n.clone());
+                    self.1.insert(n.name.clone());
                 }
             }
             self.walk_expression(e);

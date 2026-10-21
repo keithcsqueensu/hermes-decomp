@@ -100,7 +100,7 @@ fn recurse_nested(stmt: &mut Statement) {
 }
 
 fn rename_clobber_target(stmt: &mut Statement, new_name: &str) {
-    let new_target = AssignTarget::Binding(Binding::Variable(new_name.to_string()));
+    let new_target = AssignTarget::Binding(Binding::Variable(new_name.to_string().into()));
     match stmt {
         Statement::Assign { target, .. } => *target = new_target,
         Statement::Let { name, .. } => *name = new_name.to_string(),
@@ -159,7 +159,7 @@ fn clobber_binding(stmt: &Statement) -> Option<(String, String)> {
 fn assigns_var(stmt: &Statement, name: &str) -> bool {
     matches!(
         stmt,
-        Statement::Assign { target: AssignTarget::Binding(Binding::Variable(n)), .. }
+        Statement::Assign { target: AssignTarget::Binding(Binding::Variable(crate::ir::Var { name: n, .. })), .. }
         | Statement::Let { name: n, .. }
             if n == name
     )
@@ -215,7 +215,7 @@ fn rewrite_expr(expr: &mut Expression, old: &str, new_name: &str) {
             }
         }
         Expression::Value(Value::Binding(Binding::Variable(n))) if n == old => {
-            *n = new_name.to_string();
+            n.name = new_name.to_string();
         }
         Expression::Unary { operand, .. } => rewrite_expr(operand, old, new_name),
         Expression::Conditional {

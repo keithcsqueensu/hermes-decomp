@@ -47,9 +47,9 @@ pub(super) fn fold_prop_assignments(stmts: Vec<Statement>) -> Vec<Statement> {
                 }
                 if let AssignTarget::Binding(Binding::Variable(name)) = &target {
                     if matches!(value, Expression::Object { .. }) {
-                        objects.insert(name.clone(), value.clone());
+                        objects.insert(name.name.clone(), value.clone());
                     } else {
-                        objects.remove(name);
+                        objects.remove(name.as_str());
                     }
                 }
                 out.push(Statement::Assign { target, value });
@@ -67,7 +67,7 @@ pub(super) fn fold_prop_assignments(stmts: Vec<Statement>) -> Vec<Statement> {
 fn member_var_target(target: &AssignTarget) -> Option<String> {
     if let AssignTarget::Member { object, .. } = target {
         if let Expression::Value(Value::Binding(Binding::Variable(name))) = object {
-            return Some(name.clone());
+            return Some(name.name.clone());
         }
     }
     None

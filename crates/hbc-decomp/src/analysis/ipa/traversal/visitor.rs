@@ -264,7 +264,7 @@ impl IpaVisitor<'_> {
                     if let Some(Definition::Parameter(idx)) = (self.defs)(name) {
                         resolved_param = Some(idx);
                     }
-                    arg_names.push(Some(name.clone()));
+                    arg_names.push(Some(name.name.clone()));
                 }
                 Expression::Value(Value::Binding(crate::ir::Binding::Register(r))) => {
                     let r_name = format!("r{r}");

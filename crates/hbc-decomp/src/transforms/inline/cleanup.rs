@@ -190,7 +190,7 @@ mod tests {
         // `let Error = Error;` should be removed (Babel global capture)
         let stmts = vec![Statement::Let {
             name: "Error".to_string(),
-            value: Expression::Value(Value::Binding(Binding::Variable("Error".to_string()))),
+            value: Expression::Value(Value::Binding(Binding::Variable("Error".into()))),
             kind: VarKind::Let,
         }];
         let result = cleanup_noise(stmts);
@@ -224,7 +224,7 @@ mod tests {
         // `let x = y;` should NOT be removed (different names)
         let stmts = vec![Statement::Let {
             name: "x".to_string(),
-            value: Expression::Value(Value::Binding(Binding::Variable("y".to_string()))),
+            value: Expression::Value(Value::Binding(Binding::Variable("y".into()))),
             kind: VarKind::Let,
         }];
         let result = cleanup_noise(stmts);

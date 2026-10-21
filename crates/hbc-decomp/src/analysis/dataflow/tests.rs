@@ -9,7 +9,11 @@ fn extractor() -> Box<Extract<i32>> {
     Box::new(|stmt: &Statement, _: &Defs<i32>| match stmt {
         Statement::Let { name, value, .. }
         | Statement::Assign {
-            target: crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(name)),
+            target:
+                crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(crate::ir::Var {
+                    name,
+                    ..
+                })),
             value,
         } => match value {
             Expression::Value(crate::ir::Value::Constant(Constant::Integer(i))) => {
@@ -37,7 +41,7 @@ fn let_int(name: &str, value: i32) -> Statement {
 
 fn assign_int(name: &str, value: i32) -> Statement {
     Statement::Assign {
-        target: crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(name.to_string())),
+        target: crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(name.into())),
         value: Expression::constant(Constant::Integer(value)),
     }
 }

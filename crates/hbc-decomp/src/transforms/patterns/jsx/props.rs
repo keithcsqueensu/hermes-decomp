@@ -57,11 +57,11 @@ pub(super) fn resolve_prop_object_vars(stmts: Vec<Statement>) -> Vec<Statement> 
                 let value = maybe_subst_call(value, &scope);
                 invalidate_written(&mut scope.map, &value);
                 if matches!(value, Expression::Object { .. }) {
-                    scope.map.insert(name.clone(), value.clone());
-                    def_index.insert(name.clone(), out.len());
+                    scope.map.insert(name.name.clone(), value.clone());
+                    def_index.insert(name.name.clone(), out.len());
                 } else {
-                    scope.map.remove(&name);
-                    def_index.remove(&name);
+                    scope.map.remove(name.as_str());
+                    def_index.remove(name.as_str());
                 }
                 out.push(Statement::Assign {
                     target: AssignTarget::Binding(Binding::Variable(name)),
@@ -154,7 +154,7 @@ impl<'a> Visitor<'a> for WrittenNames {
     fn visit_assign_target(&mut self, target: &'a AssignTarget) {
         match target {
             AssignTarget::Binding(Binding::Variable(name)) => {
-                self.0.insert(name.clone());
+                self.0.insert(name.name.clone());
             }
             AssignTarget::Member { object, .. } | AssignTarget::Index { object, .. } => {
                 self.record(object)
@@ -171,7 +171,7 @@ fn count_variable_uses(stmts: &[Statement], uses: &mut BTreeMap<String, usize>) 
     impl<'a, 'b> Visitor<'b> for C<'a> {
         fn visit_expression(&mut self, e: &'b Expression) {
             if let Expression::Value(Value::Binding(Binding::Variable(name))) = e {
-                *self.0.entry(name.clone()).or_insert(0) += 1;
+                *self.0.entry(name.name.clone()).or_insert(0) += 1;
             }
             self.walk_expression(e);
         }
@@ -221,7 +221,7 @@ fn subst_jsx_props_in_expr_inner(
             let mut expanded = None;
             if let Expression::Value(Value::Binding(Binding::Variable(name))) = &arguments[1] {
                 if let Some(obj) = objects.get(name) {
-                    if expanding.insert(name.clone()) {
+                    if expanding.insert(name.name.clone()) {
                         expanded = Some(name.clone());
                         arguments[1] = obj.clone();
                     }
@@ -229,7 +229,7 @@ fn subst_jsx_props_in_expr_inner(
             }
             subst_jsx_props_in_expr_inner(&mut arguments[1], objects, expanding);
             if let Some(name) = expanded {
-                expanding.remove(&name);
+                expanding.remove(name.as_str());
             }
             // Children args of a classic createElement may nest jsx calls.
             for (index, a) in arguments.iter_mut().enumerate() {

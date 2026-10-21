@@ -33,7 +33,7 @@ fn infer_stmt(stmt: &mut Statement) {
             if let AssignTarget::Binding(Binding::Variable(ref mut name)) = target {
                 if name.starts_with("r") || name.starts_with("val") {
                     if let Some(new_name) = suggest_name(value) {
-                        *name = new_name;
+                        name.name = new_name;
                     }
                 }
             }
@@ -65,7 +65,7 @@ fn infer_stmt(stmt: &mut Statement) {
 
 fn extract_name_from_target(target: &AssignTarget) -> Option<String> {
     match target {
-        AssignTarget::Binding(Binding::Variable(name)) => Some(name.clone()),
+        AssignTarget::Binding(Binding::Variable(name)) => Some(name.name.clone()),
         AssignTarget::Member { property, .. } => Some(property.clone()),
         _ => None,
     }

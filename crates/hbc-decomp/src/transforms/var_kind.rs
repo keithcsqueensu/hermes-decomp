@@ -18,7 +18,7 @@ fn collect_assignments(stmts: &[Statement], assigned: &mut HashSet<String>) {
                 target: AssignTarget::Binding(Binding::Variable(name)),
                 ..
             } => {
-                assigned.insert(name.clone());
+                assigned.insert(name.name.clone());
             }
             Statement::Assign { target, .. } => collect_assign_target(target, assigned),
             Statement::If {
@@ -84,7 +84,7 @@ fn collect_assignments(stmts: &[Statement], assigned: &mut HashSet<String>) {
 fn collect_assign_target(target: &AssignTarget, assigned: &mut HashSet<String>) {
     match target {
         AssignTarget::Binding(Binding::Variable(n)) => {
-            assigned.insert(n.clone());
+            assigned.insert(n.name.clone());
         }
         AssignTarget::DestructuringObject(props) => {
             for (_, t, _) in props {

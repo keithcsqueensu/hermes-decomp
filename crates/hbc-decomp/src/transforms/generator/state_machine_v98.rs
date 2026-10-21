@@ -230,7 +230,7 @@ fn collect_state_vars(body: &[Statement]) -> std::collections::HashSet<String> {
                     if int_const(a).is_some() {
                         if let Expression::Value(Value::Binding(Binding::Variable(n))) = b.as_ref()
                         {
-                            self.0.insert(n.clone());
+                            self.0.insert(n.name.clone());
                         }
                     }
                 }
@@ -376,7 +376,7 @@ fn is_bookkeeping(s: &Statement, state_vars: &std::collections::HashSet<String>)
         value,
     } = s
     {
-        if state_vars.contains(n) {
+        if state_vars.contains(n.as_str()) {
             return true;
         }
         if matches!(
@@ -386,7 +386,7 @@ fn is_bookkeeping(s: &Statement, state_vars: &std::collections::HashSet<String>)
             return true;
         }
         if let Expression::Value(Value::Binding(Binding::Variable(src))) = value {
-            if state_vars.contains(src) {
+            if state_vars.contains(src.as_str()) {
                 return true;
             }
         }

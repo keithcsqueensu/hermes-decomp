@@ -371,7 +371,7 @@ pub fn propagate_module_names(
                                     Some(format!("r{r}"))
                                 }
                                 Expression::Value(Value::Binding(Binding::Variable(n))) => {
-                                    Some(n.clone())
+                                    Some(n.name.clone())
                                 }
                                 Expression::Value(Value::Parameter(i)) => Some(format!("arg{i}")),
                                 _ => None,
@@ -391,11 +391,11 @@ pub fn propagate_module_names(
                             }
                         }
                         Expression::Value(Value::Binding(Binding::Variable(v))) => {
-                            if let Some(prop) = reg_props.get(v) {
+                            if let Some(prop) = reg_props.get(v.as_str()) {
                                 let val = prop.clone();
                                 reg_props.insert(name.clone(), val);
                             }
-                            if let Some(param) = reg_params.get(v) {
+                            if let Some(param) = reg_params.get(v.as_str()) {
                                 reg_params.insert(name.clone(), *param);
                             }
                         }
@@ -447,7 +447,9 @@ pub fn propagate_module_names(
                 ) {
                     // Case 2: Simple assignment (x = y)
                     let source_name = match value {
-                        Expression::Value(Value::Binding(Binding::Variable(v))) => Some(v.clone()),
+                        Expression::Value(Value::Binding(Binding::Variable(v))) => {
+                            Some(v.name.clone())
+                        }
                         Expression::Value(Value::Binding(Binding::Register(r))) => {
                             Some(format!("r{r}"))
                         }
@@ -511,7 +513,7 @@ pub fn propagate_module_names(
                         if propagated_name.is_none() {
                             if let Expression::Value(val) = arg_expr {
                                 let arg_name = match val {
-                                    Value::Binding(Binding::Variable(v)) => Some(v.clone()),
+                                    Value::Binding(Binding::Variable(v)) => Some(v.name.clone()),
                                     Value::Binding(Binding::Register(r)) => Some(format!("r{r}")),
                                     _ => None,
                                 };

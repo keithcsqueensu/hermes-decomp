@@ -119,7 +119,7 @@ mod tests {
             Statement::Comment("__yield_point__:100".to_string()),
             Statement::Return(Some(Expression::Call {
                 callee: Box::new(Expression::Value(Value::Binding(
-                    crate::ir::Binding::Variable("fetch".to_string()),
+                    crate::ir::Binding::Variable("fetch".into()),
                 ))),
                 arguments: vec![Expression::Value(Value::Constant(Constant::String(
                     "url".to_string(),
@@ -170,7 +170,7 @@ mod tests {
 
         let yield_delegate = Expression::Yield {
             value: Box::new(Expression::Value(Value::Binding(
-                crate::ir::Binding::Variable("iter".to_string()),
+                crate::ir::Binding::Variable("iter".into()),
             ))),
             delegate: true,
         };
@@ -182,7 +182,7 @@ mod tests {
         // Hermes convention: first arg is `this` (undefined for global calls)
         let await_expr = Expression::Await(Box::new(Expression::Call {
             callee: Box::new(Expression::Value(Value::Binding(
-                crate::ir::Binding::Variable("fetch".to_string()),
+                crate::ir::Binding::Variable("fetch".into()),
             ))),
             arguments: vec![
                 Expression::Value(Value::Constant(Constant::Undefined)), // this

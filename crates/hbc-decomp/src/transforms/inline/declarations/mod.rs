@@ -352,14 +352,14 @@ fn insert_decls_in_block(
                 // Skip invalid JS identifiers (numbers, strings, reserved words used as names)
                 if is_valid_js_identifier(name)
                     && !params.contains(name.as_str())
-                    && !let_declared.contains(name)
-                    && !skip.declared.contains(name)
-                    && !free_closures.contains(name)
-                    && !skip.outer_names.contains(name)
+                    && !let_declared.contains(name.as_str())
+                    && !skip.declared.contains(name.as_str())
+                    && !free_closures.contains(name.as_str())
+                    && !skip.outer_names.contains(name.as_str())
                     && !is_self_assignment_var(name, value)
                 {
-                    skip.declared.insert(name.clone());
-                    let writes = write_count.get(name).copied().unwrap_or(1);
+                    skip.declared.insert(name.name.clone());
+                    let writes = write_count.get(name.as_str()).copied().unwrap_or(1);
                     // Prefer `let` when mutated more than once, or when the name
                     // looks like a Hermes env slot (`c0`, `closure_N`), those
                     // are often mutated from nested closures even if this
@@ -370,7 +370,7 @@ fn insert_decls_in_block(
                         VarKind::Const
                     };
                     *stmt = Statement::Let {
-                        name: name.clone(),
+                        name: name.name.clone(),
                         value: value.clone(),
                         kind,
                     };

@@ -78,7 +78,7 @@ pub(crate) fn export_key_set(stmts: &[Statement]) -> BTreeSet<String> {
                 match target {
                     AssignTarget::Binding(Binding::Variable(name)) => {
                         if let Expression::Object { properties } = value {
-                            object_keys.insert(name.clone(), property_names(properties));
+                            object_keys.insert(name.name.clone(), property_names(properties));
                         }
                     }
                     AssignTarget::Member { object, property } => {
@@ -86,7 +86,7 @@ pub(crate) fn export_key_set(stmts: &[Statement]) -> BTreeSet<String> {
                             if property == "default" || is_module_object(object) {
                                 match value {
                                     Expression::Value(Value::Binding(Binding::Variable(v))) => {
-                                        default_objects.insert(v.clone());
+                                        default_objects.insert(v.name.clone());
                                     }
                                     Expression::Object { properties } => {
                                         keys.extend(property_names(properties));
@@ -131,7 +131,7 @@ fn record_define(
             keys.insert(key);
         }
     } else if let Expression::Value(Value::Binding(Binding::Variable(v))) = obj {
-        object_keys.entry(v.clone()).or_default().push(key);
+        object_keys.entry(v.name.clone()).or_default().push(key);
     }
 }
 

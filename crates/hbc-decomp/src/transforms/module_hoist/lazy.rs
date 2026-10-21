@@ -169,7 +169,7 @@ fn is_get_key(key: &PropertyKey) -> bool {
 fn function_id_of(expr: &Expression, var_fns: &HashMap<String, u32>) -> Option<u32> {
     match expr {
         Expression::Function { id, .. } => Some(id.0),
-        Expression::Value(Value::Binding(Binding::Variable(n))) => var_fns.get(n).copied(),
+        Expression::Value(Value::Binding(Binding::Variable(n))) => var_fns.get(n.as_str()).copied(),
         _ => None,
     }
 }
@@ -187,7 +187,7 @@ fn collect_function_bindings(stmts: &[Statement], out: &mut HashMap<String, u32>
                 value,
             } => {
                 if let Expression::Function { id, .. } = value {
-                    out.insert(name.clone(), id.0);
+                    out.insert(name.name.clone(), id.0);
                 }
             }
             Statement::If {

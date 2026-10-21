@@ -2,7 +2,7 @@ use crate::ir::{AssignTarget, Binding, Constant, Expression, MethodKind, Propert
 
 pub fn extract_name(expr: &Expression) -> Option<String> {
     match expr {
-        Expression::Value(Value::Binding(Binding::Variable(s))) => Some(s.clone()),
+        Expression::Value(Value::Binding(Binding::Variable(s))) => Some(s.name.clone()),
         Expression::Value(Value::Binding(Binding::Register(r))) => Some(format!("r{r}")),
         _ => None,
     }
@@ -10,7 +10,7 @@ pub fn extract_name(expr: &Expression) -> Option<String> {
 
 pub fn get_target_name(target: &AssignTarget) -> Option<String> {
     match target {
-        AssignTarget::Binding(Binding::Variable(s)) => Some(s.clone()),
+        AssignTarget::Binding(Binding::Variable(s)) => Some(s.name.clone()),
         AssignTarget::Binding(Binding::Register(r)) => Some(format!("r{r}")),
         _ => None,
     }
@@ -98,7 +98,7 @@ pub fn extract_method_array(expr: &Expression) -> Option<Vec<(String, Expression
                                     Binding::Variable(s),
                                 )) = &prop.value
                                 {
-                                    key = Some(s.clone());
+                                    key = Some(s.name.clone());
                                 }
                             } else if k == "value" {
                                 value = Some(prop.value.clone());
@@ -181,7 +181,7 @@ pub fn extract_accessor_definition(
     // prop_name should be a string
     let name = match prop_name {
         Expression::Value(Value::Constant(Constant::String(s))) => s.clone(),
-        Expression::Value(Value::Binding(Binding::Variable(s))) => s.clone(),
+        Expression::Value(Value::Binding(Binding::Variable(s))) => s.name.clone(),
         _ => return None,
     };
 
@@ -225,14 +225,10 @@ mod tests {
 
     #[test]
     fn test_is_create_class_call() {
-        let callee = Expression::Value(Value::Binding(Binding::Variable(
-            "_createClass".to_string(),
-        )));
+        let callee = Expression::Value(Value::Binding(Binding::Variable("_createClass".into())));
         assert!(is_create_class_call(&callee));
 
-        let callee2 = Expression::Value(Value::Binding(Binding::Variable(
-            "somethingElse".to_string(),
-        )));
+        let callee2 = Expression::Value(Value::Binding(Binding::Variable("somethingElse".into())));
         assert!(!is_create_class_call(&callee2));
     }
 }

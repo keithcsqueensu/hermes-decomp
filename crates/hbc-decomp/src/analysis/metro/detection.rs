@@ -40,7 +40,7 @@ impl MetroDetector {
             Statement::Assign { target, value } => {
                 let var_name = match target {
                     crate::ir::AssignTarget::Binding(Binding::Register(r)) => Some(format!("r{r}")),
-                    crate::ir::AssignTarget::Binding(Binding::Variable(n)) => Some(n.clone()),
+                    crate::ir::AssignTarget::Binding(Binding::Variable(n)) => Some(n.name.clone()),
                     _ => None,
                 };
 
@@ -169,7 +169,7 @@ impl MetroDetector {
                         reg_functions.get(&format!("r{r}")).copied()
                     }
                     Expression::Value(Value::Binding(Binding::Variable(n))) => {
-                        reg_functions.get(n).copied()
+                        reg_functions.get(n.as_str()).copied()
                     }
                     _ => None,
                 };
@@ -186,7 +186,7 @@ impl MetroDetector {
                         reg_integers.get(&format!("r{r}")).copied()
                     }
                     Expression::Value(Value::Binding(Binding::Variable(n))) => {
-                        reg_integers.get(n).copied()
+                        reg_integers.get(n.as_str()).copied()
                     }
                     _ => None,
                 };
@@ -202,7 +202,7 @@ impl MetroDetector {
                         .cloned()
                         .unwrap_or_default(),
                     Expression::Value(Value::Binding(Binding::Variable(n))) => {
-                        reg_arrays.get(n).cloned().unwrap_or_default()
+                        reg_arrays.get(n.as_str()).cloned().unwrap_or_default()
                     }
                     _ => Vec::new(),
                 };
@@ -273,7 +273,7 @@ fn extract_array_of_integers(
                             val
                         }
                         Expression::Value(Value::Binding(Binding::Variable(n))) => {
-                            map.get(n).copied()
+                            map.get(n.as_str()).copied()
                         }
                         _ => None,
                     }

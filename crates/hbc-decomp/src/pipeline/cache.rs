@@ -31,7 +31,8 @@ use super::DecompileOptionsV2;
 // way that old entries must not be read. Pipeline *output* changes are covered
 // by `binary_fingerprint()`, no need to bump for every decompiler fix.
 // 6: `ClosureContext.env_offsets`.
-pub const CACHE_VERSION: u32 = 6;
+// 7: `Binding::Variable` holds a `Var { name, slot }`, not a bare `String`.
+pub const CACHE_VERSION: u32 = 7;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.

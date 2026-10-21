@@ -224,12 +224,12 @@ fn rename_target(
     match target {
         AssignTarget::Binding(Binding::Register(r)) => {
             if let Some(name) = reg_map.get(r) {
-                *target = AssignTarget::Binding(Binding::Variable(name.clone()));
+                *target = AssignTarget::Binding(Binding::Variable(name.clone().into()));
             }
         }
         AssignTarget::Binding(Binding::Variable(v)) => {
-            if let Some(name) = var_map.get(v) {
-                *v = name.clone();
+            if let Some(name) = var_map.get(v.as_str()) {
+                v.name = name.clone();
             }
         }
         AssignTarget::Member { object, .. } => rename_expr(object, reg_map, var_map),
@@ -265,12 +265,12 @@ fn rename_expr(
     match expr {
         Expression::Value(Value::Binding(Binding::Register(r))) => {
             if let Some(name) = reg_map.get(r) {
-                *expr = Expression::Value(Value::Binding(Binding::Variable(name.clone())));
+                *expr = Expression::Value(Value::Binding(Binding::Variable(name.clone().into())));
             }
         }
         Expression::Value(Value::Binding(Binding::Variable(v))) => {
-            if let Some(name) = var_map.get(v) {
-                *v = name.clone();
+            if let Some(name) = var_map.get(v.as_str()) {
+                v.name = name.clone();
             }
         }
         Expression::Value(Value::Parameter(idx)) => {
@@ -279,7 +279,7 @@ fn rename_expr(
             if let Some(Some(name)) = var_map.get(&format!("arg{idx}")).map(Some) {
                 // Wait, var_map.get returns &String.
                 // If we have a name, convert to Variable.
-                *expr = Expression::Value(Value::Binding(Binding::Variable(name.clone())));
+                *expr = Expression::Value(Value::Binding(Binding::Variable(name.clone().into())));
             }
         }
         Expression::Binary { left, right, .. } => {

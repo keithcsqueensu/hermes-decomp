@@ -58,7 +58,7 @@ pub(super) fn destructuring_target_names(target: &AssignTarget) -> Vec<String> {
     let mut out = Vec::new();
     fn add(t: &AssignTarget, out: &mut Vec<String>) {
         match t {
-            AssignTarget::Binding(Binding::Variable(n)) => out.push(n.clone()),
+            AssignTarget::Binding(Binding::Variable(n)) => out.push(n.name.clone()),
             AssignTarget::DestructuringArray(elems) => {
                 for e in elems.iter().flatten() {
                     add(&e.0, out);
