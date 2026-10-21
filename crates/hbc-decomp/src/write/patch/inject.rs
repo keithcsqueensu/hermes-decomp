@@ -129,6 +129,99 @@ fn reserve_legacy_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<
     Ok(cache)
 }
 
+// What an injected operand holds. The opcode table says how it is encoded.
+#[derive(Debug, Clone, Copy)]
+enum StubVal {
+    Reg(u32),
+    Cache(u32),
+    Str(u32),
+}
+
+// One injected instruction, built from the opcode table's own operand list rather
+// than an assumed one (R12): the table supplies each operand's type, and a version
+// whose shape differs -- another arity, an operand of another kind, or a width too
+// narrow for the value -- is refused instead of encoded as if it matched.
+fn stub_insn(format: &BytecodeFormat, name: &str, vals: &[StubVal]) -> Result<Instruction> {
+    use crate::opcode::{Operand, OperandType as T, OperandValue as V};
+    let def = format
+        .definitions
+        .iter()
+        .find(|d| d.name == name)
+        .ok_or_else(|| Error::Write(format!("inject log: no {name} at this bytecode version")))?;
+    if def.operand_types.len() != vals.len() {
+        return Err(Error::Write(format!(
+            "inject log: {name} takes {} operands at this version, the stub supplies {}",
+            def.operand_types.len(),
+            vals.len()
+        )));
+    }
+    let operands = def
+        .operand_types
+        .iter()
+        .zip(vals)
+        .enumerate()
+        .map(|(i, (&ty, &val))| {
+            let (kind_fits, x, what) = match val {
+                StubVal::Reg(x) => (matches!(ty, T::Reg8 | T::Reg32), x, "a register"),
+                StubVal::Cache(x) => (
+                    matches!(ty, T::UInt8 | T::UInt16 | T::UInt32),
+                    x,
+                    "a cache index",
+                ),
+                StubVal::Str(x) => (
+                    matches!(ty, T::UInt8S | T::UInt16S | T::UInt32S),
+                    x,
+                    "a string id",
+                ),
+            };
+            if !kind_fits {
+                return Err(Error::Write(format!(
+                    "inject log: operand {i} of {name} is {ty:?} at this version, not {what}"
+                )));
+            }
+            let value = match ty {
+                T::Reg8 | T::UInt8 | T::UInt8S => u8::try_from(x).ok().map(V::U8),
+                T::UInt16 | T::UInt16S => u16::try_from(x).ok().map(V::U16),
+                _ => Some(V::U32(x)),
+            }
+            .ok_or_else(|| {
+                Error::Write(format!(
+                    "inject log: {what} {x} does not fit operand {i} of {name} ({ty:?})"
+                ))
+            })?;
+            Ok(Operand { ty, value })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Instruction {
+        offset: 0,
+        opcode: def.opcode,
+        operands,
+        length: 0,
+    })
+}
+
+// The log prologue: `print(<function name>)` in r0..r3. r0 = global object,
+// r1 = print, r2 = this (undefined), r3 = the name.
+fn log_prologue(
+    format: &BytecodeFormat,
+    cache: u32,
+    print_id: u32,
+    name_id: u32,
+) -> Result<Vec<Instruction>> {
+    use StubVal::{Cache, Reg, Str};
+    Ok(vec![
+        stub_insn(format, "GetGlobalObject", &[Reg(0)])?,
+        stub_insn(
+            format,
+            "TryGetById",
+            &[Reg(1), Reg(0), Cache(cache), Str(print_id)],
+        )?,
+        stub_insn(format, "LoadConstUndefined", &[Reg(2)])?,
+        stub_insn(format, "LoadConstString", &[Reg(3), Str(name_id)])?,
+        stub_insn(format, "Call2", &[Reg(0), Reg(1), Reg(2), Reg(3)])?,
+    ])
+}
+
 // Kinds of bytecode stubs we plan to inject.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InjectStubKind {
@@ -143,37 +236,16 @@ pub enum InjectStubKind {
 // Build a real `print(<function name>)` prologue and prepend it to `body`.
 //
 // Uses registers r0..r3 (free at entry, Hermes reads params via LoadParam, not
-// pre-loaded frame registers) and one read-cache slot. Bumps `frame_size` and
-// `highest_read_cache_index` in the function header so the runtime allocates
-// them; those edits persist because the resize path rewrites the full header.
-// Legacy, non-overflow, with a `"print"` string in the table.
+// pre-loaded frame registers) and one read-cache slot, which
+// `reserve_legacy_log_regs` / `reserve_modern_log_regs` write into the function
+// header's bytes so the runtime allocates them. Needs a `"print"` string in the
+// table; refuses an overflowed legacy function.
 fn build_log_entry(
     file: &mut BytecodeFile,
     format: &BytecodeFormat,
     function_id: u32,
     body: &mut Vec<Instruction>,
 ) -> Result<()> {
-    use crate::opcode::{Operand, OperandType, OperandValue};
-
-    let opc = |name: &str| {
-        format
-            .definitions
-            .iter()
-            .find(|d| d.name == name)
-            .map(|d| d.opcode)
-    };
-    let (Some(op_ggo), Some(op_try), Some(op_lcu), Some(op_lcs), Some(op_call2)) = (
-        opc("GetGlobalObject"),
-        opc("TryGetById"),
-        opc("LoadConstUndefined"),
-        opc("LoadConstString"),
-        opc("Call2"),
-    ) else {
-        return Err(Error::Write(
-            "inject log: required opcodes unavailable for this bytecode version".into(),
-        ));
-    };
-
     let print_id = file
         .strings
         .iter()
@@ -181,11 +253,7 @@ fn build_log_entry(
         .ok_or_else(|| {
             Error::Write("inject log: no \"print\" string in the table to build a log call".into())
         })? as u32;
-
-    // Read this function's name string id, then reserve the frame registers and a
-    // read cache slot the log call needs. Legacy stores these in the small header
-    // struct; modern keeps them in the large or small header raw bytes.
-    let (msg_id, cache_idx) = match file.function_headers.get(function_id as usize) {
+    let msg_id = match file.function_headers.get(function_id as usize) {
         Some(FunctionHeader::Legacy(leg)) => {
             if leg.flags & crate::format::FLAG_OVERFLOWED != 0 {
                 return Err(Error::Write(
@@ -193,55 +261,20 @@ fn build_log_entry(
                         .into(),
                 ));
             }
-            let msg = leg.function_name;
-            let cache = reserve_legacy_log_regs(file, function_id)?;
-            (msg, cache)
+            leg.function_name
         }
-        Some(FunctionHeader::Modern(m)) => {
-            let msg = m.function_name;
-            let cache = reserve_modern_log_regs(file, function_id)?;
-            (msg, cache)
-        }
-        None => {
-            return Err(Error::Write(format!("invalid function id {function_id}")));
-        }
-    };
-    if print_id > u16::MAX as u32 || msg_id > u16::MAX as u32 {
-        return Err(Error::Write(
-            "inject log: string id too large for short LoadConstString".into(),
-        ));
-    }
-
-    let reg = |r: u8| Operand {
-        ty: OperandType::Reg8,
-        value: OperandValue::U8(r),
-    };
-    let u8v = |v: u8| Operand {
-        ty: OperandType::UInt8,
-        value: OperandValue::U8(v),
-    };
-    let u16v = |v: u16| Operand {
-        ty: OperandType::UInt16,
-        value: OperandValue::U16(v),
-    };
-    let mk = |opcode: u8, operands: Vec<Operand>| Instruction {
-        offset: 0,
-        opcode,
-        operands,
-        length: 0,
+        Some(FunctionHeader::Modern(m)) => m.function_name,
+        None => return Err(Error::Write(format!("invalid function id {function_id}"))),
     };
 
-    // r0=global, r1=print fn, r2=this(undefined), r3=message
-    let mut seq = vec![
-        mk(op_ggo, vec![reg(0)]),
-        mk(
-            op_try,
-            vec![reg(1), reg(0), u8v(cache_idx as u8), u16v(print_id as u16)],
-        ),
-        mk(op_lcu, vec![reg(2)]),
-        mk(op_lcs, vec![reg(3), u16v(msg_id as u16)]),
-        mk(op_call2, vec![reg(0), reg(1), reg(2), reg(3)]),
-    ];
+    // Check the prologue's shape at this version before anything is written: the
+    // reservation below edits the header's bytes.
+    log_prologue(format, 0, print_id, msg_id)?;
+    let cache_idx = match file.function_headers.get(function_id as usize) {
+        Some(FunctionHeader::Legacy(_)) => reserve_legacy_log_regs(file, function_id)?,
+        _ => reserve_modern_log_regs(file, function_id)?,
+    };
+    let mut seq = log_prologue(format, cache_idx, print_id, msg_id)?;
 
     // Keep the injected size a multiple of 4 so downstream functions shift by a
     // 4-aligned delta and their SwitchImm jump tables stay aligned. Pad with the
@@ -250,15 +283,14 @@ fn build_log_entry(
     // non-4-aligned prologue that misaligns every downstream large header (I5 / Q8).
     let injected_len = encode_function_body(format, &seq)?.len();
     if injected_len % 4 != 0 {
-        let op_abc = opc("AsyncBreakCheck").ok_or_else(|| {
+        let pad = stub_insn(format, "AsyncBreakCheck", &[]).map_err(|_| {
             Error::Write(format!(
                 "cannot 4-byte-align injected prologue ({injected_len} bytes) — this \
                  bytecode version has no AsyncBreakCheck instruction to pad with"
             ))
         })?;
-        let pad = 4 - injected_len % 4;
-        for _ in 0..pad {
-            seq.push(mk(op_abc, vec![]));
+        for _ in 0..4 - injected_len % 4 {
+            seq.push(pad.clone());
         }
     }
 
@@ -370,6 +402,51 @@ pub fn inject_stub(
 mod tests {
     use super::*;
     use crate::write::footer::verify_footer;
+
+    // R12: the prologue is built from each version's opcode table. Its shape is
+    // the same from v41 to v99; v40 has no Call2, and says so rather than
+    // encoding something else.
+    #[test]
+    fn the_log_prologue_follows_the_opcode_table_at_every_version() {
+        for version in 40..=99 {
+            let format = BytecodeFormat::for_version(version).unwrap();
+            match log_prologue(&format, 1, 2, 3) {
+                Ok(seq) => {
+                    assert_ne!(version, 40);
+                    encode_function_body(&format, &seq)
+                        .unwrap_or_else(|e| panic!("v{version}: built but does not encode: {e}"));
+                }
+                Err(e) => {
+                    assert_eq!(version, 40, "v{version}: {e}");
+                    assert!(e.to_string().contains("no Call2"), "{e}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_value_too_wide_for_its_operand_is_refused() {
+        let format = BytecodeFormat::for_version(96).unwrap();
+        // TryGetById's property-name operand is UInt16S at v96.
+        let err = log_prologue(&format, 1, 70_000, 3).unwrap_err().to_string();
+        assert!(err.contains("string id 70000 does not fit"), "{err}");
+        let err = log_prologue(&format, 256, 2, 3).unwrap_err().to_string();
+        assert!(err.contains("cache index 256 does not fit"), "{err}");
+    }
+
+    #[test]
+    fn an_operand_of_another_kind_or_count_is_refused() {
+        use StubVal::{Cache, Reg};
+        let format = BytecodeFormat::for_version(96).unwrap();
+        let err = stub_insn(&format, "Call2", &[Cache(0), Reg(1), Reg(2), Reg(3)])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("operand 0 of Call2 is Reg8"), "{err}");
+        let err = stub_insn(&format, "Call2", &[Reg(0)])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Call2 takes 4 operands"), "{err}");
+    }
 
     #[test]
     fn inject_stub_grows_and_reparses() {
