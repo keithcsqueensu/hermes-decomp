@@ -218,6 +218,8 @@ impl PipelineContext {
             inline_bodies: Arc::new(snap.inline_bodies),
             child_functions,
             ancestor_env_slots: BTreeMap::new(),
+            slot_names: BTreeMap::new(),
+            created_functions: std::collections::HashSet::new(),
             captured_by_descendants: BTreeMap::new(),
             // A cached context was built without an artifact: `build_cached`
             // never reads or writes the cache when one is set.
@@ -225,6 +227,8 @@ impl PipelineContext {
             worklet_sources: snap.worklet_sources,
         };
         // Also derived from closure_ctx; recompute rather than serialize.
+        ctx.slot_names = ctx.precompute_slot_names();
+        ctx.created_functions = ctx.precompute_created_functions();
         ctx.ancestor_env_slots = ctx.precompute_ancestor_env_slot_names();
         ctx.captured_by_descendants = ctx.compute_captured_by_descendants();
         ctx
@@ -354,6 +358,8 @@ mod tests {
             inline_bodies: Arc::new(BTreeMap::from([(42u32, "body".to_string())])),
             child_functions: BTreeMap::new(),
             ancestor_env_slots: BTreeMap::new(),
+            slot_names: BTreeMap::new(),
+            created_functions: std::collections::HashSet::new(),
             captured_by_descendants: BTreeMap::new(),
             // A cached context was built without an artifact: `build_cached`
             // never reads or writes the cache when one is set.

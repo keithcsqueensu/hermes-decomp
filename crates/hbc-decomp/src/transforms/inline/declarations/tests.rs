@@ -347,3 +347,81 @@ fn an_own_slot_written_in_a_block_is_hoisted_for_a_closure_outside() {
         other => panic!("expected the if, got {other:?}"),
     }
 }
+
+fn assign(name: &str, v: i32) -> Statement {
+    Statement::Assign {
+        target: AssignTarget::Binding(Binding::Variable(name.into())),
+        value: Expression::constant(Constant::Integer(v)),
+    }
+}
+
+fn if_else(then_body: Vec<Statement>, else_body: Vec<Statement>) -> Statement {
+    Statement::If {
+        condition: Expression::constant(Constant::Bool(true)),
+        then_body,
+        else_body,
+    }
+}
+
+// A `let` in one branch does not bind in the next: each branch declares its own.
+#[test]
+fn sibling_branches_each_declare_their_write() {
+    let mut stmts = vec![if_else(vec![assign("self2", 1)], vec![assign("self2", 2)])];
+    insert_declarations(&mut stmts, &[]);
+    match &stmts[0] {
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            assert!(
+                matches!(then_body[0], Statement::Let { .. }),
+                "{then_body:?}"
+            );
+            assert!(
+                matches!(else_body[0], Statement::Let { .. }),
+                "{else_body:?}"
+            );
+        }
+        other => panic!("expected the if, got {other:?}"),
+    }
+}
+
+// Assigned in a branch and again after it: the branch's `let` would not reach
+// the later write, so the name is declared above both.
+#[test]
+fn a_write_after_the_branch_hoists_the_declaration() {
+    let mut stmts = vec![
+        if_else(vec![assign("applyResult", 1)], vec![]),
+        assign("applyResult", 2),
+    ];
+    insert_declarations(&mut stmts, &[]);
+    assert!(
+        matches!(&stmts[0], Statement::Let { name, .. } if name == "applyResult"),
+        "{stmts:?}"
+    );
+    assert!(matches!(stmts[2], Statement::Assign { .. }), "{stmts:?}");
+}
+
+// An own slot only a nested function writes is not written by this body, even
+// though `extra_writes` counts that write: it is declared at the top.
+#[test]
+fn an_own_slot_written_only_below_is_declared() {
+    let mut stmts = vec![Statement::Return(None)];
+    let extra = BTreeMap::from([("cache".to_string(), 1usize)]);
+    let own_slots = HashSet::from(["cache".to_string()]);
+    let none = HashSet::new();
+    insert_declarations_with_slots(
+        &mut stmts,
+        &[],
+        &extra,
+        &none,
+        &own_slots,
+        &none,
+        &Default::default(),
+    );
+    assert!(
+        matches!(&stmts[0], Statement::Let { name, .. } if name == "cache"),
+        "{stmts:?}"
+    );
+}

@@ -121,6 +121,41 @@ pub fn own_slot_names(func: u32, stmts: &[Statement]) -> HashSet<String> {
         .collect()
 }
 
+// The names a body uses for slots another scope owns, as the stamps say
+// (K4.4b), each with the slots it stands for: a write to one is a store into
+// the owner's variable, never a declaration of the body's own. Read per body,
+// so a name some other body gives an ancestor's slot does not stop this body
+// declaring a local of it. A name the body also uses for a slot of its own is
+// left out (I2 TwoSlots), and so is a slot whose owner is not an ancestor:
+// statements inlined from another function keep that function's stamps, and
+// its slot is a local of this body now.
+pub fn captured_slot_names(
+    ctx: &ClosureContext,
+    func: u32,
+    stmts: &[Statement],
+) -> HashMap<String, HashSet<SlotRef>> {
+    let own_scopes = own_scopes(ctx, func);
+    let ancestors: HashSet<u32> = ctx.ancestors_of(func).into_iter().collect();
+    let mut captured: HashMap<&str, HashSet<SlotRef>> = HashMap::new();
+    let mut own = HashSet::new();
+    for (name, slot) in var_refs(stmts) {
+        match slot {
+            Some(s) if own_scopes.contains(&s.owner) => {
+                own.insert(name);
+            }
+            Some(s) if ancestors.contains(&s.owner) => {
+                captured.entry(name).or_default().insert(s);
+            }
+            _ => {}
+        }
+    }
+    captured
+        .into_iter()
+        .filter(|(n, _)| !own.contains(n))
+        .map(|(n, s)| (n.to_string(), s))
+        .collect()
+}
+
 // Per name: (stamped, unstamped) references in one body.
 type NameCounts = HashMap<String, (usize, usize)>;
 

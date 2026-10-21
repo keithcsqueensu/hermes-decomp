@@ -254,7 +254,8 @@ impl PipelineContext {
     // ancestors' env slots stay assignments (only slots: an ancestor's plain
     // local `obj` must not stop a child's own `let obj`), and its own slots are
     // declared by the names its context gives them and, from the stamps, by
-    // the names the body uses for them.
+    // the names the body uses for them. A name the body uses, by stamp, for an
+    // ancestor's slot stays an assignment whatever the context calls the slot.
     pub(super) fn insert_body_declarations(
         &self,
         func_id: u32,
@@ -263,13 +264,164 @@ impl PipelineContext {
     ) {
         let extra = self.extra_writes_for_function(func_id);
         let empty = HashSet::new();
-        let outer = self.ancestor_env_slots.get(&func_id).unwrap_or(&empty);
-        let own_slots = self.own_env_slot_names(func_id);
+        let mut outer_owned;
+        let mut outer = self.ancestor_env_slots.get(&func_id).unwrap_or(&empty);
+        if let Some(ctx) = self.closure_ctx.as_ref() {
+            let captured: Vec<String> =
+                crate::analysis::closure::stamps::captured_slot_names(ctx, func_id, stmts)
+                    .into_iter()
+                    .filter(|(name, slots)| {
+                        !outer.contains(name)
+                            && slots.iter().all(|s| self.owner_binds(ctx, *s, name))
+                    })
+                    .map(|(name, _)| name)
+                    .collect();
+            if !captured.is_empty() {
+                outer_owned = outer.clone();
+                outer_owned.extend(captured);
+                outer = &outer_owned;
+            }
+        }
+        let mut own_slots = self.own_env_slot_names(func_id);
+        own_slots.extend(self.slot_names_of(func_id));
+        if let Ok(dbg) = std::env::var("HD_DBG_NAME") {
+            let refs: Vec<_> = crate::analysis::closure::stamps::var_refs(stmts)
+                .into_iter()
+                .filter(|(n, _)| *n == dbg)
+                .map(|(_, s)| s)
+                .collect();
+            if !refs.is_empty() {
+                let mut st: Vec<_> = refs.iter().map(|s| format!("{s:?}")).collect();
+                st.sort();
+                st.dedup();
+                eprintln!(
+                    "DBGN F{func_id} {:?} refs {} stamps {st:?} outer {} own_slots {} parent {:?}",
+                    self.closure_ctx
+                        .as_ref()
+                        .and_then(|c| c.get_function_name(func_id)),
+                    refs.len(),
+                    outer.contains(&dbg),
+                    own_slots.contains(&dbg),
+                    self.closure_ctx
+                        .as_ref()
+                        .and_then(|c| c.parent_function.get(&func_id))
+                );
+            }
+        }
         let own_used = crate::analysis::closure::stamps::own_slot_names(func_id, stmts);
         let read_by = self.own_slots_read_below(func_id, stmts, &own_used);
         transforms::insert_declarations_with_slots(
             stmts, params, &extra, outer, &own_slots, &own_used, &read_by,
         );
+    }
+
+    // Declare the variables of every class method body in `stmts`, each as the
+    // function it is. The class pass rebuilds those bodies from IR and keeps
+    // them inside `Statement::Class`, where no declaration pass reached: a
+    // constructor's locals (`tmp`, `obj`, destructured options) were bound
+    // only by codegen's module-level `let`, which vanishes as soon as any
+    // other function in the module declares the same name for itself.
+    pub(super) fn declare_class_methods(&self, stmts: &mut Vec<Statement>) {
+        use crate::ir::{Expression, MutVisitor};
+        struct Methods<'c>(&'c PipelineContext);
+        impl MutVisitor for Methods<'_> {
+            fn visit_statement(&mut self, s: &mut Statement) {
+                if let Statement::Class { methods, .. } = s {
+                    for m in methods.iter_mut() {
+                        let (Expression::Function { id, .. }, Some(body)) = (&m.value, &mut m.body)
+                        else {
+                            continue;
+                        };
+                        self.0.insert_body_declarations(id.0, body, &m.params);
+                        self.visit_statement_list(body);
+                    }
+                }
+                self.walk_statement(s);
+            }
+        }
+        Methods(self).visit_statement_list(stmts);
+    }
+
+    // Whether the scope that owns `slot` binds it as `name`. A function owner
+    // declares every name any body gives its slot (`slot_names_of`), so a store
+    // under any of them reaches the owner's scope; while the names disagree
+    // (I1) each is its own variable there, shared by the bodies that spell it
+    // the same, until `rename_slot` gives the slot one name. (A module factory
+    // gets them from ESM codegen, at module level: `with_module_slot_names`.)
+    // A block scope binds only what the context calls the slot or its
+    // builder's body does.
+    // An owner nothing creates any more renders nowhere and binds nothing: the
+    // async wrapper that took its generator's body leaves the generator's
+    // environment-creating function behind, and the body that now reads its
+    // slots declares them itself.
+    fn owner_binds(
+        &self,
+        ctx: &crate::analysis::closure::ClosureContext,
+        slot: crate::ir::SlotRef,
+        name: &str,
+    ) -> bool {
+        let owner = ctx.scope_function(slot.owner);
+        let renders = self.created_functions.contains(&owner)
+            || self.registry.function_to_module.contains_key(&owner)
+            || !ctx.parent_function.contains_key(&owner);
+        if !renders {
+            return false;
+        }
+        if ctx
+            .function_closures
+            .get(&slot.owner)
+            .is_some_and(|info| info.get_slot_name(slot.slot) == name)
+        {
+            return true;
+        }
+        self.slot_names.get(&slot).is_some_and(|n| {
+            n.in_owner.contains(name)
+                || (owner == slot.owner
+                    && n.all.contains(name)
+                    && crate::util::is_valid_identifier(name))
+        })
+    }
+
+    // Every name any body gives one of the function's own slots. The owner
+    // declares them all: a slot only its closures fill
+    // (`defineLazyObjectProperty`'s value cache, set by `setValue` and read by
+    // `getValue`) is bound by no statement of the owner, and a slot its
+    // readers spell differently from the owner (React's current fiber, `c100`
+    // here and `_null2` there) left the other spelling to codegen's
+    // module-level `let`, which disappears as soon as any function in the
+    // module declares that name for itself.
+    pub(super) fn slot_names_of(&self, func_id: u32) -> HashSet<String> {
+        // Slots order by owner first, so a function's slots are one range. The
+        // context's slot list is not used: it misses a slot only closures touch.
+        let from = crate::ir::SlotRef {
+            owner: func_id,
+            slot: 0,
+        };
+        let to = crate::ir::SlotRef {
+            owner: func_id,
+            slot: u32::MAX,
+        };
+        self.slot_names
+            .range(from..=to)
+            .flat_map(|(_, n)| n.all.iter().cloned())
+            // A name that is no identifier (`react-native`, a slot whose
+            // `require` was lost) is codegen's to bind or not.
+            .filter(|n| crate::util::is_valid_identifier(n))
+            .collect()
+    }
+
+    // Declare a module factory's variables: codegen binds what the module writes
+    // and never declares (an import, or a module-level `let`). Its class
+    // methods are declared like any function.
+    pub(super) fn insert_factory_declarations(
+        &self,
+        func_id: u32,
+        stmts: &mut Vec<Statement>,
+        params: &[String],
+    ) {
+        self.declare_class_methods(stmts);
+        let extra = self.extra_writes_for_function(func_id);
+        transforms::insert_declarations_with_extra_writes(stmts, params, &extra);
     }
 
     // For each closure `stmts` create, the slots of `func_id` among `names`
@@ -388,6 +540,7 @@ impl PipelineContext {
                 // later `kind.voiceState` reads stay on the object.
                 body_stmts = transforms::repair_switch_clobbers(body_stmts);
                 self.insert_body_declarations(func_id, &mut body_stmts, &params);
+                self.declare_class_methods(&mut body_stmts);
 
                 (func_id, (params, body_stmts))
             })
@@ -529,6 +682,50 @@ impl PipelineContext {
         }
     }
 
+    // What the IR calls each stamped slot: every name any body gives it, and the
+    // names its owner's own body gives it.
+    pub(in crate::pipeline) fn precompute_slot_names(
+        &self,
+    ) -> BTreeMap<crate::ir::SlotRef, super::SlotNames> {
+        let mut out: BTreeMap<crate::ir::SlotRef, super::SlotNames> = BTreeMap::new();
+        let Some(ctx) = self.closure_ctx.as_ref() else {
+            return out;
+        };
+        for (&func, stmts) in &self.all_ir {
+            for (name, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
+                let Some(slot) = slot else { continue };
+                let names = out.entry(slot).or_default();
+                if !names.all.contains(name) {
+                    names.all.insert(name.to_string());
+                }
+                if ctx.scope_function(slot.owner) == func && !names.in_owner.contains(name) {
+                    names.in_owner.insert(name.to_string());
+                }
+            }
+        }
+        out
+    }
+
+    pub(in crate::pipeline) fn precompute_created_functions(&self) -> HashSet<u32> {
+        use crate::ir::{Expression, Visitor};
+        struct Ids(HashSet<u32>);
+        impl<'a> Visitor<'a> for Ids {
+            fn visit_expression(&mut self, e: &'a Expression) {
+                if let Expression::Function { id, .. } = e {
+                    self.0.insert(id.0);
+                }
+                self.walk_expression(e);
+            }
+        }
+        let mut ids = Ids(HashSet::new());
+        for stmts in self.all_ir.values() {
+            for s in stmts {
+                ids.visit_statement(s);
+            }
+        }
+        ids.0
+    }
+
     // Top-down: names(fn) = names(parent) ∪ slot names of parent. One pass, O(n).
     pub(in crate::pipeline) fn precompute_ancestor_env_slot_names(
         &self,
@@ -543,14 +740,6 @@ impl PipelineContext {
         // a child's unrelated local undeclared (lodash's `cloneRegExp`
         // destructuring into `source`). Only drops names; what the IR does call
         // the slot is K4.4b's to add.
-        let mut ir_names: HashMap<crate::ir::SlotRef, HashSet<&str>> = HashMap::new();
-        for stmts in self.all_ir.values() {
-            for (name, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
-                if let Some(slot) = slot {
-                    ir_names.entry(slot).or_default().insert(name);
-                }
-            }
-        }
         let mut own: BTreeMap<u32, HashSet<String>> = BTreeMap::new();
         for (&fid, info) in &ctx.function_closures {
             let mut names = HashSet::new();
@@ -561,9 +750,10 @@ impl PipelineContext {
                     slot: key,
                 };
                 let stale = key >> 24 == 0
-                    && ir_names
+                    && self
+                        .slot_names
                         .get(&slot)
-                        .is_some_and(|used| !used.contains(name.as_str()));
+                        .is_some_and(|used| !used.all.contains(&name));
                 if !stale {
                     names.insert(name);
                 }

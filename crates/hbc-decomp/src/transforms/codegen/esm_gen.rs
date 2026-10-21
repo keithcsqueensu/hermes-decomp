@@ -444,7 +444,26 @@ impl Codegen {
         // declared by nobody. A module is always strict, so those writes throw
         // instead of quietly making a global. The module is the only scope that
         // sees every rendered body, so the binding is declared here.
-        let dangling = undeclared_assignments(&imports, &body_stmts, &exports);
+        let mut dangling = undeclared_assignments(&imports, &body_stmts, &exports);
+        // So is every slot the module owns: closures read and write it by name,
+        // and a function elsewhere in the module declaring the same name for
+        // itself hides it from the scan above, which takes a binding anywhere
+        // in the text as one for the whole module (React's current fiber,
+        // `_null2`, unbound in every hook once one helper had a `_null2`).
+        if !self.module_slot_names.is_empty() {
+            let top = top_level_bound_names(&imports, &body_stmts, &exports);
+            for name in &self.module_slot_names {
+                let name = crate::util::sanitize_identifier(name);
+                if !top.contains(name.as_str())
+                    && crate::util::is_valid_identifier(&name)
+                    && !crate::ir::expr::display::is_builtin_global(&name)
+                {
+                    dangling.push(name);
+                }
+            }
+            dangling.sort();
+            dangling.dedup();
+        }
         if !dangling.is_empty() {
             extra_consts.push(format!("let {};", dangling.join(", ")));
         }
@@ -1249,6 +1268,64 @@ fn undeclared_assignments(imports: &[String], body: &[String], exports: &[String
     out
 }
 
+// The names the module's top level binds: an import, or a declaration that
+// starts a line at column zero (`let a, b;`, `const x = …`, `function f`,
+// `class C`, any of them exported).
+fn top_level_bound_names<'a>(
+    imports: &'a [String],
+    body: &'a [String],
+    exports: &'a [String],
+) -> std::collections::HashSet<&'a str> {
+    use std::sync::OnceLock;
+    static PATS: OnceLock<(regex::Regex, regex::Regex, regex::Regex)> = OnceLock::new();
+    let (decl, list, import) = PATS.get_or_init(|| {
+        (
+            regex::Regex::new(
+                r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?|class)\s*([A-Za-z_$][\w$]*)",
+            )
+            .expect("static pattern"),
+            regex::Regex::new(r"^(?:export\s+)?(?:let|const|var)\s+([^=;]*)").expect("static pattern"),
+            regex::Regex::new(r"^\s*import\s+(?:\{([^}]*)\}|([A-Za-z_$][\w$]*)|\*\s+as\s+([A-Za-z_$][\w$]*))")
+                .expect("static pattern"),
+        )
+    });
+    let mut out = std::collections::HashSet::new();
+    for chunk in imports.iter().chain(body).chain(exports) {
+        for line in chunk.lines() {
+            if let Some(c) = import.captures(line) {
+                for g in c.iter().skip(1).flatten() {
+                    for part in g.as_str().split(',') {
+                        let name = part.rsplit(" as ").next().unwrap_or(part).trim();
+                        if !name.is_empty() {
+                            out.insert(name);
+                        }
+                    }
+                }
+                continue;
+            }
+            if line.starts_with(char::is_whitespace) {
+                continue;
+            }
+            if let Some(c) = decl.captures(line) {
+                if let Some(m) = c.get(1) {
+                    out.insert(m.as_str());
+                }
+            }
+            if let Some(c) = list.captures(line) {
+                if let Some(m) = c.get(1) {
+                    for part in m.as_str().split(',') {
+                        let name = part.trim();
+                        if !name.is_empty() && !name.starts_with(['{', '[']) {
+                            out.insert(name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod const_export_tests {
     use super::dedupe_const_export_collisions;
@@ -1843,4 +1920,25 @@ fn dedupe_const_export_collisions(
         *exp = format!("export {{ {alias} as {name} }};");
     }
     body_stmts.extend(extra);
+}
+
+#[cfg(test)]
+mod top_level_tests {
+    use super::top_level_bound_names;
+
+    #[test]
+    fn only_the_module_top_level_binds() {
+        let imports = vec!["import react_native from \"react-native\";".to_string()];
+        let body = vec![
+            "let a, b;".to_string(),
+            "export const c = 1;".to_string(),
+            "function f(p) {\n  let inner;\n}".to_string(),
+            "class K {}".to_string(),
+        ];
+        let names = top_level_bound_names(&imports, &body, &[]);
+        for n in ["react_native", "a", "b", "c", "f", "K"] {
+            assert!(names.contains(n), "{n} missing from {names:?}");
+        }
+        assert!(!names.contains("inner"), "{names:?}");
+    }
 }

@@ -5,8 +5,9 @@
 //   an ancestor owns and a binding of the body's own (a local, a parameter). Nor
 //   may a scope between a capture and the slot's owner bind the capture's name,
 //   which would shadow it.
-// - I3: a function declares the slots it owns that its body uses, and declares
-//   nothing nobody uses (a bare `let x;` no reference in the body or below reads).
+// - I3: a function declares the slots it owns that its body uses, never a slot
+//   an ancestor owns, and nothing nobody uses (a bare `let x;` no reference in
+//   the body or below reads).
 //
 // It runs on bodies as codegen renders them -- parameters named, declarations
 // inserted, every statement where it will print -- because I2 is a property of
@@ -368,9 +369,12 @@ pub fn check_slot_identity(
                 });
             }
         }
+        // Only an ancestor's slot is a capture: statements inlined from another
+        // function keep its stamps, and its slot is a local here.
+        let ancestors: HashSet<u32> = ctx.ancestors_of(func).into_iter().collect();
         for s in body.stmts {
             collect_lets(s, &mut |name, slot| {
-                if slot.is_some_and(|s| !own.contains(&s.owner)) {
+                if slot.is_some_and(|s| !own.contains(&s.owner) && ancestors.contains(&s.owner)) {
                     v.i3.push(I3 {
                         func,
                         name: name.to_string(),

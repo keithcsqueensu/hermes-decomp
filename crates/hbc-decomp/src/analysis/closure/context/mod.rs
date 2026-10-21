@@ -220,7 +220,7 @@ impl ClosureContext {
     }
 
     // `scope`'s ancestors, nearest first, stopping at a cycle.
-    fn ancestors_of(&self, scope: u32) -> Vec<u32> {
+    pub fn ancestors_of(&self, scope: u32) -> Vec<u32> {
         let mut out = Vec::new();
         let mut seen = HashSet::from([scope]);
         let mut cur = scope;

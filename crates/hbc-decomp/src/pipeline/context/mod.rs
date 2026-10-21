@@ -22,6 +22,14 @@ use std::sync::Arc;
 use super::{build_closure_context_from_file, get_function_params, DecompileOptionsV2};
 
 // Pre-computed pipeline context that holds all intermediate analysis results.
+// The names one slot carries in the IR: in every body, and in the body of the
+// function that owns it.
+#[derive(Debug, Default)]
+pub(super) struct SlotNames {
+    pub all: std::collections::BTreeSet<String>,
+    pub in_owner: std::collections::BTreeSet<String>,
+}
+
 // Built once (expensive), then used to generate code for individual functions cheaply.
 pub struct PipelineContext {
     pub all_ir: BTreeMap<u32, Vec<Statement>>,
@@ -39,6 +47,13 @@ pub struct PipelineContext {
     // (top-down, O(n)). Read by both the bulk render path and the single-function
     // path so neither rebuilds the whole map per function.
     pub(super) ancestor_env_slots: BTreeMap<u32, std::collections::HashSet<String>>,
+    // What the IR calls each stamped slot, in every body and in its owner's,
+    // computed once (closure model K4.4).
+    pub(super) slot_names: BTreeMap<crate::ir::SlotRef, SlotNames>,
+    // Every function some body creates (`Expression::Function`): a function
+    // whose creator was replaced (an async wrapper given its generator's body)
+    // never renders, and neither do its declarations.
+    pub(super) created_functions: std::collections::HashSet<u32>,
     // Names each function's nested functions read or write, computed once:
     // recomputing it per rendered module rescanned every function per module.
     pub(super) captured_by_descendants: BTreeMap<u32, std::collections::HashSet<String>>,
@@ -185,12 +200,16 @@ impl PipelineContext {
             inline_bodies: Arc::new(BTreeMap::new()),
             child_functions,
             ancestor_env_slots: BTreeMap::new(),
+            slot_names: BTreeMap::new(),
+            created_functions: std::collections::HashSet::new(),
             captured_by_descendants: BTreeMap::new(),
             worklet_sources,
             cascade_names,
         };
         // Precompute the ancestor env-slot names once (top-down, O(n)); both the
         // bulk render path and the per-function path read this instead of rebuilding.
+        ctx.slot_names = ctx.precompute_slot_names();
+        ctx.created_functions = ctx.precompute_created_functions();
         ctx.ancestor_env_slots = ctx.precompute_ancestor_env_slot_names();
         ctx.captured_by_descendants = ctx.compute_captured_by_descendants();
 

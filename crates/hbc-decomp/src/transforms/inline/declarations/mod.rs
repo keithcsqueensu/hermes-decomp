@@ -114,6 +114,11 @@ fn insert_declarations_impl(
     let mut write_count: BTreeMap<String, usize> = BTreeMap::new();
     let mut let_declared: std::collections::HashSet<String> = std::collections::HashSet::new();
     count_writes(stmts, &mut write_count, &mut let_declared);
+    // Written by a statement of this body, as opposed to only by a function
+    // nested in it (`extra_writes`): such a write gets its declaration where it
+    // happens, the others need one hoisted.
+    let mut written_here: HashSet<String> = write_count.keys().cloned().collect();
+    written_here.extend(let_declared.iter().cloned());
     for (name, n) in extra_writes {
         *write_count.entry(name.clone()).or_insert(0) += *n;
     }
@@ -200,8 +205,6 @@ fn insert_declarations_impl(
     }
     // An own slot no statement of this body binds: a captured variable
     // initialised only by the closures that share it.
-    let mut written_here: HashSet<String> = write_count.keys().cloned().collect();
-    written_here.extend(let_declared.iter().cloned());
     for name in own_slots {
         // The body already went through `rename_reserved_words`: a slot named
         // `var` is read as `_var` there, so the declaration takes that form.
@@ -462,7 +465,7 @@ fn insert_decls_in_block(
                 else_body,
                 ..
             } => {
-                insert_decls_in_block(
+                nested_block(
                     then_body,
                     write_count,
                     let_declared,
@@ -470,7 +473,7 @@ fn insert_decls_in_block(
                     free_closures,
                     skip,
                 );
-                insert_decls_in_block(
+                nested_block(
                     else_body,
                     write_count,
                     let_declared,
@@ -484,10 +487,10 @@ fn insert_decls_in_block(
             | Statement::For { body, .. }
             | Statement::ForIn { body, .. }
             | Statement::ForOf { body, .. } => {
-                insert_decls_in_block(body, write_count, let_declared, params, free_closures, skip);
+                nested_block(body, write_count, let_declared, params, free_closures, skip);
             }
             Statement::Block(inner) => {
-                insert_decls_in_block(
+                nested_block(
                     inner,
                     write_count,
                     let_declared,
@@ -502,7 +505,7 @@ fn insert_decls_in_block(
                 finally_body,
                 ..
             } => {
-                insert_decls_in_block(
+                nested_block(
                     try_body,
                     write_count,
                     let_declared,
@@ -510,7 +513,7 @@ fn insert_decls_in_block(
                     free_closures,
                     skip,
                 );
-                insert_decls_in_block(
+                nested_block(
                     catch_body,
                     write_count,
                     let_declared,
@@ -518,7 +521,7 @@ fn insert_decls_in_block(
                     free_closures,
                     skip,
                 );
-                insert_decls_in_block(
+                nested_block(
                     finally_body,
                     write_count,
                     let_declared,
@@ -545,6 +548,30 @@ fn insert_decls_in_block(
             _ => {}
         }
     }
+}
+
+// A nested block declares its own names: a `let` in it does not bind after it,
+// so a name the block declared is free again for a later sibling (`let self2 =
+// this` in one branch of an `if` and `self2 = this` in the next was left a bare
+// write). A name used after the block was hoisted above it already.
+fn nested_block(
+    stmts: &mut Vec<Statement>,
+    write_count: &BTreeMap<String, usize>,
+    let_declared: &HashSet<String>,
+    params: &HashSet<&str>,
+    free_closures: &HashSet<String>,
+    skip: &mut DeclSkip<'_>,
+) {
+    let saved = skip.declared.clone();
+    insert_decls_in_block(
+        stmts,
+        write_count,
+        let_declared,
+        params,
+        free_closures,
+        skip,
+    );
+    *skip.declared = saved;
 }
 
 // Check if a name is a valid JavaScript identifier (not a number, not a string literal).

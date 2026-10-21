@@ -325,6 +325,20 @@ pub(super) fn names_assigned_in_nested_bodies_and_used_outside(stmts: &[Statemen
     // of the body, so it needs no hoisting.
     let mut assigned_at_top_first: std::collections::HashSet<String> =
         std::collections::HashSet::new();
+    // A name the function assigns at its own level after a nested body did
+    // needs the binding too: the nested body's `let` does not reach it
+    // (lodash's `createWrap` assigns `applyResult` in an `if` and again after
+    // it).
+    let assigned_at_top: std::collections::HashSet<&str> = stmts
+        .iter()
+        .filter_map(|s| match s {
+            Statement::Assign {
+                target: AssignTarget::Binding(Binding::Variable(name)),
+                ..
+            } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
     let mut seen_nested: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<String> = Vec::new();
     for stmt in stmts {
@@ -352,7 +366,7 @@ pub(super) fn names_assigned_in_nested_bodies_and_used_outside(stmts: &[Statemen
                 }
                 let all = total.get(&name).copied().unwrap_or(0);
                 let here = inside.get(&name).copied().unwrap_or(0);
-                if all > here && !out.contains(&name) {
+                if (all > here || assigned_at_top.contains(name.as_str())) && !out.contains(&name) {
                     out.push(name);
                 }
             }

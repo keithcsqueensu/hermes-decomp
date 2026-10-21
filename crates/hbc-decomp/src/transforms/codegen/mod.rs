@@ -290,6 +290,10 @@ pub struct Codegen {
     // on its own, and a write buried in one of them invalidates an import binding
     // just as surely as a write at the top level.
     pub(super) nested_writes: BTreeMap<String, usize>,
+    // The names the IR gives the module factory's own environment slots
+    // (closure model K4.4b). Each one the module's top level does not bind is
+    // declared there, whatever the rendered bodies declare for themselves.
+    pub(super) module_slot_names: std::collections::BTreeSet<String>,
 }
 
 impl Codegen {
@@ -304,6 +308,7 @@ impl Codegen {
             dep_ids: None,
             inline_bodies: Arc::new(BTreeMap::new()),
             nested_writes: BTreeMap::new(),
+            module_slot_names: std::collections::BTreeSet::new(),
         }
     }
 
@@ -333,6 +338,12 @@ impl Codegen {
     // Writes performed by the descendant bodies rendered inside this module.
     pub fn with_nested_writes(mut self, writes: BTreeMap<String, usize>) -> Self {
         self.nested_writes = writes;
+        self
+    }
+
+    // The names the module factory's own slots carry (`module_slot_names`).
+    pub fn with_module_slot_names(mut self, names: std::collections::BTreeSet<String>) -> Self {
+        self.module_slot_names = names;
         self
     }
 

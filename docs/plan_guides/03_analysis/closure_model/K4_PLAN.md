@@ -200,7 +200,7 @@ take: there is no second name to disagree with. Split by the I3 class each remov
 - **K4.4b — never declare a capture** (I3 `DeclaresCapture`, 306: the child's
   `let closure_3 = String(index)` that should have written `prompt`'s `cancelButtonKey`).
   Declaration insertion must skip a `Let` whose slot another scope owns; the write stays an
-  assignment.
+  assignment. **✅ Shipped**, see below.
 - **K4.4c — drop declarations nothing reads as this binding** (I3 `Unused`, 217). The
   1,091 bare `let closure_…;` in §1 is *not* this number: most of those are hoisted
   declarations of destructuring targets the body does assign (`let closure_3; … [tmp4,
@@ -281,6 +281,59 @@ unbound instead of reading the wrong variable. Giving the slot one name is K4.6.
 Round trip: `capture_vs_local` added (a capture beside a same-named local, I2), recorded as
 a known failure on v96 for K4.7. K4.4a's own shape did not reproduce in a small snippet: on
 the bundles it comes from the late per-body renamers (K4.6b).
+
+**K4.4b ✅ shipped.** The rule as planned is one line. Making it safe took most of the work,
+because a store that stays an assignment needs a binding to land in, and many bindings
+existed only by accident: codegen's module-level `let`. That `let` is a text scan, and it
+counts a `let x` *anywhere* in the module as binding `x` everywhere. Each piece below was
+found by the gates' `worse:` list going up on one bundle or another.
+
+- **The rule, per body.** `stamps::captured_slot_names` gives the names this body uses, by
+  stamp, for an ancestor's slot. They join `outer_names` for this body only. Making
+  `outer_names` the IR names of all ancestor slots, for every body, suppressed real locals
+  (K4.4a's note). Only an *ancestor* counts as an owner: statements inlined from another
+  function keep that function's stamps, and its slot is a local here (the checker's I3 now
+  agrees).
+- **The owner must bind the name** (`owner_binds`). A function owner declares every name any
+  body gives its slots (`slot_names_of`, from `slot_names`, computed once). When the names
+  disagree (I1), each name becomes its own variable in the owner's scope, shared by the
+  bodies that spell it the same. That beats a dead local (React's current fiber: `c100` in
+  some hooks, `_null2` in others; `renderWithHooks` declared `let c100 = arg1`, and the fiber
+  never reached the hooks). K4.6 gives the slot one name. A module factory gets its slot
+  names from ESM codegen at module level (`with_module_slot_names`). Declaring them in the
+  factory body instead broke the re-export detection (`export * from` printed as a whole
+  module). An owner that nothing creates any more binds nothing (`created_functions`): an
+  async wrapper takes its generator's body and leaves the generator's
+  environment-creating function unrendered.
+- **Pre-existing declaration bugs** the module `let` was hiding, now visible and fixed:
+  `written_here` counted writes by nested functions, so a slot only closures fill was never
+  declared (`defineLazyObjectProperty`'s cache, an `__awaiter` callback's slots); phase 2's
+  `declared` set ignored block scope, so `let self2` in one branch left `self2 = this` in the
+  next unbound (`nested_block`); a branch's `let` did not reach a later top-level write
+  (lodash `createWrap`'s `applyResult`).
+- **Class method bodies got no declarations at all.** The class pass rebuilds them inside
+  `Statement::Class`, where no declaration pass reached, so every constructor local lived on
+  the module `let` (`declare_class_methods`).
+- **Codegen dropped `const x = globalThis.Builtin.….x`** as a global alias. That is only
+  right for `globalThis.X` itself: `captureStackTrace` and `valueOf` are not globals (a
+  separate commit).
+
+**[measured]** at codegen, K4.4a (with the JSX fix) → K4.4b:
+
+| | Equinox | CoachRx |
+|---|---|---|
+| I3 `DeclaresCapture` | 306 → 0 | 335 → 2 (I1 in owners that no longer render) |
+| I2 | 2,195 → 2,132 | 1,443 → 1,383 |
+| I1, I3 `Undeclared`, I3 `Unused` | 2,294 / 14 / 217 → 2,294 / 14 / 214 | unchanged (243 → 242 unused) |
+| undeclared references (harness) | 3,000 → 1,199 | 4,990 → 4,201 |
+| modules that do not parse | 1,653 → 1,653 | 1,125 → 1,114 |
+| hunks | 12,361 | 4,124 |
+
+`worse:` lists only harness artifacts. `window`, `DOMRect` and `XMLHttpRequest` are browser
+globals the Node-based harness does not know, now printed where a dropped
+`const X = window.X` used to be. `closure_0$2` is in a scope with a direct `eval()`, which
+eslint-scope leaves unresolved. `str26` was never bound in its module, and the harness
+counted it as covered by another module's top-level `let`.
 
 ### K4.5 — resolvers by identity — behaviour, one commit each
 Replace each text-or-record resolution of a slot with the stamp, measuring each alone:

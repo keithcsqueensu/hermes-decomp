@@ -197,8 +197,7 @@ impl PipelineContext {
         let statements = self.all_ir.get(&function_id)?;
         let mut statements = self.codegen_statements(function_id, statements);
         let params = self.codegen_params(file, function_id);
-        let extra = self.extra_writes_for_function(function_id);
-        transforms::insert_declarations_with_extra_writes(&mut statements, &params, &extra);
+        self.insert_factory_declarations(function_id, &mut statements, &params);
         Some((params, statements))
     }
 
@@ -266,9 +265,10 @@ impl PipelineContext {
             }
             codegen = codegen
                 .with_esm_mode(dep_names)
-                .with_esm_module_meta(dep_ids);
+                .with_esm_module_meta(dep_ids)
+                .with_module_slot_names(self.slot_names_of(function_id).into_iter().collect());
+            self.insert_factory_declarations(function_id, &mut statements, &params);
             let extra = self.extra_writes_for_function(function_id);
-            transforms::insert_declarations_with_extra_writes(&mut statements, &params, &extra);
             crate::analysis::closure::stamps::record_render(
                 self.closure_ctx.as_ref(),
                 function_id,
@@ -280,6 +280,7 @@ impl PipelineContext {
             // Insert const/let declarations into the IR before codegen.
             // Nested functions must not redeclare ancestor env slots.
             self.insert_body_declarations(function_id, &mut statements, &params);
+            self.declare_class_methods(&mut statements);
 
             let body = codegen.generate_statements(&statements);
 

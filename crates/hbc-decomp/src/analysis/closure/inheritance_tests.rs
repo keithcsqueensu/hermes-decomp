@@ -292,3 +292,28 @@ fn own_slot_names_reads_the_stamps() {
         std::collections::HashSet::from(["pending".to_string()])
     );
 }
+
+// K4.4b: a capture is a slot an ancestor owns; a slot of a function that is not
+// an ancestor (its statements were inlined here) is a local of this body.
+#[test]
+fn captured_slot_names_takes_ancestors_only() {
+    use super::stamps::captured_slot_names;
+    use crate::ir::{Binding, SlotRef, Var};
+    let stamped = |name: &str, owner: u32, slot: u32| {
+        Statement::Expr(Expression::Value(Value::Binding(Binding::Variable(Var {
+            name: name.to_string(),
+            slot: Some(SlotRef { owner, slot }),
+        }))))
+    };
+    let mut ctx = ClosureContext::new();
+    ctx.parent_function.insert(5, 4);
+    ctx.parent_function.insert(4, 1);
+    let body = vec![
+        stamped("fiber", 1, 0),
+        stamped("inlined", 9, 0),
+        stamped("mine", 5, 0),
+    ];
+    let names = captured_slot_names(&ctx, 5, &body);
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert!(names["fiber"].contains(&SlotRef { owner: 1, slot: 0 }));
+}
