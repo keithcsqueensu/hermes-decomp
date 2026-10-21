@@ -384,6 +384,39 @@ while the IR keeps the name it was baked with. K4 would remove the question.
 `useAnimatedPropsLifecycleWithPrevNodeRef` is a standing example, wrong in the K2 output and in
 both experiments: a capture named `current` beside a local `current`.
 
+**K4-small, attempted and not shipped (2026-10).** The proposal was one operation that keeps a
+baked slot's context name and IR name together: after each allocation, rename every body that
+uses the slot (owner and readers, via the bake record) to the context's name when that name is
+free from owner to reader, else pin the context back to the IR's name. It was refined against
+each regression the Equinox diff showed -- rename only a placeholder or generic name (the
+`react-native` import had become `animationValue`, Metro's `exports` `_exports`); never rename a
+slot whose name is a `class`/`function` declared in the owner (jsuri's `class URI` lost every
+reference to `URI2`); all or nothing per slot (a base64 encoder read its alphabet as `c2` and by
+the constant's name in adjacent statements); leave an exact parameter alias alone
+(`safeFactory`'s readers keep `beforeBreadcrumb`; `resolveThenable`, which reassigns its
+parameter, is pinned). Measured against the K3 output, with undeclared references counted per
+parseable module and every substitution in the diff classified:
+
+| variant | hunks | undeclared (K3: 3,124) | names newly undeclared | name → placeholder |
+|---|---|---|---|---|
+| reconcile each pass, rename + pin | 1,183 | 2,955 | 3 | 812 |
+| … + W10 refuses when the owner's body lacks the name | 1,756 | 2,956 | 6 | 1,976 |
+| … + bake record follows every rename | 3,943 | 2,932 | 7 | 650 |
+| pin only, each pass | 2,671 | 2,993 | 9 | 3,586 |
+| pin only, once after naming | 1,868 | 3,111 | 2 | 2,402 |
+| rename + pin, once after naming | 1,153 | 2,955 | 3 | 809 |
+
+None is a clean win: the best remove ~170 undeclared references and add others, and send ~800
+references from a name back to a placeholder. The decisive row is *pin only, once after
+naming*: it renames nothing in the IR, runs after every naming pass, and still changes 1,868
+hunks and introduces undeclared names -- rendering consumes the context's slot names, and
+today's output depends on the drift between them and the IR. Context/IR agreement is therefore
+not a local repair at any single point in the pipeline; it is K4 proper (the node carries the
+slot to codegen, and there is one name to agree with). The measurement harness (an
+`acorn`/`eslint-scope` undeclared-reference counter that diffs the set of undeclared names, and
+a diff classifier for identifier substitutions) is what made each regression visible, and is
+worth keeping for K4.
+
 ### C6 — `ClosureSlotValue` has no room for a better source of truth **[code]**
 
 Per §1: the enum is a value with no provenance. Adding debug names means either a new variant
