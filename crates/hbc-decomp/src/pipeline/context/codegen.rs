@@ -279,16 +279,7 @@ impl PipelineContext {
         } else {
             // Insert const/let declarations into the IR before codegen.
             // Nested functions must not redeclare ancestor env slots.
-            let extra = self.extra_writes_for_function(function_id);
-            let outer = self.ancestor_env_slot_names(function_id);
-            let own_slots = self.own_env_slot_names(function_id);
-            transforms::insert_declarations_with_slots(
-                &mut statements,
-                &params,
-                &extra,
-                &outer,
-                &own_slots,
-            );
+            self.insert_body_declarations(function_id, &mut statements, &params);
 
             let body = codegen.generate_statements(&statements);
 

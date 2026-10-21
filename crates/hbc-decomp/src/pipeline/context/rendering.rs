@@ -19,7 +19,7 @@ use crate::file::BytecodeFile;
 use crate::ir::Statement;
 use crate::transforms::{self, Codegen, CodegenOptions};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use super::super::get_function_params;
@@ -47,8 +47,18 @@ impl PipelineContext {
             .collect();
         let bodies = prepared
             .iter()
-            .chain(factories.iter())
-            .map(|(&f, (params, stmts))| (f, RenderedBody { params, stmts }))
+            .map(|b| (b, false))
+            .chain(factories.iter().map(|b| (b, true)))
+            .map(|((&f, (params, stmts)), module)| {
+                (
+                    f,
+                    RenderedBody {
+                        params,
+                        stmts,
+                        module,
+                    },
+                )
+            })
             .collect();
         Some(check_slot_identity(&bodies, ctx))
     }
@@ -240,6 +250,27 @@ impl PipelineContext {
             .collect()
     }
 
+    // Declare a nested (non-factory) body's variables, as codegen renders it:
+    // ancestors' env slots stay assignments (only slots: an ancestor's plain
+    // local `obj` must not stop a child's own `let obj`), and its own slots are
+    // declared by the names its context gives them and, from the stamps, by
+    // the names the body uses for them.
+    pub(super) fn insert_body_declarations(
+        &self,
+        func_id: u32,
+        stmts: &mut Vec<Statement>,
+        params: &[String],
+    ) {
+        let extra = self.extra_writes_for_function(func_id);
+        let empty = HashSet::new();
+        let outer = self.ancestor_env_slots.get(&func_id).unwrap_or(&empty);
+        let own_slots = self.own_env_slot_names(func_id);
+        let own_used = crate::analysis::closure::stamps::own_slot_names(func_id, stmts);
+        transforms::insert_declarations_with_slots(
+            stmts, params, &extra, outer, &own_slots, &own_used,
+        );
+    }
+
     // Names each function's nested functions read or write (see
     // `names_used_by_descendants`).
     pub(crate) fn compute_captured_by_descendants(&self) -> BTreeMap<u32, HashSet<String>> {
@@ -259,7 +290,6 @@ impl PipelineContext {
     ) -> BTreeMap<u32, (Vec<String>, Vec<Statement>)> {
         // Env-slot names only (not every ancestor local), precomputed once on the
         // context so each function is O(slots), not O(ancestor-body-size).
-        let ancestor_env = &self.ancestor_env_slots;
         let captured = &self.captured_by_descendants;
         self.all_ir
             .par_iter()
@@ -304,17 +334,7 @@ impl PipelineContext {
                 // before declarations so the fresh name is declared and the
                 // later `kind.voiceState` reads stay on the object.
                 body_stmts = transforms::repair_switch_clobbers(body_stmts);
-                let extra = self.extra_writes_for_function(func_id);
-                let empty = HashSet::new();
-                let outer = ancestor_env.get(&func_id).unwrap_or(&empty);
-                let own_slots = self.own_env_slot_names(func_id);
-                transforms::insert_declarations_with_slots(
-                    &mut body_stmts,
-                    &params,
-                    &extra,
-                    outer,
-                    &own_slots,
-                );
+                self.insert_body_declarations(func_id, &mut body_stmts, &params);
 
                 (func_id, (params, body_stmts))
             })
@@ -456,16 +476,6 @@ impl PipelineContext {
         }
     }
 
-    // Env-slot names owned by ancestors of `func_id`. Generic ancestor locals
-    // (`obj`, `_Error`) are excluded so children still get their own `let`. Reads the
-    // map precomputed once on the context rather than rebuilding it per call.
-    pub(super) fn ancestor_env_slot_names(&self, func_id: u32) -> HashSet<String> {
-        self.ancestor_env_slots
-            .get(&func_id)
-            .cloned()
-            .unwrap_or_default()
-    }
-
     // Top-down: names(fn) = names(parent) ∪ slot names of parent. One pass, O(n).
     pub(in crate::pipeline) fn precompute_ancestor_env_slot_names(
         &self,
@@ -474,11 +484,36 @@ impl PipelineContext {
             return BTreeMap::new();
         };
 
+        // Each scope's own slots by the context's names, less a name that went
+        // stale (K4.4a): a slot whose stamped references all spell it another
+        // way no longer answers to the context's name, and keeping the name kept
+        // a child's unrelated local undeclared (lodash's `cloneRegExp`
+        // destructuring into `source`). Only drops names; what the IR does call
+        // the slot is K4.4b's to add.
+        let mut ir_names: HashMap<crate::ir::SlotRef, HashSet<&str>> = HashMap::new();
+        for stmts in self.all_ir.values() {
+            for (name, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
+                if let Some(slot) = slot {
+                    ir_names.entry(slot).or_default().insert(name);
+                }
+            }
+        }
         let mut own: BTreeMap<u32, HashSet<String>> = BTreeMap::new();
         for (&fid, info) in &ctx.function_closures {
             let mut names = HashSet::new();
             for &key in info.slots.keys() {
-                names.insert(info.get_slot_name(key));
+                let name = info.get_slot_name(key);
+                let slot = crate::ir::SlotRef {
+                    owner: fid,
+                    slot: key,
+                };
+                let stale = key >> 24 == 0
+                    && ir_names
+                        .get(&slot)
+                        .is_some_and(|used| !used.contains(name.as_str()));
+                if !stale {
+                    names.insert(name);
+                }
             }
             own.insert(fid, names);
         }

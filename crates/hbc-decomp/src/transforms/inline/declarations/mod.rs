@@ -38,14 +38,35 @@ pub fn insert_declarations_with_extra_writes(
 // (`var pending;` written and read by its closures only) has a slot and a
 // name but no statement here, so nothing declared it and every closure read
 // an unbound name. It is declared `let name;` at the top.
+//
+// `own_used`: the names the body itself uses for its own slots, from the
+// stamps (`stamps::own_slot_names`). Each is declared here even when it is read
+// before it is written, which otherwise passes for a capture, and even when an
+// ancestor's slot is spelled the same, which otherwise keeps it out: the stamp
+// says whose variable it is.
 pub fn insert_declarations_with_slots(
     stmts: &mut Vec<Statement>,
     params: &[String],
     extra_writes: &BTreeMap<String, usize>,
     outer_names: &HashSet<String>,
     own_slots: &HashSet<String>,
+    own_used: &HashSet<String>,
 ) {
-    insert_declarations_impl(stmts, params, extra_writes, outer_names, own_slots);
+    let outer: HashSet<String>;
+    let outer_names = if own_used.iter().any(|n| outer_names.contains(n)) {
+        outer = outer_names.difference(own_used).cloned().collect();
+        &outer
+    } else {
+        outer_names
+    };
+    insert_declarations_impl(
+        stmts,
+        params,
+        extra_writes,
+        outer_names,
+        own_slots,
+        own_used,
+    );
 }
 
 // Like `insert_declarations_with_extra_writes`, but:
@@ -62,7 +83,8 @@ pub fn insert_declarations_with_outer(
     skip_env_slots: bool,
 ) {
     let _ = skip_env_slots;
-    insert_declarations_impl(stmts, params, extra_writes, outer_names, &HashSet::new());
+    let none = HashSet::new();
+    insert_declarations_impl(stmts, params, extra_writes, outer_names, &none, &none);
 }
 
 fn insert_declarations_impl(
@@ -71,6 +93,7 @@ fn insert_declarations_impl(
     extra_writes: &BTreeMap<String, usize>,
     outer_names: &HashSet<String>,
     own_slots: &HashSet<String>,
+    own_used: &HashSet<String>,
 ) {
     // Phase 1: Count total writes per variable across the entire function body
     let mut write_count: BTreeMap<String, usize> = BTreeMap::new();
@@ -175,6 +198,17 @@ fn insert_declarations_impl(
             && is_valid_js_identifier(&name)
         {
             hoist.push(name);
+        }
+    }
+    // An own slot the body reads before it writes, or never writes (its
+    // closures do): taken for a capture above, declared here by its stamp.
+    for name in own_used {
+        if free_closures.contains(name)
+            && !skip_decl(name)
+            && !hoist.contains(name)
+            && is_valid_js_identifier(name)
+        {
+            hoist.push(name.clone());
         }
     }
     hoist.sort();

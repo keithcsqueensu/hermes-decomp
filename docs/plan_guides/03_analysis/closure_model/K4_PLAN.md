@@ -196,7 +196,7 @@ ancestors' slots carry — instead of from the context. This is the step K4-smal
 take: there is no second name to disagree with. Split by the I3 class each removes:
 
 - **K4.4a — declare every own slot the body uses** (I3 `Undeclared`, 1,270 on Equinox:
-  e.g. `prompt` reads `cancelButtonKey` that nothing declares).
+  e.g. `prompt` reads `cancelButtonKey` that nothing declares). **✅ Shipped**, see below.
 - **K4.4b — never declare a capture** (I3 `DeclaresCapture`, 306: the child's
   `let closure_3 = String(index)` that should have written `prompt`'s `cancelButtonKey`).
   Declaration insertion must skip a `Let` whose slot another scope owns; the write stays an
@@ -208,6 +208,55 @@ take: there is no second name to disagree with. Split by the I3 class each remov
   body, and none below that resolves to this function's slot or is unstamped, reads it.
 
 *Expected:* I3 to zero. *Acceptance:* the behaviour gates.
+
+**K4.4a ✅ shipped.** What the 1,270 actually were (Equinox):
+
+| class | count | what it was |
+|---|---|---|
+| module factories | 1,180 | not a defect: a slot named `react-native` is written `x = require(n)`, which codegen turns into `import react_native`, and anything else the module writes but never declares gets a module-level `let`. The checker now counts a factory's slot as declared when the module writes it (`RenderedBody::module`). |
+| read before written | 76 in these two rows | the declaration pass took a slot the body reads first (its closures write it) for a capture: `free_captured_vars`. |
+| spelled like an ancestor's slot | (62 spelled so, overlapping) | `outer_names` kept it out; the body's writes went into the ancestor's variable (`useScrubController` set the module's `closure_7 = { maxDuration: 1 }` to a state setter on every render; `l = closure_66` overwrote the enclosing `function l`). |
+| both, one name for two slots | 14 | I2 `TwoSlots` in the same body: no declaration is right; K4.7 renames one side. Left alone (`stamps::own_slot_names` excludes them). |
+
+The fix: `stamps::own_slot_names(func, body)` reads the names the body itself uses for its
+own slots (block scopes excluded) off the stamps; `insert_declarations_with_slots` takes
+them as `own_used`, removes them from `outer_names` and hoists any the body reads first.
+Both render paths go through one `PipelineContext::insert_body_declarations`.
+
+One more change came out of the gates. The module-level `let` was hiding a second class:
+lodash's `cloneRegExp` destructures into a local `source` it never declared, because an
+ancestor's slot is called `source` *in the context* but nowhere in the IR, and the stale name
+sat in `outer_names`. With `template` now declaring its own `source`, nothing bound the
+local any more (CoachRx `worse: source`). `precompute_ancestor_env_slot_names` therefore
+drops a context name that none of the slot's stamped references use. It only drops names.
+Adding the names the IR does use for ancestors' slots was tried. It halved
+`DeclaresCapture`, but it also suppressed real locals that share a spelling used elsewhere
+(CoachRx undeclared +34, `containerInfo` +22), so it is K4.4b's to do with its own
+measurement.
+
+**[measured]** at codegen, K4.3 → K4.4a:
+
+| | Equinox | CoachRx |
+|---|---|---|
+| I3 `Undeclared` | 1,270 → 14 | 889 → 23 |
+| I2 `Shadowed` | 167 → 175 | 124 → 139 |
+| I1, other I2, other I3 | unchanged | unchanged |
+| undeclared references (harness) | 3,124 → 3,088 | 5,046 → 5,042 |
+| hunks | 289 | 168 |
+
+Every changed line is a declaration (`x = …` → `const x = …`, a hoisted `let x;`, a name
+leaving a module-level `let` list). No `name -> name` substitutions. The +23 `Shadowed` are
+each a scope that now declares its own slot under a name a child reads for an ancestor's
+slot. Before, that scope wrote into the ancestor's variable and the checker could not see
+it. Now the child reads the wrong variable and the checker counts it. Both outputs are
+wrong, and K4.7's rename is what fixes it. `worse:` on Equinox is `React` 0 → 14: the
+harness counts a top-level declaration anywhere in the file as covering a reference in any
+module. The module-level `let React` was `SessionDetails`' own slot, which it now declares
+itself, and the 14 references are in another module where `React` was never bound.
+
+Round trip: `capture_vs_local` added (a capture beside a same-named local, I2), recorded as
+a known failure on v96 for K4.7. K4.4a's own shape did not reproduce in a small snippet: on
+the bundles it comes from the late per-body renamers (K4.6b).
 
 ### K4.5 — resolvers by identity — behaviour, one commit each
 Replace each text-or-record resolution of a slot with the stamp, measuring each alone:

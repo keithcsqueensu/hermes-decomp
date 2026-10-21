@@ -198,3 +198,62 @@ fn generic_local_declared_when_outer_is_only_env_slots() {
         other => panic!("expected Let obj, got {other:?}"),
     }
 }
+
+// K4.4a: an own slot the body only reads (its closures write it) passes for a
+// capture; its stamp says otherwise and it is declared at the top.
+#[test]
+fn an_own_slot_read_first_is_declared_by_its_stamp() {
+    let read = |n: &str| Expression::Value(Value::Binding(Binding::Variable(n.into())));
+    let body = || vec![Statement::Expr(read("pending"))];
+    let none = HashSet::new();
+    let mut unstamped = body();
+    insert_declarations_with_slots(&mut unstamped, &[], &BTreeMap::new(), &none, &none, &none);
+    assert!(matches!(unstamped[0], Statement::Expr(_)), "{unstamped:?}");
+
+    let own_used = HashSet::from(["pending".to_string()]);
+    let mut stamped = body();
+    insert_declarations_with_slots(&mut stamped, &[], &BTreeMap::new(), &none, &none, &own_used);
+    match &stamped[0] {
+        Statement::Let { name, kind, .. } => {
+            assert_eq!(name, "pending");
+            assert_eq!(*kind, VarKind::Let);
+        }
+        other => panic!("expected a hoisted let, got {other:?}"),
+    }
+    assert!(matches!(stamped[1], Statement::Expr(_)), "{stamped:?}");
+}
+
+// K4.4a: an own slot spelled like an ancestor's slot is the function's own
+// variable; leaving it undeclared wrote into the ancestor's.
+#[test]
+fn an_own_slot_named_like_an_ancestor_slot_is_declared() {
+    let body = || {
+        vec![Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable("l".into())),
+            value: Expression::constant(Constant::Integer(1)),
+        }]
+    };
+    let outer = HashSet::from(["l".to_string()]);
+    let none = HashSet::new();
+    let mut by_name = body();
+    insert_declarations_with_slots(&mut by_name, &[], &BTreeMap::new(), &outer, &none, &none);
+    assert!(
+        matches!(by_name[0], Statement::Assign { .. }),
+        "{by_name:?}"
+    );
+
+    let mut by_stamp = body();
+    let own_used = outer.clone();
+    insert_declarations_with_slots(
+        &mut by_stamp,
+        &[],
+        &BTreeMap::new(),
+        &outer,
+        &none,
+        &own_used,
+    );
+    assert!(
+        matches!(&by_stamp[0], Statement::Let { name, .. } if name == "l"),
+        "{by_stamp:?}"
+    );
+}

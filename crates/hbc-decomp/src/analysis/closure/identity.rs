@@ -29,6 +29,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 pub struct RenderedBody<'a> {
     pub params: &'a [String],
     pub stmts: &'a [Statement],
+    // A module factory, rendered as the module's top level. Codegen binds what
+    // the module writes and never declares (an import for `x = require(n)`, a
+    // `let` for the rest), so a slot the module or its functions write is
+    // declared whatever the IR says.
+    pub module: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +143,28 @@ fn collect_lets<'a>(s: &'a Statement, f: &mut impl FnMut(&'a str, Option<SlotRef
         }
     }
     Lets(f).visit_statement(s);
+}
+
+// Whether `stmts` assign `name` anywhere.
+fn writes(stmts: &[Statement], name: &str) -> bool {
+    use crate::ir::{AssignTarget, Binding, Visitor};
+    struct W<'n>(&'n str, bool);
+    impl<'a> Visitor<'a> for W<'_> {
+        fn visit_assign_target(&mut self, t: &'a AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.1 |= v.name == self.0;
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut w = W(name, false);
+    for s in stmts {
+        w.visit_statement(s);
+        if w.1 {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_bare_let(s: &Statement) -> Option<&str> {
@@ -307,13 +334,33 @@ pub fn check_slot_identity(
         }
         false
     };
+    // Whether the module rooted at `func` writes `name`, in its body or below.
+    let module_writes = |func: u32, name: &str| -> bool {
+        let mut stack = vec![func];
+        let mut seen = HashSet::new();
+        while let Some(f) = stack.pop() {
+            if !seen.insert(f) {
+                continue;
+            }
+            if bodies.get(&f).is_some_and(|b| writes(b.stmts, name)) {
+                return true;
+            }
+            if let Some(c) = children.get(&f) {
+                stack.extend(c.iter().copied());
+            }
+        }
+        false
+    };
     for (&func, body) in bodies {
         let own = own_scopes(ctx, func);
         let my = &binds[&func];
         let per = &uses[&func];
         for (name, u) in per {
             let uses_own = u.slots.iter().any(|s| own.contains(&s.owner));
-            if uses_own && my.get(name.as_str()).is_none() {
+            if uses_own
+                && my.get(name.as_str()).is_none()
+                && !(body.module && module_writes(func, name))
+            {
                 v.i3.push(I3 {
                     func,
                     name: name.clone(),
@@ -434,7 +481,16 @@ pub fn report_ir(
     let Some(ctx) = ctx else { return };
     let bodies = all_ir
         .iter()
-        .map(|(&f, stmts)| (f, RenderedBody { params: &[], stmts }))
+        .map(|(&f, stmts)| {
+            (
+                f,
+                RenderedBody {
+                    params: &[],
+                    stmts,
+                    module: false,
+                },
+            )
+        })
         .collect();
     let mut v = check_slot_identity(&bodies, ctx);
     v.i3.clear();

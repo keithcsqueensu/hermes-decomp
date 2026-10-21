@@ -96,6 +96,31 @@ pub fn own_scopes(ctx: &ClosureContext, func: u32) -> HashSet<u32> {
     out
 }
 
+// The names a body uses for slots the function itself owns, as the stamps say
+// (K4.4a): what its declarations must bind, whatever an ancestor's slot is
+// called. Block-scope slots are left out (their binding is per block, not per
+// function), and so is a name the body also uses for an ancestor's slot: one
+// scope cannot bind it as both, and declaring it would cut the capture.
+pub fn own_slot_names(func: u32, stmts: &[Statement]) -> HashSet<String> {
+    let mut own = HashSet::new();
+    let mut captured = HashSet::new();
+    for (name, slot) in var_refs(stmts) {
+        match slot {
+            Some(s) if s.owner == func => {
+                own.insert(name);
+            }
+            Some(_) => {
+                captured.insert(name);
+            }
+            None => {}
+        }
+    }
+    own.into_iter()
+        .filter(|n| !captured.contains(n))
+        .map(str::to_string)
+        .collect()
+}
+
 // Per name: (stamped, unstamped) references in one body.
 type NameCounts = HashMap<String, (usize, usize)>;
 

@@ -266,3 +266,29 @@ fn the_bake_stamps_owner_and_capture_with_one_slot() {
         other => panic!("expected return of the capture, got {other:?}"),
     }
 }
+
+// K4.4a: the names a body declares for its own slots come from the stamps; a
+// name it also uses for an ancestor's slot is left out.
+#[test]
+fn own_slot_names_reads_the_stamps() {
+    use super::stamps::own_slot_names;
+    use crate::ir::{Binding, SlotRef, Var};
+    let stamped = |name: &str, owner: u32, slot: u32| {
+        Expression::Value(Value::Binding(Binding::Variable(Var {
+            name: name.to_string(),
+            slot: Some(SlotRef { owner, slot }),
+        })))
+    };
+    let body = vec![
+        Statement::Expr(stamped("pending", 5, 0)),
+        Statement::Expr(stamped("both", 5, 1)),
+        Statement::Expr(stamped("both", 4, 0)),
+        Statement::Expr(stamped("captured", 4, 1)),
+        Statement::Expr(var("plain")),
+    ];
+    let names = own_slot_names(5, &body);
+    assert_eq!(
+        names,
+        std::collections::HashSet::from(["pending".to_string()])
+    );
+}
