@@ -30,7 +30,7 @@ fn count_writes_stmt(
             *writes.entry(format!("r{r}")).or_insert(0) += 1;
         }
         Statement::Let { name, .. } => {
-            let_declared.insert(name.clone());
+            let_declared.insert(name.name.clone());
         }
         Statement::If {
             condition: _,

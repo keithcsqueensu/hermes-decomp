@@ -105,7 +105,7 @@ fn apply_const(stmts: &mut [Statement], assigned: &HashSet<String>) {
     for stmt in stmts.iter_mut() {
         match stmt {
             Statement::Let { name, kind, .. } => {
-                if *kind == VarKind::Let && !assigned.contains(name) {
+                if *kind == VarKind::Let && !assigned.contains(name.as_str()) {
                     *kind = VarKind::Const;
                 }
             }

@@ -30,7 +30,7 @@ fn rewrite_stmt(
         Statement::Let { name, value, .. } => {
             count += rewrite_expr(value, deps, aliases, roles);
             if super::expr_is_depmap_root(value, aliases, roles) {
-                aliases.insert(name.clone());
+                aliases.insert(name.name.clone());
             }
         }
         Statement::Assign { target, value } => {

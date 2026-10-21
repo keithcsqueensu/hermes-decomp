@@ -210,7 +210,7 @@ fn hoist_one_module(
                 let name = bindings.get(key).cloned().unwrap_or_default();
                 let id = key.0;
                 injected.push(Statement::Let {
-                    name,
+                    name: name.into(),
                     value: Expression::Call {
                         callee: Box::new(callee.clone()),
                         arguments: vec![Expression::Value(Value::Constant(Constant::Integer(

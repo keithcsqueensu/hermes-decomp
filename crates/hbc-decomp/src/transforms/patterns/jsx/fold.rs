@@ -15,9 +15,9 @@ pub(super) fn fold_prop_assignments(stmts: Vec<Statement>) -> Vec<Statement> {
         match stmt {
             Statement::Let { name, value, kind } => {
                 if matches!(value, Expression::Object { .. }) {
-                    objects.insert(name.clone(), value.clone());
+                    objects.insert(name.name.clone(), value.clone());
                 } else {
-                    objects.remove(&name);
+                    objects.remove(name.as_str());
                 }
                 out.push(Statement::Let { name, value, kind });
             }

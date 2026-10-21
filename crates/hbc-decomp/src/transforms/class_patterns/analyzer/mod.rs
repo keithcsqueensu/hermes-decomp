@@ -270,7 +270,7 @@ impl<'a> ClassAnalyzer<'a> {
                         | AssignTarget::Binding(Binding::Variable(_))),
                     value,
                 } => (get_target_name(target), value),
-                Statement::Let { name, value, .. } => (Some(name.clone()), value),
+                Statement::Let { name, value, .. } => (Some(name.name.clone()), value),
                 _ => continue,
             };
             if let (
@@ -332,7 +332,7 @@ impl<'a> ClassAnalyzer<'a> {
 
             // Pattern: let Foo = function() { ... }
             Statement::Let { name, value, .. } if matches!(value, Expression::Function { .. }) => {
-                if candidates.contains(name) || is_likely_class_name(name) {
+                if candidates.contains(name.as_str()) || is_likely_class_name(name) {
                     self.register_constructor(name, value.clone(), idx);
                 }
             }

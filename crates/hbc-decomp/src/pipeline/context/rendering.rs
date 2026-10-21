@@ -31,6 +31,9 @@ impl PipelineContext {
     pub(super) fn build_all_inline_bodies(&mut self, file: &BytecodeFile) {
         // Precompute IPA-renamed + cleaned statements once to avoid cloning per rendering pass
         let prepared = self.prepare_render_bodies(file);
+        for (&func, (_, stmts)) in &prepared {
+            crate::analysis::closure::stamps::record_render(self.closure_ctx.as_ref(), func, stmts);
+        }
 
         // Reverse dependency map: child function id -> parents that reference it by
         // id (`Expression::Function { id }`). A parent's rendered string only

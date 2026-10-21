@@ -9,17 +9,13 @@ fn extractor() -> Box<Extract<i32>> {
     Box::new(|stmt: &Statement, _: &Defs<i32>| match stmt {
         Statement::Let { name, value, .. }
         | Statement::Assign {
-            target:
-                crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(crate::ir::Var {
-                    name,
-                    ..
-                })),
+            target: crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(name)),
             value,
         } => match value {
             Expression::Value(crate::ir::Value::Constant(Constant::Integer(i))) => {
-                Some((name.clone(), Some(*i)))
+                Some((name.name.clone(), Some(*i)))
             }
-            _ => Some((name.clone(), None)),
+            _ => Some((name.name.clone(), None)),
         },
         _ => None,
     })
@@ -33,7 +29,7 @@ fn run(body: &[Statement]) -> Defs<i32> {
 
 fn let_int(name: &str, value: i32) -> Statement {
     Statement::Let {
-        name: name.to_string(),
+        name: name.into(),
         value: Expression::constant(Constant::Integer(value)),
         kind: VarKind::Let,
     }

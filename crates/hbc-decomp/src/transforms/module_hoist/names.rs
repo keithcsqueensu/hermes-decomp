@@ -102,7 +102,7 @@ pub(super) fn collect_existing_binding_names(stmts: &[Statement], out: &mut Hash
     for s in stmts {
         match s {
             Statement::Let { name, .. } => {
-                out.insert(name.clone());
+                out.insert(name.name.clone());
             }
             Statement::Assign {
                 target: AssignTarget::Binding(Binding::Variable(name)),

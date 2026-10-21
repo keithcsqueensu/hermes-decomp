@@ -174,6 +174,7 @@ impl PipelineContext {
             log::debug!("[pipeline] import hoisting: {:.2?}", t.elapsed());
             phase.finish();
         }
+        crate::analysis::closure::stamps::report("after W16h", &all_ir, closure_ctx.as_ref());
 
         // STAGE W17: Inline body rendering
         let mut ctx = PipelineContext {

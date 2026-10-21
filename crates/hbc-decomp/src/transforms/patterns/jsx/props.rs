@@ -42,11 +42,11 @@ pub(super) fn resolve_prop_object_vars(stmts: Vec<Statement>) -> Vec<Statement> 
                 let value = maybe_subst_call(value, &scope);
                 invalidate_written(&mut scope.map, &value);
                 if matches!(value, Expression::Object { .. }) {
-                    scope.map.insert(name.clone(), value.clone());
-                    def_index.insert(name.clone(), out.len());
+                    scope.map.insert(name.name.clone(), value.clone());
+                    def_index.insert(name.name.clone(), out.len());
                 } else {
-                    scope.map.remove(&name);
-                    def_index.remove(&name);
+                    scope.map.remove(name.as_str());
+                    def_index.remove(name.as_str());
                 }
                 out.push(Statement::Let { name, value, kind });
             }

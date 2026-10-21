@@ -24,14 +24,14 @@ pub(super) fn loader_aliases(stmts: &[Statement]) -> HashMap<String, LoaderKind>
             let (name, value) = match s {
                 Statement::Let { name, value, .. } => (name, value),
                 Statement::Assign {
-                    target: AssignTarget::Binding(Binding::Variable(crate::ir::Var { name, .. })),
+                    target: AssignTarget::Binding(Binding::Variable(name)),
                     value,
                 } => (name, value),
                 _ => continue,
             };
             if let Expression::Value(Value::Binding(Binding::Variable(v))) = value {
                 if let Some(&kind) = map.get(v.as_str()) {
-                    if map.insert(name.clone(), kind).is_none() {
+                    if map.insert(name.name.clone(), kind).is_none() {
                         changed = true;
                     }
                 }

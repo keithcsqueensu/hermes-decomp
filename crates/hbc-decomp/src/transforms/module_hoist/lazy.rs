@@ -179,7 +179,7 @@ fn collect_function_bindings(stmts: &[Statement], out: &mut HashMap<String, u32>
         match s {
             Statement::Let { name, value, .. } => {
                 if let Expression::Function { id, .. } = value {
-                    out.insert(name.clone(), id.0);
+                    out.insert(name.name.clone(), id.0);
                 }
             }
             Statement::Assign {

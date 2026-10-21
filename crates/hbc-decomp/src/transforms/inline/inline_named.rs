@@ -61,7 +61,7 @@ fn collect_immutable_aliases(
             let alias = match s {
                 Statement::Let { name, value, .. } => Some((name, value)),
                 Statement::Assign {
-                    target: AssignTarget::Binding(Binding::Variable(crate::ir::Var { name, .. })),
+                    target: AssignTarget::Binding(Binding::Variable(name)),
                     value,
                 } => Some((name, value)),
                 _ => None,
@@ -69,11 +69,11 @@ fn collect_immutable_aliases(
             if let Some((name, Expression::Value(Value::Binding(Binding::Variable(v))))) = alias {
                 if v != name
                     && is_inlinable_name(name)
-                    && self.def_count.get(name).copied() == Some(1)
+                    && self.def_count.get(name.as_str()).copied() == Some(1)
                     && self.def_count.get(v.as_str()).copied().unwrap_or(0) == 0
-                    && !self.out.contains_key(name)
+                    && !self.out.contains_key(name.as_str())
                 {
-                    self.out.insert(name.clone(), v.name.clone());
+                    self.out.insert(name.name.clone(), v.name.clone());
                 }
             }
             self.walk_statement(s);
@@ -192,7 +192,7 @@ fn inline_named_with_candidates(
     // inherits the definitions that precede it.
     let mut def_pos: BTreeMap<String, usize> = BTreeMap::new();
     let mut result = Vec::new();
-    let mut pending: BTreeMap<String, Expression> = BTreeMap::new();
+    let mut pending: BTreeMap<crate::ir::Var, Expression> = BTreeMap::new();
 
     for stmt in stmts {
         flush_pending_blocked_by(&stmt, &mut pending, &mut result);
@@ -201,7 +201,7 @@ fn inline_named_with_candidates(
             Statement::Assign {
                 target: AssignTarget::Binding(Binding::Variable(name)),
                 value,
-            } => Some((name.name.clone(), value.clone(), false)),
+            } => Some((name.clone(), value.clone(), false)),
             Statement::Let { name, value, .. } => Some((name.clone(), value.clone(), true)),
             _ => None,
         };
@@ -215,7 +215,7 @@ fn inline_named_with_candidates(
                     apply_multi_use_to_stmt(&mut stmt, &multi_use_defs);
                 }
                 result.push(stmt);
-            } else if inline_candidates.contains(&name) {
+            } else if inline_candidates.contains(name.as_str()) {
                 // Single-use inline candidate: defer until usage
                 let mut value = value;
                 let consumed = value.clone();
@@ -225,15 +225,15 @@ fn inline_named_with_candidates(
 
                 // Constants go to multi_use_defs so they work in nested blocks
                 if is_constant_expr(&value) {
-                    def_pos.insert(name.clone(), result.len());
-                    multi_use_defs.insert(name.clone(), value);
+                    def_pos.insert(name.name.clone(), result.len());
+                    multi_use_defs.insert(name.name.clone(), value);
                 } else {
                     if value.has_side_effects() && pending.values().any(|e| e.has_side_effects()) {
                         flush_pending(&mut pending, &mut result);
                     }
                     pending.insert(name.clone(), value);
                 }
-            } else if multi_use_candidates.contains(&name) {
+            } else if multi_use_candidates.contains(name.as_str()) {
                 // Multi-use candidate: only inline if value is simple (no side effects, short)
                 let mut value = value;
                 let consumed = value.clone();
@@ -241,19 +241,19 @@ fn inline_named_with_candidates(
                 remove_used_from_pending(&consumed, &mut pending);
                 substitute_vars_in_expr(&mut value, &multi_use_defs);
                 if is_simple_pure_expr(&value) {
-                    def_pos.insert(name.clone(), result.len());
-                    multi_use_defs.insert(name.clone(), value);
+                    def_pos.insert(name.name.clone(), result.len());
+                    multi_use_defs.insert(name.name.clone(), value);
                     // Don't emit the assignment -- it will be substituted at use sites
                 } else {
                     // Not simple enough: emit as normal
                     let mut stmt = Statement::Assign {
-                        target: AssignTarget::Binding(Binding::Variable(name.clone().into())),
+                        target: AssignTarget::Binding(Binding::Variable(name.clone())),
                         value,
                     };
                     apply_pending_to_stmt(&mut stmt, &mut pending);
                     result.push(stmt);
                 }
-            } else if dead_candidates.contains(&name) {
+            } else if dead_candidates.contains(name.as_str()) {
                 // Dead assignment: keep only the side effect
                 // NEVER drop function definitions -- they may be accessed via closure slots
                 if matches!(value, Expression::Function { .. }) {
@@ -373,7 +373,7 @@ fn is_constant_expr(expr: &Expression) -> bool {
 // try/catch this way and came out after it.
 fn flush_pending_blocked_by(
     stmt: &Statement,
-    pending: &mut BTreeMap<String, Expression>,
+    pending: &mut BTreeMap<crate::ir::Var, Expression>,
     result: &mut Vec<Statement>,
 ) {
     if pending.is_empty() {
@@ -394,7 +394,7 @@ fn flush_pending_blocked_by(
     let effects = crate::ir::stmt_has_side_effects(stmt);
     let writes_memory = stmt_may_write_memory(stmt);
     let written = assigned_variable_names(stmt);
-    let blocked: Vec<String> = pending
+    let blocked: Vec<crate::ir::Var> = pending
         .iter()
         .filter(|(_, value)| {
             if structured || written.iter().any(|w| expr_reads_variable(value, w)) {
@@ -415,9 +415,9 @@ fn flush_pending_blocked_by(
         .map(|(name, _)| name.clone())
         .collect();
     for name in blocked {
-        if let Some(value) = pending.remove(&name) {
+        if let Some((name, value)) = pending.remove_entry(name.as_str()) {
             result.push(Statement::Assign {
-                target: AssignTarget::Binding(Binding::Variable(name.into())),
+                target: AssignTarget::Binding(Binding::Variable(name)),
                 value,
             });
         }

@@ -60,7 +60,7 @@ impl Codegen {
             impl<'b> Visitor<'b> for W<'_> {
                 fn visit_statement(&mut self, s: &'b Statement) {
                     if let Statement::Let { name, .. } = s {
-                        *self.0.entry(name.clone()).or_insert(0) += 1;
+                        *self.0.entry(name.name.clone()).or_insert(0) += 1;
                     }
                     self.walk_statement(s);
                 }
@@ -100,7 +100,7 @@ impl Codegen {
             match stmt {
                 Statement::Let { name, value, .. } => {
                     if let Some(info) = self.extract_descriptor_info(value) {
-                        descriptor_vars.insert(name.clone(), info);
+                        descriptor_vars.insert(name.name.clone(), info);
                     }
                 }
                 Statement::Assign {
@@ -134,21 +134,17 @@ impl Codegen {
             match stmt {
                 Statement::Let { name, value, .. }
                 | Statement::Assign {
-                    target:
-                        crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(crate::ir::Var {
-                            name,
-                            ..
-                        })),
+                    target: crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(name)),
                     value,
                 } => {
                     if let Some(mod_name) = self.resolve_require_module(value) {
-                        import_var_to_module.insert(name.clone(), mod_name);
+                        import_var_to_module.insert(name.name.clone(), mod_name);
                     }
                     // Also check wrapper(require(N))
                     if let crate::ir::Expression::Call { arguments, .. } = value {
                         for arg in Self::effective_args(arguments) {
                             if let Some(mod_name) = self.resolve_require_module(arg) {
-                                import_var_to_module.insert(name.clone(), mod_name);
+                                import_var_to_module.insert(name.name.clone(), mod_name);
                                 break;
                             }
                         }
@@ -184,8 +180,8 @@ impl Codegen {
                     if self.is_object_keys_call(value) {
                         let src = self
                             .extract_object_keys_source(value)
-                            .unwrap_or_else(|| name.clone());
-                        Some((name.clone(), src))
+                            .unwrap_or_else(|| name.name.clone());
+                        Some((name.name.clone(), src))
                     } else {
                         None
                     }
@@ -240,7 +236,7 @@ impl Codegen {
 
             // Skip Let/Assign that define consumed descriptor variables
             let skip_descriptor = match stmt {
-                Statement::Let { name, .. } => consumed_descriptors.contains(name),
+                Statement::Let { name, .. } => consumed_descriptors.contains(name.as_str()),
                 Statement::Assign {
                     target: crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(name)),
                     ..
@@ -256,13 +252,9 @@ impl Codegen {
             let is_reexport_import = match stmt {
                 Statement::Let { name, .. }
                 | Statement::Assign {
-                    target:
-                        crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(crate::ir::Var {
-                            name,
-                            ..
-                        })),
+                    target: crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(name)),
                     ..
-                } => reexport_vars.contains(name),
+                } => reexport_vars.contains(name.as_str()),
                 _ => false,
             };
 
@@ -858,10 +850,7 @@ impl Codegen {
             let (name, value) = match stmt {
                 Statement::Let { name, value, .. } => (name, value),
                 Statement::Assign {
-                    target:
-                        AssignTarget::Binding(crate::ir::Binding::Variable(crate::ir::Var {
-                            name, ..
-                        })),
+                    target: AssignTarget::Binding(crate::ir::Binding::Variable(name)),
                     value,
                 } => (name, value),
                 _ => continue,
@@ -904,7 +893,7 @@ impl Codegen {
                 id_to_binding.insert(id, cand.clone());
                 cand
             };
-            renames.insert(name.clone(), target);
+            renames.insert(name.name.clone(), target);
         }
         renames
     }

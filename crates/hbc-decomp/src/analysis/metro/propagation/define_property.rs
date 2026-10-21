@@ -99,7 +99,7 @@ pub(super) fn infer_name_from_define_property(
                                                 }
                                             }
                                             Statement::Let { name, value, .. } => {
-                                                getter_defs.insert(name.clone(), value);
+                                                getter_defs.insert(name.name.clone(), value);
                                             }
                                             _ => {}
                                         }

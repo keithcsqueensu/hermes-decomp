@@ -252,14 +252,14 @@ impl Codegen {
                     value,
                 } => {
                     if let Some(mod_name) = self.resolve_require_module(value) {
-                        import_var = Some(name.name.clone());
+                        import_var = Some(name.clone());
                         module_name = Some(mod_name);
                     }
                     if module_name.is_none() {
                         if let Expression::Call { arguments, .. } = value {
                             for arg in Self::effective_args(arguments) {
                                 if let Some(mod_name) = self.resolve_require_module(arg) {
-                                    import_var = Some(name.name.clone());
+                                    import_var = Some(name.clone());
                                     module_name = Some(mod_name);
                                     break;
                                 }

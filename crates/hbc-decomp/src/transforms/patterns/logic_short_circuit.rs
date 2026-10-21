@@ -51,9 +51,9 @@ impl MutVisitor for ShortCircuitVisitor {
             // that shape left the whole pattern standing.
             let first_target = match &stmts[i] {
                 Statement::Assign { target, .. } => Some(target.clone()),
-                Statement::Let { name, .. } => Some(AssignTarget::Binding(Binding::Variable(
-                    name.clone().into(),
-                ))),
+                Statement::Let { name, .. } => {
+                    Some(AssignTarget::Binding(Binding::Variable(name.clone())))
+                }
                 _ => None,
             };
             // The value just stored, when re-reading it is the same as
@@ -362,7 +362,7 @@ mod tests {
         // assignment, or the binding disappears and every later use dangles.
         let stmts = vec![
             Statement::Let {
-                name: "env".to_string(),
+                name: "env".into(),
                 value: var("source"),
                 kind: crate::ir::VarKind::Let,
             },

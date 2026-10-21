@@ -63,8 +63,8 @@ fn rename_stmt(
 ) {
     match stmt {
         Statement::Let { name, value, .. } => {
-            if let Some(new_name) = var_map.get(name) {
-                *name = new_name.clone();
+            if let Some(new_name) = var_map.get(name.as_str()) {
+                *name = new_name.clone().into();
             }
             rename_expr(value, reg_map, var_map);
         }

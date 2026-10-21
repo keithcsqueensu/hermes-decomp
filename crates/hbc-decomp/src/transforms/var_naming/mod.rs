@@ -99,7 +99,7 @@ mod tests {
         // `obj.variations = obj`, a self reference losing the outer object.
         let stmts = vec![
             Statement::Let {
-                name: "obj".to_string(),
+                name: "obj".into(),
                 value: Expression::Value(Value::Constant(crate::ir::Constant::Integer(1))),
                 kind: crate::ir::VarKind::Let,
             },

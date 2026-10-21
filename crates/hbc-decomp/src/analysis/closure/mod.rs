@@ -1,10 +1,11 @@
 pub mod context;
 pub mod info;
+pub mod stamps;
 
 #[cfg(test)]
 mod inheritance_tests;
 
-use crate::ir::{AssignTarget, Binding, Expression, PropertyKey, Statement, Value};
+use crate::ir::{AssignTarget, Binding, Expression, PropertyKey, SlotRef, Statement, Value, Var};
 
 pub use context::ClosureContext;
 use info::encode_level_slot;
@@ -16,7 +17,7 @@ use std::collections::BTreeMap;
 // (levels come from GetEnvironment during IR build, see ir/builder/env_state.rs).
 // This pass renames those slots to JS identifiers via ClosureInfo::get_slot_name.
 pub fn resolve_closures(stmts: Vec<Statement>, info: &ClosureInfo) -> Vec<Statement> {
-    resolve_closures_recording(stmts, info).0
+    resolve_closures_recording(stmts, info, None).0
 }
 
 // The same pass, also returning, for every slot access (own slots at level 0,
@@ -24,12 +25,18 @@ pub fn resolve_closures(stmts: Vec<Statement>, info: &ClosureInfo) -> Vec<Statem
 // baked while its slot had no name prints as `closure_N`, which says nothing
 // about the level; the late inherit pass reads this record to resolve it
 // once the owner has named the slot.
+//
+// Given `scope` (the context and the id of the function whose body this is),
+// every variable baked from a slot is also stamped with the slot it is, as an
+// absolute `SlotRef`, so the identity outlives the spelling (K4.2).
 pub fn resolve_closures_recording(
     stmts: Vec<Statement>,
     info: &ClosureInfo,
+    scope: Option<(&ClosureContext, u32)>,
 ) -> (Vec<Statement>, BTreeMap<String, (u32, u32)>) {
     let resolver = Resolver {
         info,
+        scope,
         baked: std::cell::RefCell::new(BTreeMap::new()),
     };
     let out = stmts
@@ -45,6 +52,7 @@ fn resolve_list(stmts: Vec<Statement>, info: &Resolver) -> Vec<Statement> {
 
 struct Resolver<'a> {
     info: &'a ClosureInfo,
+    scope: Option<(&'a ClosureContext, u32)>,
     baked: std::cell::RefCell<BTreeMap<String, (u32, u32)>>,
 }
 
@@ -56,6 +64,26 @@ impl Resolver<'_> {
             .borrow_mut()
             .entry(name.to_string())
             .or_insert((level, slot));
+    }
+
+    // The variable a slot access becomes: its name, and the slot it is when the
+    // owner is known.
+    fn bake(&self, level: u32, slot: u32) -> Var {
+        let encoded = encode_level_slot(level, slot);
+        let name = if self.slots.contains_key(&encoded) {
+            self.get_slot_name(encoded)
+        } else if level == 0 {
+            self.get_slot_name(slot)
+        } else {
+            // Unresolved parent-env capture: same family as local `closure_N`.
+            crate::ir::Value::closure_var_name(level, slot)
+        };
+        self.record(&name, level, slot);
+        let slot = self
+            .scope
+            .and_then(|(ctx, func)| ctx.slot_owner(func, level))
+            .map(|owner| SlotRef { owner, slot });
+        Var { name, slot }
     }
 }
 
@@ -187,17 +215,7 @@ fn resolve_stmt(stmt: Statement, info: &Resolver) -> Statement {
 fn resolve_target(target: AssignTarget, info: &Resolver) -> AssignTarget {
     match target {
         AssignTarget::Binding(Binding::ClosureVar { level, slot }) => {
-            let encoded = encode_level_slot(level, slot);
-            let name = if info.slots.contains_key(&encoded) {
-                info.get_slot_name(encoded)
-            } else if level == 0 {
-                info.get_slot_name(slot)
-            } else {
-                // Unresolved parent-env capture: same family as local `closure_N`.
-                crate::ir::Value::closure_var_name(level, slot)
-            };
-            info.record(&name, level, slot);
-            AssignTarget::Binding(Binding::Variable(name.into()))
+            AssignTarget::Binding(Binding::Variable(info.bake(level, slot)))
         }
         AssignTarget::Member { object, property } => AssignTarget::Member {
             object: resolve_expr(object, info),
@@ -270,17 +288,7 @@ fn resolve_property(property: PropertyKey, info: &Resolver) -> PropertyKey {
 fn resolve_expr(expr: Expression, info: &Resolver) -> Expression {
     match expr {
         Expression::Value(Value::Binding(Binding::ClosureVar { level, slot })) => {
-            let encoded = encode_level_slot(level, slot);
-            let name = if info.slots.contains_key(&encoded) {
-                info.get_slot_name(encoded)
-            } else if level == 0 {
-                info.get_slot_name(slot)
-            } else {
-                // Unresolved parent-env capture: same family as local `closure_N`.
-                crate::ir::Value::closure_var_name(level, slot)
-            };
-            info.record(&name, level, slot);
-            Expression::Value(Value::Binding(Binding::Variable(name.into())))
+            Expression::Value(Value::Binding(Binding::Variable(info.bake(level, slot))))
         }
         Expression::Binary { op, left, right } => Expression::Binary {
             op,

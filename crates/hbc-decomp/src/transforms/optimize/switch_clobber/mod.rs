@@ -103,7 +103,7 @@ fn rename_clobber_target(stmt: &mut Statement, new_name: &str) {
     let new_target = AssignTarget::Binding(Binding::Variable(new_name.to_string().into()));
     match stmt {
         Statement::Assign { target, .. } => *target = new_target,
-        Statement::Let { name, .. } => *name = new_name.to_string(),
+        Statement::Let { name, .. } => *name = new_name.into(),
         Statement::Expr(Expression::Assignment { value, .. }) => {
             let value = value.as_ref().clone();
             *stmt = Statement::Assign {
@@ -159,7 +159,7 @@ fn clobber_binding(stmt: &Statement) -> Option<(String, String)> {
 fn assigns_var(stmt: &Statement, name: &str) -> bool {
     matches!(
         stmt,
-        Statement::Assign { target: AssignTarget::Binding(Binding::Variable(crate::ir::Var { name: n, .. })), .. }
+        Statement::Assign { target: AssignTarget::Binding(Binding::Variable(n)), .. }
         | Statement::Let { name: n, .. }
             if n == name
     )

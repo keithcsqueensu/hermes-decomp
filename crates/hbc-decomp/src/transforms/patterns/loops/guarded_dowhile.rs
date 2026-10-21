@@ -134,7 +134,7 @@ fn fold_sequence(stmts: Vec<Statement>) -> Vec<Statement> {
 // The loop variable name + its initial value, from `let v = e;` or `v = e;`.
 fn loop_var_init(stmt: &Statement) -> Option<(String, Expression)> {
     match stmt {
-        Statement::Let { name, value, .. } => Some((name.clone(), value.clone())),
+        Statement::Let { name, value, .. } => Some((name.name.clone(), value.clone())),
         Statement::Assign {
             target: AssignTarget::Binding(Binding::Variable(name)),
             value,
@@ -192,7 +192,7 @@ fn try_fold_for(
     let for_init = match init_stmt {
         Statement::Let { .. } => init_stmt.clone(),
         _ => Statement::Let {
-            name: var.to_string(),
+            name: var.into(),
             value: init_val.clone(),
             kind: VarKind::Let,
         },
@@ -437,7 +437,7 @@ mod tests {
     }
     fn let_(name: &str, v: Expression) -> Statement {
         Statement::Let {
-            name: name.to_string(),
+            name: name.into(),
             value: v,
             kind: VarKind::Let,
         }

@@ -8,7 +8,7 @@ pub fn rename_stmt(namer: &VariableNamer, stmt: Statement) -> Statement {
             value: rename_expr(namer, value),
         },
         Statement::Let { name, value, kind } => Statement::Let {
-            name: maybe_rename_var(namer, &name),
+            name: maybe_rename_var(namer, &name).into(),
             value: rename_expr(namer, value),
             kind,
         },

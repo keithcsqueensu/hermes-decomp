@@ -151,11 +151,11 @@ fn collect_depmap_aliases(
             match stmt {
                 Statement::Let { name, value, .. }
                 | Statement::Assign {
-                    target: AssignTarget::Binding(Binding::Variable(crate::ir::Var { name, .. })),
+                    target: AssignTarget::Binding(Binding::Variable(name)),
                     value,
                 } => {
                     if expr_is_depmap_root(value, aliases, roles) {
-                        aliases.insert(name.clone());
+                        aliases.insert(name.name.clone());
                     }
                 }
                 Statement::Assign {
@@ -248,16 +248,16 @@ fn collect_reused(
             let bound = match s {
                 Statement::Let { name, value, .. }
                 | Statement::Assign {
-                    target: AssignTarget::Binding(Binding::Variable(crate::ir::Var { name, .. })),
+                    target: AssignTarget::Binding(Binding::Variable(name)),
                     value,
                 } => Some((name, value)),
                 _ => None,
             };
             if let Some((name, value)) = bound {
-                if self.aliases.contains(name)
+                if self.aliases.contains(name.as_str())
                     && !expr_is_depmap_root(value, self.aliases, self.roles)
                 {
-                    self.reused.insert(name.clone());
+                    self.reused.insert(name.name.clone());
                 }
             }
             self.walk_statement(s);

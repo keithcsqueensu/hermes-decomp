@@ -124,7 +124,7 @@ pub(super) fn inline_hoisted_aliases_and_trim(stmts: Vec<Statement>) -> Vec<Stat
         match stmt {
             // const tmp = arg0; or tmp = arg0;
             Statement::Assign {
-                target: AssignTarget::Binding(Binding::Variable(crate::ir::Var { name, .. })),
+                target: AssignTarget::Binding(Binding::Variable(name)),
                 value,
             }
             | Statement::Let { name, value, .. } => {
@@ -132,7 +132,7 @@ pub(super) fn inline_hoisted_aliases_and_trim(stmts: Vec<Statement>) -> Vec<Stat
                     match value {
                         Expression::Value(Value::Parameter(_))
                         | Expression::Value(Value::Binding(Binding::Variable(_))) => {
-                            aliases.insert(name.clone(), value.clone());
+                            aliases.insert(name.name.clone(), value.clone());
                         }
                         _ => {}
                     }

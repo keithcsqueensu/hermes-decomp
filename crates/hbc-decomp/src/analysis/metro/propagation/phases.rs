@@ -37,7 +37,7 @@ pub(super) fn reverse_require_naming(
         for stmt in stmts {
             let (var_name, value) = match stmt {
                 Statement::Assign { target, value } => (target_to_key(target), value),
-                Statement::Let { name, value, .. } => (Some(name.clone()), value),
+                Statement::Let { name, value, .. } => (Some(name.name.clone()), value),
                 _ => continue,
             };
             {
@@ -200,7 +200,7 @@ pub(super) fn propagate_reexport_names(
             for stmt in stmts {
                 let (opt_name, value) = match stmt {
                     Statement::Assign { target, value } => (target_to_key(target), value),
-                    Statement::Let { name, value, .. } => (Some(name.clone()), value),
+                    Statement::Let { name, value, .. } => (Some(name.name.clone()), value),
                     _ => continue,
                 };
                 if let Some(name) = opt_name {
@@ -460,7 +460,7 @@ pub(crate) fn propagate_module_names_to_closures(
             {
                 let (opt_name, value) = match stmt {
                     Statement::Assign { target, value } => (target_to_key(target), value),
-                    Statement::Let { name, value, .. } => (Some(name.clone()), value),
+                    Statement::Let { name, value, .. } => (Some(name.name.clone()), value),
                     _ => (
                         None,
                         &Expression::Value(Value::Constant(crate::ir::Constant::Undefined)),

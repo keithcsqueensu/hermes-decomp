@@ -33,7 +33,7 @@ fn extract_catch_param(stmts: &[Statement]) -> Option<String> {
             }
             Statement::Let { name, value, .. } => {
                 if is_exception_value(value) {
-                    return Some(name.clone());
+                    return Some(name.name.clone());
                 }
             }
             _ => {}

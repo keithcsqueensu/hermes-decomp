@@ -105,18 +105,18 @@ impl ClosureContext {
                 {
                     // Prefer the binding name when the function expression is anonymous.
                     if fn_name.is_none() {
-                        self.add_function_name(id.0, name.clone());
+                        self.add_function_name(id.0, name.name.clone());
                     }
                     named_values.insert(
-                        name.clone(),
+                        name.name.clone(),
                         ClosureSlotValue::Function {
                             id: id.0,
-                            name: fn_name.clone().or_else(|| Some(name.clone())),
+                            name: fn_name.clone().or_else(|| Some(name.name.clone())),
                         },
                     );
                 } else if let Some(val) = Self::resolve_store_value(value, reg_values, named_values)
                 {
-                    named_values.insert(name.clone(), val);
+                    named_values.insert(name.name.clone(), val);
                 }
             }
             Statement::Return(Some(value)) | Statement::Expr(value) | Statement::Throw(value) => {

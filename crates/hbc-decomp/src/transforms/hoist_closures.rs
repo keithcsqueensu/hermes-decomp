@@ -215,7 +215,7 @@ pub fn hoist_repeated_closures(
         let shape = &shapes[&fid];
         for scope in scopes {
             decls.entry(*scope).or_default().push(Statement::Let {
-                name: name.clone(),
+                name: name.clone().into(),
                 value: Expression::Function {
                     id: FunctionId(fid),
                     name: shape.name.clone(),
@@ -695,7 +695,7 @@ mod tests {
         let names: Vec<String> = all_ir[&1]
             .iter()
             .filter_map(|s| match s {
-                Statement::Let { name, .. } => Some(name.clone()),
+                Statement::Let { name, .. } => Some(name.name.clone()),
                 _ => None,
             })
             .collect();

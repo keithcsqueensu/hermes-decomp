@@ -40,8 +40,11 @@ impl PipelineContext {
             let needs = !closure_info.slots.is_empty() || Self::body_has_closure_var(stmts);
             if needs {
                 let old = std::mem::take(stmts);
-                let (resolved, baked) =
-                    crate::analysis::resolve_closures_recording(old, &closure_info);
+                let (resolved, baked) = crate::analysis::resolve_closures_recording(
+                    old,
+                    &closure_info,
+                    Some((&*closure_ctx, i)),
+                );
                 *stmts = resolved;
                 if !baked.is_empty() {
                     closure_ctx

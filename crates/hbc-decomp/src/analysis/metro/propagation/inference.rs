@@ -27,7 +27,7 @@ pub(super) fn infer_module_name_from_stmts(
     for stmt in stmts {
         match stmt {
             Statement::Let { name, value, .. } => {
-                var_defs.insert(name.clone(), value);
+                var_defs.insert(name.name.clone(), value);
             }
             Statement::Assign { target, value } => {
                 if let Some(name) = target_to_key(target) {
@@ -82,7 +82,7 @@ pub(super) fn default_export_function_name(stmts: &[Statement]) -> Option<String
     for stmt in stmts {
         match stmt {
             Statement::Let { name, value, .. } => {
-                var_defs.insert(name.clone(), value);
+                var_defs.insert(name.name.clone(), value);
             }
             Statement::Assign { target, value } => {
                 if let Some(name) = target_to_key(target) {
@@ -379,7 +379,7 @@ fn infer_module_name_from_stmts_heuristic(
             if is_meaningful_name(name)
                 && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
             {
-                return Some(name.clone());
+                return Some(name.name.clone());
             }
         }
     }

@@ -42,7 +42,7 @@ fn scan_first_use(stmts: &[Statement], first_seen: &mut BTreeMap<String, bool>) 
                 for r in expr_var_reads(value) {
                     first_seen.entry(r).or_insert(true);
                 }
-                first_seen.entry(name.clone()).or_insert(false);
+                first_seen.entry(name.name.clone()).or_insert(false);
             }
             Statement::Return(Some(e)) | Statement::Throw(e) | Statement::Expr(e) => {
                 for r in expr_var_reads(e) {
@@ -283,7 +283,7 @@ fn stmt_var_refs(stmt: &Statement) -> Vec<String> {
             collect_expr_vars(value, &mut names);
         }
         Statement::Let { name, value, .. } => {
-            names.push(name.clone());
+            names.push(name.name.clone());
             collect_expr_vars(value, &mut names);
         }
         Statement::Expr(e) | Statement::Return(Some(e)) | Statement::Throw(e) => {

@@ -732,7 +732,7 @@ fn collect_names_in_stmt(stmt: &Statement, names: &mut std::collections::HashSet
         }
         Statement::Let { name, value, .. } => {
             if !is_closure_name(name) {
-                names.insert(name.clone());
+                names.insert(name.name.clone());
             }
             collect_names_in_expr(value, names);
         }

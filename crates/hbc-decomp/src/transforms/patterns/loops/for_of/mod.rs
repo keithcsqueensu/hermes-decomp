@@ -137,7 +137,7 @@ fn is_true(expr: &Expression) -> bool {
 
 fn bound_name_and_value(stmt: &Statement) -> Option<(String, &Expression)> {
     match stmt {
-        Statement::Let { name, value, .. } => Some((name.clone(), value)),
+        Statement::Let { name, value, .. } => Some((name.name.clone(), value)),
         Statement::Assign {
             target: AssignTarget::Binding(Binding::Variable(name)),
             value,

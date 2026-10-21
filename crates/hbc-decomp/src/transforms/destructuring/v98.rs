@@ -74,7 +74,7 @@ fn iterator_anchor(stmt: &Statement) -> Option<(Expression, Expression)> {
             value,
         ),
         Statement::Let { name, value, .. } => (
-            Expression::Value(Value::Binding(Binding::Variable(name.clone().into()))),
+            Expression::Value(Value::Binding(Binding::Variable(name.clone()))),
             value,
         ),
         _ => return None,
@@ -170,7 +170,7 @@ fn advance_result(stmt: &Statement, iter: &Expression) -> Option<Option<Expressi
             Binding::Variable(n.clone()),
         )))),
         Statement::Let { name, value, .. } if is_iter_next(value, iter) => Some(Some(
-            Expression::Value(Value::Binding(Binding::Variable(name.clone().into()))),
+            Expression::Value(Value::Binding(Binding::Variable(name.clone()))),
         )),
         Statement::Expr(e) if is_iter_next(e, iter) => Some(None),
         Statement::If {

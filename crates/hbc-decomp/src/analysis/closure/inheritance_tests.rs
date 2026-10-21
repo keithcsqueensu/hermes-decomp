@@ -219,3 +219,50 @@ fn function_slot_enriched_with_binding_name() {
         "expected helper-like name, got {name}"
     );
 }
+
+// The bake stamps the slot a name stands for, as the same absolute `SlotRef` in
+// the owner's store and the child's capture, whatever level each reached it at.
+#[test]
+fn the_bake_stamps_owner_and_capture_with_one_slot() {
+    use super::resolve_closures_recording;
+    use crate::ir::{Binding, SlotRef};
+    let parent = vec![
+        store_env(0, 0, var("require")),
+        Statement::Let {
+            name: "inner".into(),
+            value: func(2),
+            kind: VarKind::Const,
+        },
+    ];
+    let child = vec![Statement::Return(Some(load_env(1, 0)))];
+    let mut all = BTreeMap::new();
+    all.insert(1u32, parent);
+    all.insert(2u32, child);
+    let mut ctx = ClosureContext::new();
+    ctx.reanalyze_all(&all);
+
+    let slot = Some(SlotRef { owner: 1, slot: 0 });
+    let (owner, _) = resolve_closures_recording(
+        all[&1].clone(),
+        &ctx.get_closure_info_for(1),
+        Some((&ctx, 1)),
+    );
+    match &owner[0] {
+        Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable(v)),
+            ..
+        } => assert_eq!(v.slot, slot, "{v:?}"),
+        other => panic!("expected the store, got {other:?}"),
+    }
+    let (reader, _) = resolve_closures_recording(
+        all[&2].clone(),
+        &ctx.get_closure_info_for(2),
+        Some((&ctx, 2)),
+    );
+    match &reader[0] {
+        Statement::Return(Some(Expression::Value(Value::Binding(Binding::Variable(v))))) => {
+            assert_eq!(v.slot, slot, "{v:?}")
+        }
+        other => panic!("expected return of the capture, got {other:?}"),
+    }
+}

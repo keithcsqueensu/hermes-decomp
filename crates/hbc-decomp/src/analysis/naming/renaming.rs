@@ -329,8 +329,8 @@ fn rename_variables_in_stmt(stmt: &mut Statement, renames: &BTreeMap<String, Str
             rename_variables_in_expr(target, renames);
         }
         Statement::Let { name, value, .. } => {
-            if let Some(new) = renames.get(name) {
-                *name = new.clone();
+            if let Some(new) = renames.get(name.as_str()) {
+                *name = new.clone().into();
             }
             rename_variables_in_expr(value, renames);
         }

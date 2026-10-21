@@ -86,6 +86,8 @@ impl PipelineContext {
         }
         log::debug!("[pipeline] closure resolution: {:.2?}", t.elapsed());
 
+        crate::analysis::closure::stamps::report("after W6", all_ir, closure_ctx.as_ref());
+
         // STAGE W7: Metro Export Analysis
         let t = std::time::Instant::now();
         let mut export_mod_ids: Vec<_> = registry.modules.keys().copied().collect();
@@ -96,6 +98,8 @@ impl PipelineContext {
             }
         }
         log::debug!("[pipeline] metro export analysis: {:.2?}", t.elapsed());
+
+        crate::analysis::closure::stamps::report("after W7", all_ir, closure_ctx.as_ref());
 
         // STAGE W7b: Name still-unnamed modules from a single clear export, so imports
         // read `from "foo"` instead of `from "module_1234"`. Export names are stable
@@ -139,10 +143,14 @@ impl PipelineContext {
             }
         }
 
+        crate::analysis::closure::stamps::report("after W7b", all_ir, closure_ctx.as_ref());
+
         // STAGE W7c: drop placeholder specifiers (`clear`, `keys`, `module_N` stored
         // as a recovered name) and uniquify collisions so two Metro ids never share
         // a `from "…"` string. Must run after every fill pass and before IPA/codegen.
         crate::analysis::metro::finalize_module_specifiers(registry, &gt_named, &gt_paths);
+
+        crate::analysis::closure::stamps::report("after W7c", all_ir, closure_ctx.as_ref());
 
         // STAGE W8: Inter-Procedural Analysis (IPA)
         let t = std::time::Instant::now();
@@ -179,6 +187,8 @@ impl PipelineContext {
         }
         log::debug!("[pipeline] factory parameters named from roles: {factories_named}");
 
+        crate::analysis::closure::stamps::report("after W8", all_ir, closure_ctx.as_ref());
+
         // STAGE W9: IPA Closure Re-resolve
         let t = std::time::Instant::now();
         if let Some(ctx) = closure_ctx.as_mut() {
@@ -197,6 +207,8 @@ impl PipelineContext {
             });
         }
         log::debug!("[pipeline] IPA closure re-resolve: {:.2?}", t.elapsed());
+
+        crate::analysis::closure::stamps::report("after W9", all_ir, closure_ctx.as_ref());
 
         // STAGE W10: Closure Property Naming (cross-function)
         let t = std::time::Instant::now();
@@ -222,11 +234,15 @@ impl PipelineContext {
             t.elapsed()
         );
 
+        crate::analysis::closure::stamps::report("after W10", all_ir, closure_ctx.as_ref());
+
         // STAGE W11: Definition-site closure naming
         let def_renames = transforms::rename_closures_from_definitions(all_ir);
         if def_renames > 0 {
             log::debug!("[pipeline] closure definition naming: {def_renames} variables renamed");
         }
+
+        crate::analysis::closure::stamps::report("after W11", all_ir, closure_ctx.as_ref());
 
         // STAGE W11a: dependencyMap[N] → absolute module IDs.
         // After resolve_closures AND closure naming: heavily-indexed captures are
@@ -243,6 +259,8 @@ impl PipelineContext {
             "[pipeline] dependencyMap rewrite (post-naming): {:.2?}",
             t.elapsed()
         );
+
+        crate::analysis::closure::stamps::report("after W11a", all_ir, closure_ctx.as_ref());
 
         // STAGE W11b: Inherit ancestor slot names for baked `closure_{level}_{slot}`
         // captures. resolve_closures froze these when the ancestor slot was still
@@ -264,6 +282,8 @@ impl PipelineContext {
                 t.elapsed()
             );
         }
+
+        crate::analysis::closure::stamps::report("after W11b", all_ir, closure_ctx.as_ref());
 
         // STAGE W11d (deep mode only): converge naming to a fixed point. The closure and
         // ancestor renames above improved the names inside `all_ir`, so a second IPA over
@@ -329,6 +349,8 @@ impl PipelineContext {
             log::debug!("[pipeline] deep naming convergence: {:.2?}", t.elapsed());
         }
 
+        crate::analysis::closure::stamps::report("after W11d", all_ir, closure_ctx.as_ref());
+
         // STAGE W11e (stable mode): give every still-unnamed module a name derived
         // from a hash of its stable content (string constants, property keys,
         // function names) instead of the volatile Metro id, so the same module keeps
@@ -340,6 +362,7 @@ impl PipelineContext {
                 log::debug!("[pipeline] stable module names: {n} modules hashed");
             }
         }
+        crate::analysis::closure::stamps::report("after W11e", all_ir, closure_ctx.as_ref());
 
         global_analysis
     }

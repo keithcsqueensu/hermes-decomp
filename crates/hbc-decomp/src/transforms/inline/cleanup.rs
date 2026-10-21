@@ -189,7 +189,7 @@ mod tests {
     fn test_let_self_assign_variable_removed() {
         // `let Error = Error;` should be removed (Babel global capture)
         let stmts = vec![Statement::Let {
-            name: "Error".to_string(),
+            name: "Error".into(),
             value: Expression::Value(Value::Binding(Binding::Variable("Error".into()))),
             kind: VarKind::Let,
         }];
@@ -205,12 +205,12 @@ mod tests {
         // `let null = null;` and `let undefined = undefined;` should be removed
         let stmts = vec![
             Statement::Let {
-                name: "null".to_string(),
+                name: "null".into(),
                 value: Expression::Value(Value::Constant(Constant::Null)),
                 kind: VarKind::Let,
             },
             Statement::Let {
-                name: "undefined".to_string(),
+                name: "undefined".into(),
                 value: Expression::Value(Value::Constant(Constant::Undefined)),
                 kind: VarKind::Let,
             },
@@ -223,7 +223,7 @@ mod tests {
     fn test_let_non_self_assign_preserved() {
         // `let x = y;` should NOT be removed (different names)
         let stmts = vec![Statement::Let {
-            name: "x".to_string(),
+            name: "x".into(),
             value: Expression::Value(Value::Binding(Binding::Variable("y".into()))),
             kind: VarKind::Let,
         }];
@@ -235,7 +235,7 @@ mod tests {
     fn test_let_global_member_self_assign_removed() {
         // `let Error = globalThis.Error;` should be removed
         let stmts = vec![Statement::Let {
-            name: "Error".to_string(),
+            name: "Error".into(),
             value: Expression::Member {
                 object: Box::new(Expression::Value(Value::Global)),
                 property: crate::ir::PropertyKey::Ident("Error".to_string()),

@@ -71,7 +71,7 @@ pub(crate) fn export_key_set(stmts: &[Statement]) -> BTreeSet<String> {
         match stmt {
             Statement::Let { name, value, .. } => {
                 if let Expression::Object { properties } = value {
-                    object_keys.insert(name.clone(), property_names(properties));
+                    object_keys.insert(name.name.clone(), property_names(properties));
                 }
             }
             Statement::Assign { target, value } => {

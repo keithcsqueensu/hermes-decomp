@@ -70,7 +70,7 @@ fn rename_reserved_in_stmt(stmt: &mut Statement) {
         }
         Statement::Let { name, value, .. } => {
             if is_reserved(name) {
-                *name = format!("_{name}");
+                name.name = format!("_{name}");
             }
             rename_reserved_in_expr(value);
         }

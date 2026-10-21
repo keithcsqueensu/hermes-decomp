@@ -28,7 +28,7 @@ pub enum Statement {
     Expr(Expression),
 
     Let {
-        name: String,
+        name: crate::ir::Var,
         value: Expression,
         kind: VarKind,
     },
@@ -224,7 +224,7 @@ impl Statement {
 
     pub fn let_stmt(name: impl Into<String>, value: Expression) -> Self {
         Statement::Let {
-            name: name.into(),
+            name: name.into().into(),
             value,
             kind: VarKind::Let,
         }
@@ -232,7 +232,7 @@ impl Statement {
 
     pub fn const_stmt(name: impl Into<String>, value: Expression) -> Self {
         Statement::Let {
-            name: name.into(),
+            name: name.into().into(),
             value,
             kind: VarKind::Const,
         }
@@ -240,7 +240,7 @@ impl Statement {
 
     pub fn var_stmt(name: impl Into<String>, value: Expression) -> Self {
         Statement::Let {
-            name: name.into(),
+            name: name.into().into(),
             value,
             kind: VarKind::Var,
         }

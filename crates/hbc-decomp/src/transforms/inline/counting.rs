@@ -1,6 +1,6 @@
 // Variable definition/use counting and substitution functions for named variable inlining.
 
-use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, Statement, Value, Visitor};
+use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, Statement, Value, Var, Visitor};
 use std::collections::BTreeMap;
 
 // --- Counting ---
@@ -32,7 +32,7 @@ impl<'a, 'c> Visitor<'a> for VarCounter<'c> {
                 self.visit_expression(value);
             }
             Statement::Let { name, value, .. } => {
-                *self.defs.entry(name.clone()).or_insert(0) += 1;
+                *self.defs.entry(name.name.clone()).or_insert(0) += 1;
                 self.visit_expression(value);
             }
             _ => self.walk_statement(stmt),
@@ -53,19 +53,19 @@ impl<'a, 'c> Visitor<'a> for VarCounter<'c> {
 
 // --- Substitution ---
 
-pub(super) fn substitute_vars_in_expr(
+pub(super) fn substitute_vars_in_expr<K: std::borrow::Borrow<str> + Ord>(
     expr: &mut Expression,
-    pending: &BTreeMap<String, Expression>,
+    pending: &BTreeMap<K, Expression>,
 ) {
     let mut substitutor = VarSubstitutor { pending };
     substitutor.visit_expression(expr);
 }
 
-struct VarSubstitutor<'p> {
-    pending: &'p BTreeMap<String, Expression>,
+struct VarSubstitutor<'p, K> {
+    pending: &'p BTreeMap<K, Expression>,
 }
 
-impl<'p> MutVisitor for VarSubstitutor<'p> {
+impl<'p, K: std::borrow::Borrow<str> + Ord> MutVisitor for VarSubstitutor<'p, K> {
     fn visit_expression(&mut self, expr: &mut Expression) {
         self.walk_expression(expr);
         if let Expression::Value(Value::Binding(Binding::Variable(name))) = expr {
@@ -78,10 +78,7 @@ impl<'p> MutVisitor for VarSubstitutor<'p> {
 
 // --- Apply pending to statement ---
 
-pub(super) fn apply_pending_to_stmt(
-    stmt: &mut Statement,
-    pending: &mut BTreeMap<String, Expression>,
-) {
+pub(super) fn apply_pending_to_stmt(stmt: &mut Statement, pending: &mut BTreeMap<Var, Expression>) {
     match stmt {
         Statement::Assign { target, value } => {
             apply_pending_to_target(target, pending);
@@ -123,7 +120,7 @@ pub(super) fn apply_pending_to_stmt(
     }
 }
 
-fn apply_pending_to_target(target: &mut AssignTarget, pending: &mut BTreeMap<String, Expression>) {
+fn apply_pending_to_target(target: &mut AssignTarget, pending: &mut BTreeMap<Var, Expression>) {
     match target {
         AssignTarget::Member { object, .. } => substitute_vars_in_expr(object, pending),
         AssignTarget::Index { object, key } => {
@@ -134,14 +131,11 @@ fn apply_pending_to_target(target: &mut AssignTarget, pending: &mut BTreeMap<Str
     }
 }
 
-pub(super) fn flush_pending(
-    pending: &mut BTreeMap<String, Expression>,
-    result: &mut Vec<Statement>,
-) {
+pub(super) fn flush_pending(pending: &mut BTreeMap<Var, Expression>, result: &mut Vec<Statement>) {
     let items = std::mem::take(pending);
     for (name, value) in items {
         result.push(Statement::Assign {
-            target: AssignTarget::Binding(Binding::Variable(name.into())),
+            target: AssignTarget::Binding(Binding::Variable(name)),
             value,
         });
     }
@@ -149,10 +143,7 @@ pub(super) fn flush_pending(
 
 // Collect all variable names referenced in an expression using the Visitor trait,
 // then remove them from the pending map.
-pub(super) fn remove_used_from_pending(
-    expr: &Expression,
-    pending: &mut BTreeMap<String, Expression>,
-) {
+pub(super) fn remove_used_from_pending(expr: &Expression, pending: &mut BTreeMap<Var, Expression>) {
     struct UsedVarCollector {
         names: Vec<String>,
     }
@@ -167,11 +158,11 @@ pub(super) fn remove_used_from_pending(
     let mut collector = UsedVarCollector { names: Vec::new() };
     collector.visit_expression(expr);
     for name in collector.names {
-        pending.remove(&name);
+        pending.remove(name.as_str());
     }
 }
 
-fn remove_used_from_target(target: &AssignTarget, pending: &mut BTreeMap<String, Expression>) {
+fn remove_used_from_target(target: &AssignTarget, pending: &mut BTreeMap<Var, Expression>) {
     match target {
         AssignTarget::Member { object, .. } => remove_used_from_pending(object, pending),
         AssignTarget::Index { object, key } => {

@@ -299,7 +299,7 @@ fn object_ident_keys(stmt: &Statement) -> Option<(ObjRef, Vec<String>)> {
             name,
             value: Expression::Object { properties },
             ..
-        } if !properties.is_empty() => (ObjRef::Name(name.clone()), properties),
+        } if !properties.is_empty() => (ObjRef::Name(name.name.clone()), properties),
         _ => return None,
     };
     let mut keys = Vec::with_capacity(props.len());
@@ -339,7 +339,7 @@ fn object_literal_def(stmt: &Statement) -> Option<(ObjRef, usize)> {
             name,
             value: Expression::Object { properties },
             ..
-        } if !properties.is_empty() => Some((ObjRef::Name(name.clone()), properties.len())),
+        } if !properties.is_empty() => Some((ObjRef::Name(name.name.clone()), properties.len())),
         _ => None,
     }
 }
@@ -405,7 +405,7 @@ fn record_defs(stmt: &Statement, regs: &mut Vec<u32>, vars: &mut Vec<String>) {
             target: AssignTarget::Binding(Binding::Variable(n)),
             ..
         } => vars.push(n.name.clone()),
-        Statement::Let { name, .. } => vars.push(name.clone()),
+        Statement::Let { name, .. } => vars.push(name.name.clone()),
         _ => {}
     }
 }

@@ -64,7 +64,7 @@ pub fn collect_info(caller_id: u32, stmts: &[Statement], ctx: &mut CollectContex
     let extract =
         |stmt: &Statement, fact: &Defs<Definition>| -> Option<(String, Option<Definition>)> {
             let (key, value) = match stmt {
-                Statement::Let { name, value, .. } => (name.clone(), value),
+                Statement::Let { name, value, .. } => (name.name.clone(), value),
                 Statement::Assign { target, value } => (target_to_key(target)?, value),
                 _ => return None,
             };
@@ -116,7 +116,7 @@ fn hoisted_function_definitions(stmts: &[Statement]) -> Defs<Definition> {
     let lookup = |name: &str| empty.get(name).cloned();
     let mut walk = |stmt: &Statement| {
         if let Some((key, value)) = match stmt {
-            Statement::Let { name, value, .. } => Some((name.clone(), value)),
+            Statement::Let { name, value, .. } => Some((name.name.clone(), value)),
             Statement::Assign { target, value } => target_to_key(target).map(|k| (k, value)),
             _ => None,
         } {
@@ -159,7 +159,7 @@ fn add_definitions_the_tree_walk_cannot_reach(
     let extract =
         |stmt: &Statement, fact: &Defs<Definition>| -> Option<(String, Option<Definition>)> {
             let (key, value) = match stmt {
-                Statement::Let { name, value, .. } => (name.clone(), value),
+                Statement::Let { name, value, .. } => (name.name.clone(), value),
                 Statement::Assign { target, value } => (target_to_key(target)?, value),
                 _ => return None,
             };
@@ -218,7 +218,7 @@ fn collect_value_exprs(stmt: &Statement, out: &mut HashMap<String, Expression>) 
             }
         }
         Statement::Let { name, value, .. } => {
-            out.insert(name.clone(), value.clone());
+            out.insert(name.name.clone(), value.clone());
         }
         Statement::Block(stmts) => {
             for s in stmts {

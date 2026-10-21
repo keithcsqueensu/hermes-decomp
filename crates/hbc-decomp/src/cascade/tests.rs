@@ -31,7 +31,7 @@ fn string_array(items: &[&str]) -> Expression {
 fn decoder_body(items: &[&str]) -> Vec<Statement> {
     vec![
         Statement::Let {
-            name: "table".to_string(),
+            name: "table".into(),
             value: string_array(items),
             kind: VarKind::Const,
         },
@@ -247,7 +247,7 @@ fn the_simple_roles_are_each_confirmed_and_each_refused() {
 fn an_array_with_a_hole_is_not_a_string_table() {
     let body = vec![
         Statement::Let {
-            name: "table".to_string(),
+            name: "table".into(),
             value: Expression::Array {
                 elements: vec![Some(string("alpha")), None],
             },

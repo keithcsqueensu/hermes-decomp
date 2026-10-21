@@ -192,7 +192,7 @@ fn insert_declarations_impl(
         let mut decls: Vec<Statement> = hoist
             .iter()
             .map(|name| Statement::Let {
-                name: name.clone(),
+                name: name.clone().into(),
                 value: Expression::constant(crate::ir::Constant::Undefined),
                 kind: VarKind::Let,
             })
@@ -251,7 +251,7 @@ fn declare_switch_case(
         }
         skip.declared.insert(name.clone());
         prelude.push(Statement::Let {
-            name,
+            name: name.into(),
             value: Expression::constant(crate::ir::Constant::Undefined),
             kind: VarKind::Let,
         });
@@ -280,7 +280,7 @@ fn declaration_names(stmts: &[Statement]) -> HashSet<String> {
                     value: Expression::Function { .. },
                     ..
                 } => {
-                    self.0.insert(name.clone());
+                    self.0.insert(name.name.clone());
                 }
                 _ => {}
             }
@@ -332,7 +332,7 @@ fn insert_decls_in_block(
         let mut decls: Vec<Statement> = escaping
             .iter()
             .map(|name| Statement::Let {
-                name: name.clone(),
+                name: name.clone().into(),
                 value: Expression::constant(crate::ir::Constant::Undefined),
                 kind: VarKind::Let,
             })
@@ -370,7 +370,7 @@ fn insert_decls_in_block(
                         VarKind::Const
                     };
                     *stmt = Statement::Let {
-                        name: name.name.clone(),
+                        name: name.clone(),
                         value: value.clone(),
                         kind,
                     };
@@ -393,7 +393,7 @@ fn insert_decls_in_block(
                         VarKind::Let
                     };
                     *stmt = Statement::Let {
-                        name,
+                        name: name.into(),
                         value: value.clone(),
                         kind,
                     };

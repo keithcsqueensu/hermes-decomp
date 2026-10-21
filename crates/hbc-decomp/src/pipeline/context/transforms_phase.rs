@@ -22,6 +22,8 @@ impl PipelineContext {
             transforms::strip_hermes_this(stmts);
         }
 
+        crate::analysis::closure::stamps::report("after W12", all_ir, closure_ctx.as_ref());
+
         // STAGE W13: Inline single-use temporaries (tmp*, closure_*, rN), parallel.
         // A name a nested function reads stays bound here whatever this body
         // does with it.
@@ -53,6 +55,8 @@ impl PipelineContext {
         }
         log::debug!("[pipeline] variable inlining: {:.2?}", t.elapsed());
 
+        crate::analysis::closure::stamps::report("after W13", all_ir, closure_ctx.as_ref());
+
         // STAGE W14: Detect async generator patterns (yield → await)
         if let Some(ctx) = closure_ctx.as_mut() {
             let async_gen_ids = async_detection::detect_async_generator_wrappers(all_ir);
@@ -73,6 +77,8 @@ impl PipelineContext {
             }
         }
 
+        crate::analysis::closure::stamps::report("after W14", all_ir, closure_ctx.as_ref());
+
         // STAGE W15: Unwrap Babel async wrappers
         if let Some(ctx) = closure_ctx.as_mut() {
             let unwrapped = async_detection::unwrap_async_wrappers(
@@ -86,12 +92,16 @@ impl PipelineContext {
             }
         }
 
+        crate::analysis::closure::stamps::report("after W15", all_ir, closure_ctx.as_ref());
+
         // STAGE W16: Post-IPA transforms (reserved words, object/array folding, arguments simplification)
         Self::apply_post_ipa_transforms(all_ir);
 
         // NOTE: do NOT run promote_const_bindings here. Env slots are shared
         // across closures; a binding that looks unreassigned in one body is often
         // mutated in a sibling. Promotion caused const-reassign / TDZ parse fails.
+
+        crate::analysis::closure::stamps::report("after W16", all_ir, closure_ctx.as_ref());
 
         // STAGE W16a2: while(true)+trailing break → do/while (after inlining cleans latch)
         {
@@ -112,6 +122,8 @@ impl PipelineContext {
             }
         }
 
+        crate::analysis::closure::stamps::report("after W16a2", all_ir, closure_ctx.as_ref());
+
         // STAGE W16a3: second JSX pass after inlining (props often still variables before)
         {
             use rayon::prelude::*;
@@ -129,6 +141,8 @@ impl PipelineContext {
             }
         }
 
+        crate::analysis::closure::stamps::report("after W16a3", all_ir, closure_ctx.as_ref());
+
         // STAGE W16b: Collapse generator wrappers. A `function* gen()` compiles to
         // a thin wrapper that does `CreateGenerator(body); return it`, with the
         // actual state machine (the yields) in a separate inner function. Inline
@@ -137,6 +151,8 @@ impl PipelineContext {
         if let Some(ctx) = closure_ctx.as_mut() {
             Self::collapse_generator_wrappers(all_ir, ctx);
         }
+
+        crate::analysis::closure::stamps::report("after W16b", all_ir, closure_ctx.as_ref());
 
         // STAGE W16f: object-key names (`{ login: closure_1_0 }`) are often only
         // visible after slot-fill folding and v98 generator reconstruct. Re-run
@@ -156,6 +172,8 @@ impl PipelineContext {
             }
         }
 
+        crate::analysis::closure::stamps::report("after W16f", all_ir, closure_ctx.as_ref());
+
         // STAGE W16g: hermesc creates a non-escaping function declaration afresh at every
         // call site. Give each such function one declaration in the scope the
         // sites share, so the text of a module grows with its source and not
@@ -169,6 +187,7 @@ impl PipelineContext {
             let hoisted = transforms::hoist_repeated_closures(all_ir, parent_of, factories);
             log::debug!("[pipeline] hoisted {hoisted} repeated closures");
         }
+        crate::analysis::closure::stamps::report("after W16g", all_ir, closure_ctx.as_ref());
     }
 
     // The wrapper statements that must survive its body being replaced: the
@@ -257,7 +276,7 @@ impl PipelineContext {
             }
             fn visit_statement(&mut self, st: &'b Statement) {
                 if let Statement::Let { name, .. } = st {
-                    self.assigned.insert(Binding::Variable(name.clone().into()));
+                    self.assigned.insert(Binding::Variable(name.clone()));
                 }
                 self.walk_statement(st);
             }
@@ -549,13 +568,13 @@ fn drop_unread_bookkeeping(stmts: Vec<crate::ir::Statement>) -> Vec<crate::ir::S
         .filter(|stmt| match stmt {
             Statement::Let { name, value, .. }
             | Statement::Assign {
-                target: AssignTarget::Binding(crate::ir::Binding::Variable(crate::ir::Var { name, .. })),
+                target: AssignTarget::Binding(crate::ir::Binding::Variable(name)),
                 value,
             } => {
                 if !is_bookkeeping_name(name) {
                     return true;
                 }
-                if reads.get(name).copied().unwrap_or(0) != 0 {
+                if reads.get(name.as_str()).copied().unwrap_or(0) != 0 {
                     return true;
                 }
                 !is_trivial_bookkeeping_value(value)

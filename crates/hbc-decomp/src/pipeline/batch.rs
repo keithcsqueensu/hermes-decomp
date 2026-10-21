@@ -333,6 +333,8 @@ fn render_bundle(
         }
     }
 
+    crate::analysis::closure::stamps::report_render();
+
     let n_lines = output.lines().count();
     let n_mods = pipeline.registry.modules.len();
     phase.finish_with(format!("{n_lines} lines, {n_mods} modules"));

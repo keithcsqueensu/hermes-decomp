@@ -32,7 +32,8 @@ use super::DecompileOptionsV2;
 // by `binary_fingerprint()`, no need to bump for every decompiler fix.
 // 6: `ClosureContext.env_offsets`.
 // 7: `Binding::Variable` holds a `Var { name, slot }`, not a bare `String`.
-pub const CACHE_VERSION: u32 = 7;
+// 8: so does `Statement::Let`.
+pub const CACHE_VERSION: u32 = 8;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.

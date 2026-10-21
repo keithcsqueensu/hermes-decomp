@@ -1,7 +1,9 @@
 // IR generation: transform bytecode into IR statements.
 // Contains generate_ir() and build_closure_context_from_file().
 
-use crate::analysis::{rename_registers, resolve_closures, ClosureContext, StructureAnalysis};
+use crate::analysis::{
+    rename_registers, resolve_closures_recording, ClosureContext, StructureAnalysis,
+};
 use crate::error::Result;
 use crate::file::BytecodeFile;
 use crate::ir::{BinaryOp, Expression, IRBuilder, IRBuilderOptions, Statement, Terminator};
@@ -264,7 +266,9 @@ pub fn generate_ir(
         if let Some(ctx) = closure_ctx {
             let closure_info = ctx.get_closure_info_for(function_id);
             if !closure_info.slots.is_empty() {
-                statements = resolve_closures(statements, &closure_info);
+                statements =
+                    resolve_closures_recording(statements, &closure_info, Some((ctx, function_id)))
+                        .0;
             }
         }
     }
