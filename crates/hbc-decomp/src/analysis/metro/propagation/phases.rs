@@ -574,26 +574,16 @@ pub(crate) fn propagate_module_names_to_closures(
 // carries the level on the binding.
 fn closure_write_target(target: &crate::ir::AssignTarget) -> Option<(u32, u32)> {
     match target {
-        crate::ir::AssignTarget::Binding(Binding::Variable(name)) => parse_closure_binding(name),
+        crate::ir::AssignTarget::Binding(Binding::Variable(name)) => {
+            crate::ir::placeholder::parse(name)
+                .filter(|p| p.variant.is_none())
+                .map(|p| (p.level, p.slot))
+        }
         crate::ir::AssignTarget::Binding(Binding::ClosureVar { slot, level }) => {
             Some((*level, *slot))
         }
         _ => None,
     }
-}
-
-fn parse_closure_binding(name: &str) -> Option<(u32, u32)> {
-    let rest = name.strip_prefix("closure_")?;
-    let (head, tail) = rest.split_once('_').unwrap_or((rest, ""));
-    let a: u32 = head.parse().ok()?;
-    if tail.is_empty() {
-        return Some((0, a));
-    }
-    let b: u32 = tail.parse().ok()?;
-    if tail.contains('_') {
-        return None;
-    }
-    Some((a, b))
 }
 
 fn closure_slot_owner(

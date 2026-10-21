@@ -161,7 +161,7 @@ fn walk_expr_for_params(
 pub fn is_generic_name(name: &str) -> bool {
     // Diagnostic capture names leaking into call-site hints (`forgotPassword(closure_1_6)`).
     // These are not ground-truth parameter names.
-    if name.starts_with("closure_") || name.starts_with("outer") {
+    if crate::ir::placeholder::has_prefix(name) || name.starts_with("outer") {
         return true;
     }
 

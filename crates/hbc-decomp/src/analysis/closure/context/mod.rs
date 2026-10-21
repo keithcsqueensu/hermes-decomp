@@ -7,7 +7,7 @@ mod helpers;
 mod merge;
 mod walk;
 
-use super::info::{ClosureInfo, ClosureSlotValue};
+use super::info::{ClosureInfo, ClosureSlotValue, NameSource};
 use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -81,6 +81,14 @@ impl ClosureContext {
             return self.block_scopes.get(&(func, level)).copied();
         }
         self.ancestor_at(func, level)
+    }
+
+    // The (owner, slot) a name in `func`'s body stands for, from the bake
+    // record: the only source that knows, once names are allocated per owner
+    // (`crate::ir::placeholder`).
+    pub fn resolve_baked(&self, func: u32, name: &str) -> Option<(u32, u32)> {
+        let &(level, slot) = self.baked_captures.get(&func)?.get(name)?;
+        Some((self.slot_owner(func, level)?, slot))
     }
 
     pub fn is_block_scope(&self, id: u32) -> bool {
@@ -170,7 +178,8 @@ impl ClosureContext {
                 .filter(|s| s >> 24 == 0)
                 .collect();
             for slot in slots {
-                let base = info.derived_slot_name(slot);
+                let derived = info.derived_slot_name(slot);
+                let base = derived.text;
                 // A placeholder already decided and baked into the IR stays: a
                 // later pass may have renamed the clashing ancestor away, but
                 // the body still says `closure_N$K`, and codegen declares the
@@ -187,7 +196,7 @@ impl ClosureContext {
                 } else if visible.contains(&base) {
                     let mut k = 2u32;
                     loop {
-                        let candidate = if base.starts_with("closure_") {
+                        let candidate = if derived.source == NameSource::Placeholder {
                             format!("{base}${k}")
                         } else {
                             format!("{base}{k}")

@@ -21,6 +21,35 @@ pub enum ClosureSlotValue {
     Unknown,
 }
 
+/// Which rung of `ClosureInfo::slot_name`'s ladder a slot's name came from,
+/// best evidence first. A consumer asks this instead of reading the spelling:
+/// `closure_3` and a source identifier that happens to be spelled so are
+/// different facts. Debug-info names (P1b) would go above `Function`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NameSource {
+    /// The closure created into the slot has a name.
+    Function,
+    /// The slot holds a constant whose text is an identifier.
+    Constant,
+    /// The slot holds a variable with a meaningful name (IPA, Metro, register
+    /// naming).
+    Variable,
+    /// Built from what the slot holds but not from a name: `f{id}`, `re{N}`,
+    /// `c{N}`, `args`.
+    Synthesised,
+    /// Nothing known: `closure_{N}` (`crate::ir::placeholder`).
+    Placeholder,
+}
+
+/// A slot's name and the rung it came from. A name decided by
+/// `ClosureContext::allocate_slot_names` keeps the rung of the name it was
+/// derived from: the decision changes the text, not the evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotName {
+    pub text: String,
+    pub source: NameSource,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClosureInfo {
     pub slots: BTreeMap<u32, ClosureSlotValue>,

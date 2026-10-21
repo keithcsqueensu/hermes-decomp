@@ -9,7 +9,10 @@ pub(super) fn binding_name_is_slot_worthy(name: &str) -> bool {
     if name.starts_with("arg") && name[3..].chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
-    if name.starts_with("tmp") || name.starts_with("closure_") || name.starts_with("outer") {
+    if name.starts_with("tmp")
+        || crate::ir::placeholder::has_prefix(name)
+        || name.starts_with("outer")
+    {
         return false;
     }
     // Single-letter or numeric-ish temps

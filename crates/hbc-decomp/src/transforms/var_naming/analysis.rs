@@ -17,7 +17,7 @@ pub fn analyze_stmt(namer: &mut VariableNamer, stmt: &Statement) {
             if let AssignTarget::Binding(Binding::Variable(v)) = target {
                 // Check if the name is generic and can be improved
                 let is_generic = (v.starts_with('r') && v[1..].chars().all(|c| c.is_ascii_digit()))
-                    || v.starts_with("closure_")
+                    || crate::ir::placeholder::has_prefix(v)
                     || v == "obj"
                     || v.starts_with("obj")
                     || v == "arr"

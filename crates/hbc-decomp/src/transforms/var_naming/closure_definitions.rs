@@ -48,12 +48,11 @@ pub fn rename_closure_variables_cross_function(
 
         // Map each closure_N to its parent slot
         let parent_id = closure_ctx.parent_function.get(&func_id).copied();
-        let baked = closure_ctx.baked_captures.get(&func_id);
 
         let mut usage_items: Vec<_> = usage_map.into_iter().collect();
         usage_items.sort_by(|a, b| a.0.cmp(&b.0));
         for (closure_name, info) in usage_items {
-            let recorded = baked.and_then(|b| b.get(&closure_name)).copied();
+            let recorded = closure_ctx.resolve_baked(func_id, &closure_name);
             let parsed = parse_closure_capture(&closure_name);
             if recorded.is_none() && parsed.is_none() {
                 continue;
@@ -68,7 +67,7 @@ pub fn rename_closure_variables_cross_function(
                 // object) the name of `genMethod`'s own slot 2 (`type`). The
                 // direct parent remains only for a name with no record.
                 let (pid, slot) = match (recorded, parsed) {
-                    (Some((level, slot)), _) => (closure_ctx.slot_owner(func_id, level), slot),
+                    (Some((owner, slot)), _) => (Some(owner), slot),
                     (None, Some((0, slot))) => (parent_id, slot),
                     (None, Some((level, slot))) => (closure_ctx.slot_owner(func_id, level), slot),
                     (None, None) => continue,
@@ -246,42 +245,28 @@ pub fn rename_closure_variables_cross_function(
     total_renamed
 }
 
-// The name the owner's own body uses for a slot: its decided placeholder.
+// The name the owner's own body uses for an unnamed slot: its decided
+// placeholder.
 fn owner_var(closure_ctx: &ClosureContext, owner: u32, slot: u32) -> String {
     closure_ctx
         .function_closures
         .get(&owner)
-        .map(|ci| ci.get_slot_name(slot))
-        .filter(|n| n.starts_with("closure_"))
-        .unwrap_or_else(|| format!("closure_{slot}"))
+        .map(|ci| ci.slot_name(slot))
+        .filter(|n| n.source == crate::analysis::closure::info::NameSource::Placeholder)
+        .map(|n| n.text)
+        .unwrap_or_else(|| crate::ir::Value::closure_var_name(0, slot))
 }
 
-// Parse a closure capture into (level, slot).
-// `closure_5` / `c5` → (0, 5)  (single-number: parent env, W10 convention)
-// `closure_1_5` → (1, 5)        (ancestor at level 1, slot 5)
+// Parse a closure capture into (level, slot) by its spelling, for a name the
+// bake record does not cover. `closure_5` / `c5` → (0, 5), `closure_1_5` →
+// (1, 5). A disambiguated `closure_5$2` carries no level a reader could use.
 fn parse_closure_capture(name: &str) -> Option<(u32, u32)> {
-    if let Some(rest) = name.strip_prefix("closure_") {
-        if let Some((level, slot)) = rest.split_once('_') {
-            if !level.is_empty()
-                && level.chars().all(|c| c.is_ascii_digit())
-                && !slot.is_empty()
-                && slot.chars().all(|c| c.is_ascii_digit())
-            {
-                let l: u32 = level.parse().ok()?;
-                let s: u32 = slot.parse().ok()?;
-                if l == 0 {
-                    return None;
-                }
-                return Some((l, s));
-            }
-        }
-        let s: u32 = rest.parse().ok()?;
-        return Some((0, s));
+    use crate::ir::placeholder;
+    if let Some(p) = placeholder::parse(name) {
+        return p.variant.is_none().then_some((p.level, p.slot));
     }
-    if let Some(n) = name.strip_prefix('c') {
-        if !n.is_empty() && n.len() <= 6 && n.chars().all(|c| c.is_ascii_digit()) {
-            return Some((0, n.parse().ok()?));
-        }
+    if name.len() <= 7 && placeholder::is_counter_slot(name) {
+        return Some((0, name[1..].parse().ok()?));
     }
     None
 }
@@ -460,7 +445,7 @@ fn fill_param_name(
 }
 
 fn param_name_is_placeholder(name: &str) -> bool {
-    if name.starts_with("closure_") || name.starts_with("outer") {
+    if crate::ir::placeholder::has_prefix(name) || name.starts_with("outer") {
         return true;
     }
     if let Some(rest) = name.strip_prefix("arg") {

@@ -231,7 +231,7 @@ pub(super) fn infer_name_from_closure_usage(
     if info.called_as_function && all_accessed.is_empty() {
         // Use slot hint if available
         if let Some(hint) = slot_name_hint {
-            if !hint.starts_with("closure_")
+            if !crate::ir::placeholder::has_prefix(hint)
                 && !hint.starts_with("f")
                 && !hint.starts_with("arg")
                 && !hint.starts_with("r")
@@ -337,7 +337,7 @@ pub(super) fn infer_name_from_closure_usage(
         if info.properties.len() == 1 && info.properties[0] == "default" {
             // If we have a slot name hint from ClosureContext, use it
             if let Some(hint) = slot_name_hint {
-                if !hint.starts_with("closure_")
+                if !crate::ir::placeholder::has_prefix(hint)
                     && !hint.starts_with("f")
                     && !hint.starts_with("arg")
                     && !hint.starts_with("r")
@@ -381,7 +381,7 @@ pub(super) fn infer_name_from_closure_usage(
         if info.called_as_function {
             // Use slot hint if meaningful
             if let Some(hint) = slot_name_hint {
-                if !hint.starts_with("closure_")
+                if !crate::ir::placeholder::has_prefix(hint)
                     && !hint.starts_with("f")
                     && !hint.starts_with("arg")
                     && !hint.starts_with("r")
@@ -462,7 +462,11 @@ fn is_placeholder_name(hint: &str) -> bool {
         hint.strip_prefix(prefix)
             .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
     };
-    if hint.starts_with("closure_") || digits_after("r") || digits_after("f") || digits_after("c") {
+    if crate::ir::placeholder::has_prefix(hint)
+        || digits_after("r")
+        || digits_after("f")
+        || digits_after("c")
+    {
         return true;
     }
     if digits_after("arg") {
@@ -489,7 +493,7 @@ fn is_usable_slot_hint(hint: &str) -> bool {
     // A leading 'c' followed only by digits is a raw closure slot like "c12".
     let is_closure_number = hint.starts_with('c') && hint[1..].chars().all(|c| c.is_ascii_digit());
     hint.len() > 1
-        && !hint.starts_with("closure_")
+        && !crate::ir::placeholder::has_prefix(hint)
         && !hint.starts_with('f')
         && !hint.starts_with("arg")
         && !hint.starts_with('r')

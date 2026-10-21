@@ -2,6 +2,7 @@ mod builder;
 mod cfg;
 pub mod depth;
 pub mod expr;
+pub mod placeholder;
 mod stmt;
 mod types;
 pub mod utils;
