@@ -439,6 +439,10 @@ pub enum Command {
         /// Mark the new string as an identifier (property/symbol name with Jenkins hash).
         #[arg(long)]
         identifier: bool,
+        /// Give every string its own storage when the string table is rebuilt,
+        /// instead of sharing storage between a string and its suffixes.
+        #[arg(long)]
+        unpacked_strings: bool,
         #[command(flatten)]
         format: FormatArgs,
     },
@@ -491,6 +495,10 @@ pub enum Command {
         old: Option<String>,
         #[arg(long)]
         new: String,
+        /// Give every string its own storage when the string table is rebuilt,
+        /// instead of sharing storage between a string and its suffixes.
+        #[arg(long)]
+        unpacked_strings: bool,
         #[command(flatten)]
         format: FormatArgs,
     },

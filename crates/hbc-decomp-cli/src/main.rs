@@ -631,9 +631,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             output,
             value,
             identifier,
+            unpacked_strings,
             format,
         } => {
-            commands::write_cmd::run_add_string(&input, &output, value, identifier, &format)?;
+            commands::write_cmd::run_add_string(
+                &input,
+                &output,
+                value,
+                identifier,
+                unpacked_strings,
+                &format,
+            )?;
         }
         Command::RegexpSet {
             input,
@@ -677,9 +685,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             id,
             old,
             new,
+            unpacked_strings,
             format,
         } => {
-            commands::write_cmd::run_patch_string(&input, &output, id, old, new, &format)?;
+            commands::write_cmd::run_patch_string(
+                &input,
+                &output,
+                id,
+                old,
+                new,
+                unpacked_strings,
+                &format,
+            )?;
         }
         Command::PatchFunction {
             input,

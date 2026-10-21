@@ -51,6 +51,7 @@ Two properties define it, and both are the reason the plan_guides exist:
 | File | Edit |
 |---|---|
 | `patch/strings.rs` | string-table entries: same-length in place, or grow/shrink with a full table + storage rebuild and tail relocation; append (`add_string`); repoint an entry at another's storage (`retarget_string`) |
+| `patch/string_storage.rs` | how a rebuild lays out storage (`lay_out`: ASCII, pad to 2, UTF-16, as upstream; suffix-packed unless `unpacked_strings`, pinned ids private) and the P0 check every string write runs before committing (`validate`: each entry reads back as its intended text, pinned ids share no bytes) |
 | `patch/regexp.rs` | one RegExp entry's bytecode, replaced by a donor stream (`set_regexp`): in place when it fits the entry's unshared slot, else appended to storage with the entry repointed and the tail moved by `relocate`; refuses fewer capture groups (P4a); and `repoint_regexp`, which points one `CreateRegExp` at another existing entry, copying the pattern/flags string ids from a site that already uses it |
 | `patch/operands.rs` | a single string-id operand in one instruction, addressed by `OperandTarget` (absolute offset or function + insn offset) — no body rebuild; validates shape, read-back verifies |
 | `patch/functions.rs` | whole function bodies: same-size in place; different-size splices the code section, shifts later offsets, fixes the debug-info offset; refuses a resize of a function with handlers or (unless opted out) debug info |
@@ -67,7 +68,7 @@ the plan guides, which have their own index (`../plan_guides/README.md`):
 | Write-path invariants, hazards, op inventory, risk register | `../plan_guides/06_write/RISKS.md` |
 | The absolute-offset surface; splice-and-shift; the structured rebuild (P3) | `../plan_guides/06_write/relocation/PLAN.md` |
 | Per-region read/interpret/emit status; how each unmodeled region serializes | `../plan_guides/01_read/unmodeled_regions/PLAN.md` |
-| How string storage is laid out and could be repacked (no dedup today) | `../plan_guides/06_write/string_packing/PLAN.md` |
+| How string storage is laid out and repacked (suffix packing shipped; containment and overlaps not) | `../plan_guides/06_write/string_packing/PLAN.md` |
 | The decompiler's closure/env-slot model (read-side, but chained here) | `../plan_guides/03_analysis/closure_model/PLAN.md` |
 | Read-path robustness findings, incl. F10 (silent debug-info failure) | `../plan_guides/01_read/RISKS.md` |
 

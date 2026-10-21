@@ -141,12 +141,42 @@ turns the overlap guard from "usually true after a rebuild" into "never true for
 
 ## Plan
 
-Re-derived at `81c4e2a`: **none of P0–P4 has shipped.** Rebuilt storage is still emitted
-unpacked (`patch_string_resize`, `strings.rs:314`), nothing checks the finished blob's entries against the intended text (`commit_image` reparses
-the image but compares nothing), and no
-`--pack-strings` flag exists.
+**Status: P0 and P1 shipped** (`write/patch/string_storage.rs`); P2–P4 open. Before them, at
+`81c4e2a`, rebuilt storage was emitted unpacked and nothing checked the finished blob's entries
+against the intended text (`commit_image` reparsed the image but compared nothing).
 
-### P0 — Always-on packing validation *(prerequisite, useful on its own)*
+**As shipped, and measured.** Packing is the default and `PatchOptions::unpacked_strings` /
+`--unpacked-strings` (on `add-string` and `patch-string`) is the opt-out: the inverse of the
+`--pack-strings` flag P4 sketches, chosen because the packed layout is the one closer to what
+`hermesc -O` shipped, and P0 guards it. On the two v96 production bundles **[measured]**,
+`tests/corpus.rs` `a_packed_rebuild_recovers_storage_the_unpacked_one_spends`:
+
+```
+                  hermesc    unpacked rebuild      packed rebuild   recovered
+Equinox 11.43.0   4,268,968  4,706,190 (+437,222)  4,604,500        101,690 (23%)
+CoachRx 2.1.223   2,423,416  2,728,604 (+305,188)  2,662,404         66,200 (22%)
+```
+
+That is the ~100 KB of ~431 KB this plan predicted from 11.39.0. A whole `patch-string` on the
+17 MB Equinox bundle takes 0.17 s packed against 0.14 s unpacked.
+
+Three things the shipped version does that the phases below do not spell out:
+
+- **The layout matches upstream's split**: all ASCII strings, a pad to 2, then all UTF-16
+  strings. The old rebuild interleaved them in id order, so a UTF-16 string could start at an
+  odd offset, which `hermesc` never emits. Both packed and unpacked use the split now.
+- **P0 runs on every string write**, not only rebuilds: `retarget_string` and the same-length
+  in-place patch build the expected table too. The check runs on the reparsed image *before*
+  the caller's `file` is replaced (`commit_image_checked`), so a refused write leaves it intact.
+- **It found a real bug on its first run.** A same-*byte*-length value that is not ASCII (`bob`
+  to `bé`) took the in-place path and wrote UTF-8 into an ASCII entry; it now takes the
+  rebuild, which re-encodes it as UTF-16. With the routing fix removed, P0 refuses the write
+  instead of shipping the mojibake (`a_non_ascii_value_of_the_same_byte_length_is_re_encoded`).
+
+The same-length overlap guard also went from quadratic to linear: it located every other entry
+with a scan from id 0, around 5 billion steps per patch on a 99,000-string bundle.
+
+### P0 — Always-on packing validation — ✅ **shipped**
 
 **Goal.** Before changing any layout, be able to prove a layout is correct.
 
@@ -158,7 +188,7 @@ table and it is the only thing standing between a packing bug and silently corru
 **Acceptance.** Deliberately corrupt one entry's offset in a test and watch it fire. Then run
 it over the existing *unpacked* rebuild path and confirm it passes — that is the baseline.
 
-### P1 — Suffix merge with a pin set
+### P1 — Suffix merge with a pin set — ✅ **shipped**
 
 **Goal.** ~100 KB of the ~431 KB, with the cheapest possible algorithm and the safety property
 intact.

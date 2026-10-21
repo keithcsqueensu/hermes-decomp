@@ -11,6 +11,7 @@ pub mod functions;
 pub mod inject;
 pub mod operands;
 pub mod regexp;
+mod string_storage;
 pub mod strings;
 
 pub use functions::{patch_function_body, patch_function_bytes};
@@ -35,4 +36,26 @@ pub struct PatchOptions {
     /// costs the workflow this crate exists for nothing, and fires only on
     /// debug-built bundles where it is right.
     pub allow_stale_debug_info: bool,
+    /// Give every string its own storage when a write rebuilds the string
+    /// table, as `hermesc` does without `-O`.
+    ///
+    /// Default `false`: the rebuild shares storage between a string and any
+    /// string it is a suffix of, which keeps a patched bundle closer to what
+    /// `hermesc -O` emitted (on the Equinox bundle the unpacked rebuild costs
+    /// ~431 KB, packing recovers ~100 KB of it) and keeps offsets further from
+    /// the 23-bit limit past which an entry needs an overflow record. Either way
+    /// the entry being written gets bytes of its own, and every entry is checked
+    /// against its intended text before the result is returned
+    /// (`docs/plan_guides/06_write/string_packing/PLAN.md`).
+    pub unpacked_strings: bool,
+}
+
+impl PatchOptions {
+    fn string_packing(&self) -> string_storage::Packing {
+        if self.unpacked_strings {
+            string_storage::Packing::Unpacked
+        } else {
+            string_storage::Packing::Packed
+        }
+    }
 }
