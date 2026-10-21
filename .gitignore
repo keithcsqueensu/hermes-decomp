@@ -74,6 +74,14 @@ THIRD_PARTY_NOTICES.md
 !/scripts/build/*.mjs
 !/scripts/build/*.cpp
 !/scripts/build/*.tsv
+# Output-quality measurement (compare.sh); its node_modules stays local.
+!/scripts/measure/
+/scripts/measure/*
+!/scripts/measure/*.mjs
+!/scripts/measure/*.py
+!/scripts/measure/*.sh
+!/scripts/measure/package.json
+!/scripts/measure/package-lock.json
 # IDE / AI tooling
 .claude/
 .cursor/

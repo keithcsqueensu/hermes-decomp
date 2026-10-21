@@ -1,0 +1,10 @@
+{
+  "name": "hermes-decomp-measure",
+  "private": true,
+  "description": "Output-quality measurements for decompiled bundles (scripts/measure/compare.sh)",
+  "type": "module",
+  "dependencies": {
+    "acorn": "8.12.1",
+    "eslint-scope": "8.0.2"
+  }
+}

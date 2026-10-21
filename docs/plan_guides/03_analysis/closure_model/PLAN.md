@@ -564,7 +564,12 @@ Replace bare `String` in `ClosureSlotValue::Variable` and the `get_slot_name` re
 a time — each conversion is behaviour-preserving on its own. Acceptance: byte-identical
 Equinox output at the end of the phase (this phase changes representation, not decisions).
 
-### K4 — carry `ClosureVar` to codegen (C7, C8)
+### K4 — carry `ClosureVar` to codegen (C7, C8) — staged in [`K4_PLAN.md`](K4_PLAN.md)
+
+*Revised:* the capture keeps its identity as a `SlotRef` on the variable (`Var { name, slot }`)
+rather than as a surviving `ClosureVar`, in eight stages with a measurement harness
+(`scripts/measure/`); see `K4_PLAN.md`. The original text follows.
+
 Stop lowering in `resolve_closures`; attach the resolved `SlotName` to the node; render at
 `format.rs:138`. This is what removes the ordering prose in C8 and the reanalyze/no-reanalyze
 distinction. Largest phase, and the only one that should wait for a reason.
