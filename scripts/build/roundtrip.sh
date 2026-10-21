@@ -99,14 +99,26 @@ echo "Per-version detail in v*/roundtrip.tsv; re-run corpus_report to fold into 
 KNOWN="$ROOT/scripts/build/roundtrip_known_failures.tsv"
 [ -f "$KNOWN" ] || exit 0
 
+# Every snippet this run judged, whatever the verdict, and the ones that failed.
+ran="$(for tsv in "$RN"/v*/roundtrip.tsv; do
+  v="$(basename "$(dirname "$tsv")")"
+  awk -F'\t' -v v="$v" 'NF>=2 {print v"\t"$1}' "$tsv"
+done | sort)"
 actual="$(for tsv in "$RN"/v*/roundtrip.tsv; do
   v="$(basename "$(dirname "$tsv")")"
   awk -F'\t' -v v="$v" '$2=="FAIL" {print v"\t"$1}' "$tsv"
 done | sort)"
 expected="$(grep -v '^#' "$KNOWN" | awk -F'\t' 'NF>=2 {print $1"\t"$2}' | sort)"
 
+# A recorded failure only counts as fixed if its snippet ran here and did not
+# fail. One whose version is not in this machine's corpus was never judged, and
+# reading "absent from the failures" as "passes" failed the gate on any checkout
+# without the full corpus.
+checked="$(comm -12 <(printf '%s\n' "$expected") <(printf '%s\n' "$ran") | grep -v '^$')"
+unchecked="$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$ran") | grep -v '^$')"
+
 unexpected="$(comm -23 <(printf '%s\n' "$actual") <(printf '%s\n' "$expected") | grep -v '^$')"
-fixed="$(comm -13 <(printf '%s\n' "$actual") <(printf '%s\n' "$expected") | grep -v '^$')"
+fixed="$(comm -13 <(printf '%s\n' "$actual") <(printf '%s\n' "$checked") | grep -v '^$')"
 
 status=0
 if [ -n "$unexpected" ]; then
@@ -121,5 +133,8 @@ if [ -n "$fixed" ]; then
   printf '%s\n' "$fixed" | sed 's/^/  /'
   status=1
 fi
-[ "$status" -eq 0 ] && echo "known failures: $(printf '%s\n' "$expected" | grep -c . ) recorded, all accounted for"
+if [ -n "$unchecked" ]; then
+  echo "note: $(printf '%s\n' "$unchecked" | grep -c .) recorded failure(s) not checked: their snippet did not run in this corpus"
+fi
+[ "$status" -eq 0 ] && echo "known failures: $(printf '%s\n' "$checked" | grep -c . ) checked, all accounted for"
 exit "$status"
