@@ -31,7 +31,7 @@ use crate::error::{Error, Result};
 use crate::file::BytecodeFile;
 use crate::opcode::{BytecodeFormat, OperandType};
 use crate::write::reloc::{relocate, Reloc};
-use crate::write::serialize::{commit_image, section_offset};
+use crate::write::serialize::{commit_image, section_offset, HeaderEdit};
 
 use super::operands::{decode_one_at, operand_byte_width, resolve_target, OperandTarget};
 use super::PatchOptions;
@@ -180,11 +180,11 @@ pub fn set_regexp(
     });
     let entry_pos = table_off + index as usize * 8;
 
-    let (out_raw, mode) = if payload.len() <= old_len && !shared {
+    let (out_raw, mode, edit) = if payload.len() <= old_len && !shared {
         let at = storage_off + old_off;
         raw[at..at + payload.len()].copy_from_slice(payload);
         raw[entry_pos + 4..entry_pos + 8].copy_from_slice(&new_len.to_le_bytes());
-        (raw, RegexpSetMode::InPlace)
+        (raw, RegexpSetMode::InPlace, HeaderEdit::default())
     } else {
         // Storage is recorded unpadded in the header and padded to 4 in the file.
         let mut storage = raw[storage_off..storage_off + storage_size].to_vec();
@@ -213,10 +213,14 @@ pub fn set_regexp(
                 resized: None,
             },
         )?;
-        (rebuilt, RegexpSetMode::Appended)
+        let edit = HeaderEdit {
+            reg_exp_storage_size: Some(new_size),
+            ..HeaderEdit::shifted(delta)
+        };
+        (rebuilt, RegexpSetMode::Appended, edit)
     };
 
-    let out = commit_image(file, out_raw)?;
+    let out = commit_image(file, out_raw, edit)?;
     Ok((
         out,
         RegexpSetReport {
@@ -373,7 +377,7 @@ pub fn repoint_regexp(
         )));
     }
 
-    let out = commit_image(file, raw)?;
+    let out = commit_image(file, raw, HeaderEdit::default())?;
     Ok((
         out,
         RegexpRepointReport {

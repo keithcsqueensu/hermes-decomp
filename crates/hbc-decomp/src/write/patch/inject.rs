@@ -11,7 +11,7 @@ use crate::modern_layout::{
 };
 use crate::write::encode::encode_function_body;
 use crate::write::header_write::read_modern_large_pointer;
-use crate::write::serialize::{commit_image, section_offset};
+use crate::write::serialize::{commit_image, section_offset, HeaderEdit};
 
 use super::debug_reloc;
 use super::functions::patch_function_body;
@@ -352,7 +352,9 @@ pub fn inject_stub(
         insert_at,
         delta,
     ) {
-        Ok(relocated) => commit_image(file, relocated),
+        // The resize above was committed already; relocating the line table
+        // touches the debug region's contents, never the header.
+        Ok(relocated) => commit_image(file, relocated, HeaderEdit::default()),
         // The only failure is a version whose debug layout is not modelled. If the
         // caller explicitly accepted a stale line table, honour that; otherwise the
         // refusal is the point.

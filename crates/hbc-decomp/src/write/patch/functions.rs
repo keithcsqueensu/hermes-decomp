@@ -9,7 +9,7 @@ use crate::opcode::BytecodeFormat;
 use super::PatchOptions;
 use crate::write::encode::encode_function_body;
 use crate::write::reloc::{relocate, Reloc};
-use crate::write::serialize::commit_image;
+use crate::write::serialize::{commit_image, HeaderEdit};
 
 // Replace the instruction stream of `function_id`. Same-size bodies patch in place;
 // longer bodies expand the code section and shift subsequent function offsets.
@@ -150,7 +150,7 @@ pub fn patch_function_bytes(
         if rel + old_size <= file.instructions.len() {
             file.instructions[rel..rel + old_size].copy_from_slice(new_body);
         }
-        let out = commit_image(file, raw)?;
+        let out = commit_image(file, raw, HeaderEdit::default())?;
         return Ok(out);
     }
 
@@ -181,7 +181,7 @@ pub fn patch_function_bytes(
         },
     )?;
 
-    let out = commit_image(file, rebuilt)?;
+    let out = commit_image(file, rebuilt, HeaderEdit::shifted(delta))?;
     Ok(out)
 }
 

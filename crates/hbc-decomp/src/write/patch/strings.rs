@@ -8,7 +8,7 @@ use crate::opcode::BytecodeFormat;
 use std::collections::BTreeSet;
 
 use crate::write::reloc::{relocate, Reloc};
-use crate::write::serialize::{commit_image_checked, section_offset};
+use crate::write::serialize::{commit_image_checked, section_offset, HeaderEdit};
 
 use super::string_storage::{
     current_strings, lay_out, read_all_string_locs, validate, Packing, StoredString, StringLayout,
@@ -131,7 +131,7 @@ pub fn retarget_string(
         update_identifier_hash(file, &mut raw, from_id, to_value)?;
     }
 
-    commit_image_checked(file, raw, |after| {
+    commit_image_checked(file, raw, HeaderEdit::default(), |after| {
         validate(after, &expected, &BTreeSet::new())
     })
 }
@@ -207,7 +207,13 @@ fn patch_string_resize(
     // An identifier's precomputed hash depends on its text, so refresh it.
     update_identifier_hash(file, &mut rebuilt, id, new_value)?;
 
-    commit_image_checked(file, rebuilt, |after| validate(after, &strings, &pinned))
+    let edit = HeaderEdit {
+        string_storage: Some((layout.overflow.len() as u32, layout.storage.len() as u32)),
+        ..HeaderEdit::shifted(delta)
+    };
+    commit_image_checked(file, rebuilt, edit, |after| {
+        validate(after, &strings, &pinned)
+    })
 }
 
 // Small table, overflow table and storage, in file order, padded to 4.
@@ -338,7 +344,18 @@ pub fn add_string(
         },
     )?;
 
-    let out = commit_image_checked(file, rebuilt, |after| validate(after, &strings, &pinned))?;
+    let edit = HeaderEdit {
+        string_counts: Some((
+            new_kinds.len() as u32,
+            new_id_hashes.len() as u32,
+            new_id + 1,
+        )),
+        string_storage: Some((layout.overflow.len() as u32, layout.storage.len() as u32)),
+        ..HeaderEdit::shifted(delta)
+    };
+    let out = commit_image_checked(file, rebuilt, edit, |after| {
+        validate(after, &strings, &pinned)
+    })?;
     Ok((out, new_id))
 }
 
@@ -394,7 +411,7 @@ pub fn patch_string_by_id(
     raw[abs_off..abs_off + old_len].copy_from_slice(new_value.as_bytes());
     // An identifier's precomputed hash tracks its text, so refresh it here too.
     update_identifier_hash(file, &mut raw, id, new_value)?;
-    commit_image_checked(file, raw, |after| {
+    commit_image_checked(file, raw, HeaderEdit::default(), |after| {
         validate(after, &expected, &BTreeSet::new())
     })
 }

@@ -7,6 +7,9 @@
 // Secondary path (`create`): build a minimal legacy-layout image from scratch.
 
 use crate::error::{Error, Result};
+use crate::file::header::{
+    LEGACY_BIGINT_MIN_VERSION, LEGACY_FUNCTION_SOURCE_MIN_VERSION, LEGACY_SEGMENT_ID_MIN_VERSION,
+};
 use crate::file::BytecodeFile;
 use crate::format::{HeaderLayout, FLAG_OVERFLOWED};
 use crate::opcode::BytecodeFormat;
@@ -112,16 +115,24 @@ pub fn finalize_raw_image(mut buf: Vec<u8>) -> Result<Vec<u8>> {
 // Cost is one parse per write op: ~40ms on the 16.8 MB Equinox bundle, and nothing
 // measurable on the fixtures. Callers were already told to pay it (I2) -- this
 // just stops them having to remember.
-pub fn commit_image(file: &mut BytecodeFile, buf: Vec<u8>) -> Result<Vec<u8>> {
-    commit_image_checked(file, buf, |_| Ok(()))
+//
+// **And the header changes only where the op says it does** (R3, R14). Every op
+// passes a `HeaderEdit`: how far it moved the debug section, and which counts and
+// sizes it rewrote. The reparsed header must equal the old one with exactly those
+// edits applied. A header field written at the wrong position -- the R3 hazard,
+// since the legacy `debug_info_offset` sits at a version-dependent offset --
+// shows up here as a neighbouring field that changed, or an offset that did not.
+pub fn commit_image(file: &mut BytecodeFile, buf: Vec<u8>, edit: HeaderEdit) -> Result<Vec<u8>> {
+    commit_image_checked(file, buf, edit, |_| Ok(()))
 }
 
 // `commit_image`, plus an op-specific check of the reparsed image. `file` is
-// replaced only when the image reparses *and* passes `check`, so a refused write
-// leaves the caller's file as it was.
+// replaced only when the image reparses, keeps its header as `edit` allows *and*
+// passes `check`, so a refused write leaves the caller's file as it was.
 pub fn commit_image_checked(
     file: &mut BytecodeFile,
     buf: Vec<u8>,
+    edit: HeaderEdit,
     check: impl FnOnce(&BytecodeFile) -> Result<()>,
 ) -> Result<Vec<u8>> {
     let out = finalize_raw_image(buf)?;
@@ -133,9 +144,77 @@ pub fn commit_image_checked(
              finalization, so this is a malformed layout rather than a rejected input."
         ))
     })?;
+    let mut expected = file.header.clone();
+    edit.apply(&mut expected);
+    expected.file_length = out.len() as u32;
+    header_matches(&expected, &refreshed.header, "write")?;
     check(&refreshed)?;
     *file = refreshed;
     Ok(out)
+}
+
+/// What a write op may change in the file header. Everything else must come back
+/// exactly as it was. `HeaderEdit::default()` changes nothing (`file_length` is
+/// always checked against the image itself).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeaderEdit {
+    /// How far the op moved everything after its splice. `debug_info_offset`,
+    /// when set, must move by exactly this: the debug section follows every
+    /// region a write op splices.
+    pub shift: i64,
+    /// New `(string_kind_count, identifier_count, string_count)`.
+    pub string_counts: Option<(u32, u32, u32)>,
+    /// New `(overflow_string_count, string_storage_size)`.
+    pub string_storage: Option<(u32, u32)>,
+    /// New `reg_exp_storage_size`.
+    pub reg_exp_storage_size: Option<u32>,
+}
+
+impl HeaderEdit {
+    /// A splice that moved everything after it by `shift` bytes.
+    pub fn shifted(shift: i64) -> Self {
+        Self {
+            shift,
+            ..Self::default()
+        }
+    }
+
+    fn apply(&self, h: &mut crate::format::BytecodeHeader) {
+        if h.debug_info_offset != 0 {
+            h.debug_info_offset = (h.debug_info_offset as i64 + self.shift) as u32;
+        }
+        if let Some((kinds, idents, strings)) = self.string_counts {
+            (h.string_kind_count, h.identifier_count, h.string_count) = (kinds, idents, strings);
+        }
+        if let Some((overflow, storage)) = self.string_storage {
+            (h.overflow_string_count, h.string_storage_size) = (overflow, storage);
+        }
+        if let Some(size) = self.reg_exp_storage_size {
+            h.reg_exp_storage_size = size;
+        }
+    }
+}
+
+// Compare two headers and name every field that differs.
+fn header_matches(
+    expected: &crate::format::BytecodeHeader,
+    got: &crate::format::BytecodeHeader,
+    what: &str,
+) -> Result<()> {
+    if expected == got {
+        return Ok(());
+    }
+    let (e, g) = (format!("{expected:#?}"), format!("{got:#?}"));
+    let diffs: Vec<String> = e
+        .lines()
+        .zip(g.lines())
+        .filter(|(a, b)| a != b)
+        .map(|(a, b)| format!("expected {} got {}", a.trim(), b.trim()))
+        .collect();
+    Err(Error::Write(format!(
+        "{what} changed the file header beyond what it declares: {}",
+        diffs.join("; ")
+    )))
 }
 
 // ---- create-from-scratch helpers ----
@@ -216,7 +295,7 @@ pub fn build_minimal_legacy(
 
     // All empty sections still need correct alignment, sizes in header are 0 so we write nothing.
 
-    if version >= 84 {
+    if version >= LEGACY_FUNCTION_SOURCE_MIN_VERSION {
         // function_source_table empty
     }
 
@@ -255,7 +334,7 @@ pub fn build_minimal_legacy(
         strings.len() as u32,
         tables.overflow.len() as u32,
         tables.storage.len() as u32,
-        version >= 87,
+        version >= LEGACY_BIGINT_MIN_VERSION,
         0,
         0, // bigint
         0,
@@ -263,10 +342,10 @@ pub fn build_minimal_legacy(
         0, // array
         0, // obj_key
         0, // obj_value
-        version >= 78,
+        version >= LEGACY_SEGMENT_ID_MIN_VERSION,
         0, // segment
         0, // cjs
-        version >= 84,
+        version >= LEGACY_FUNCTION_SOURCE_MIN_VERSION,
         0, // function_source_count
         0, // debug_info_offset
         0, // options
@@ -445,5 +524,46 @@ mod tests {
         let re = BytecodeFile::parse_auto(&out).unwrap();
         assert_eq!(re.header.function_count, file.header.function_count);
         assert_eq!(re.strings.len(), file.strings.len());
+    }
+
+    fn plain() -> BytecodeFile {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/plain.v96.hbc");
+        BytecodeFile::parse_auto(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    // R3: a header field written at the wrong position lands in a neighbour.
+    // Here `regExpCount` is corrupted by an op that declares no header change.
+    #[test]
+    fn an_undeclared_header_change_is_refused() {
+        let mut file = plain();
+        let mut raw = file.raw_bytes.clone().unwrap();
+        let pos = 72; // regExpCount on v96 (bigint fields present)
+        assert_eq!(u32::from_le_bytes(raw[pos..pos + 4].try_into().unwrap()), 0);
+        raw[pos..pos + 4].copy_from_slice(&1u32.to_le_bytes());
+        let before = file.header.clone();
+        let err = commit_image(&mut file, raw, HeaderEdit::default())
+            .expect_err("an undeclared header change must be refused")
+            .to_string();
+        assert!(err.contains("reg_exp_count"), "{err}");
+        assert_eq!(
+            file.header, before,
+            "a refused write leaves the file as it was"
+        );
+    }
+
+    // A splice declares how far it moved the debug section; an image whose
+    // offset did not move by exactly that is refused.
+    #[test]
+    fn a_debug_offset_that_did_not_move_is_refused() {
+        let mut file = plain();
+        assert_ne!(
+            file.header.debug_info_offset, 0,
+            "fixture carries debug info"
+        );
+        let raw = file.raw_bytes.clone().unwrap();
+        let err = commit_image(&mut file, raw, HeaderEdit::shifted(4))
+            .expect_err("a declared shift that did not happen must be refused")
+            .to_string();
+        assert!(err.contains("debug_info_offset"), "{err}");
     }
 }
