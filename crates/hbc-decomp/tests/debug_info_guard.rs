@@ -161,18 +161,32 @@ fn a_same_size_edit_is_unaffected() {
 /// info" was exactly backwards.
 ///
 /// A `create`d image is the real no-debug-section case: `debug_info_offset == 0` and
-/// no debug bytes anywhere. Its legacy global function nonetheless has
-/// `FLAG_HAS_DEBUG_INFO` set (flags `0x12`), so on the flag alone this edit would be
-/// refused over debug info the file does not contain.
+/// no debug bytes anywhere. The guard keys on the section as well as the flag, so a
+/// function claiming `FLAG_HAS_DEBUG_INFO` in such a file is not refused over debug
+/// info the file does not contain. `create` used to set that flag on its legacy
+/// global (flags `0x12`), which is what made this case real -- and what crashed the
+/// v96 engine at its first stack trace. It no longer does, so the flag is set here
+/// on purpose to keep the case covered.
 #[test]
 fn a_file_with_no_debug_section_is_unaffected() {
     for version in VERSIONS {
-        let created = create_minimal(&CreateOptions {
+        let mut created = create_minimal(&CreateOptions {
             version,
             ..Default::default()
         })
         .unwrap_or_else(|e| panic!("v{version}: create: {e}"));
+        if version < 97 {
+            // Legacy small header: flags are the last of the global's 16 bytes.
+            created[128 + 15] |= hbc_decomp::format::FLAG_HAS_DEBUG_INFO;
+            hbc_decomp::write::footer::rehash_footer(&mut created).unwrap();
+        }
         let mut file = BytecodeFile::parse_auto(&created).expect("parse created image");
+        if version < 97 {
+            assert!(
+                file.function_headers[0].has_debug_info(),
+                "v{version}: flag set"
+            );
+        }
         assert_eq!(
             file.header.debug_info_offset, 0,
             "v{version}: a created image should carry no debug section"

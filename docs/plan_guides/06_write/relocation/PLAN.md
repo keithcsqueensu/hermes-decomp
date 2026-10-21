@@ -262,6 +262,16 @@ without it the property is only known to hold on one bundle on one day.
 corpus differential also asserts that no decoded header field other than the offsets and the
 resized size changes under either op, which is the property the re-encode put at risk.
 
+**And it broke something the analysis above missed.** "Lossless" was measured on the bytes; it
+said nothing about callers that edited the *model* and relied on the re-encode to write it out.
+One did: the legacy log stub bumped `frame_size` and `highestReadCacheIndex` in the parsed
+header only. With the re-encode gone the bump was dropped, and a stub injected into a legacy
+function with a frame under 4 wrote registers past it -- a native crash in the v96 engine. It
+shipped and was pushed before `inject-stub` on a `create`-built image exposed it; the stub now
+writes its header fields into the bytes, and `vm_verify` injects into every function of the
+`plain` fixture (see `../RISKS.md`, the legacy log stub). The lesson for any later "the model is
+derived" change: grep for writes to the model, not just reads.
+
 ### P3 — The structured rebuild, *if* an op ever demands it
 
 This is what the stub was reaching for, and it is a different order of work: emitting a complete

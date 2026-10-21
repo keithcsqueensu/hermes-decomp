@@ -69,7 +69,12 @@ fn reserve_modern_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<
     } else {
         // Small 12-byte header: frame_size at bits 64..72, read_cache_size at bits
         // 72..80 (the ninth and tenth bytes).
-        raw[slot + 8] = (new_frame & 0xff) as u8;
+        if new_frame > u8::MAX as u32 {
+            return Err(Error::Write(format!(
+                "inject log: frame size {new_frame} does not fit the small header's 8 bits"
+            )));
+        }
+        raw[slot + 8] = new_frame as u8;
         raw[slot + 9] = (cache_now + 1) as u8;
     }
     // Keep the parsed struct in sync for any later reads in this session.
@@ -78,6 +83,50 @@ fn reserve_modern_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<
         m.read_cache_size = (cache_now + 1) as u8;
     }
     Ok(cache_now)
+}
+
+// The legacy counterpart: a non-overflowed Legacy16 small header keeps
+// frame_size in 7 bits at bit 89 and highestReadCacheIndex in the byte at bit
+// 104. They are written into `raw_bytes`, as the modern ones are. Editing only
+// the parsed struct relied on `patch_function_bytes` re-encoding every legacy
+// header from the model; once it shifted headers in place instead (R26), the
+// bump was silently dropped and the stub wrote registers past the frame -- a
+// native crash in the v96 engine, with no JS stack.
+//
+// Unlike modern's `read_cache_size`, which is a count, the legacy field is the
+// *highest index in use*. The stub must take the next index, not that one:
+// sharing a slot with the function's own last property read let the cache
+// answer that read with `print` (`greet` printed `tag` as `print`, and the
+// global called `print` for `twice`). Returns the read cache slot index to use
+// for the injected TryGetById.
+fn reserve_legacy_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<u32> {
+    let (frame_now, highest) = match file.function_headers.get(function_id as usize) {
+        Some(FunctionHeader::Legacy(l)) => (l.frame_size, l.highest_read_cache_index),
+        _ => return Err(Error::Write("inject log: not a legacy function".into())),
+    };
+    let cache = highest + 1;
+    if cache > u8::MAX as u32 {
+        return Err(Error::Write("inject log: read cache full".into()));
+    }
+    let new_frame = log_frame_size(frame_now);
+    if new_frame >= 1 << 7 {
+        return Err(Error::Write(format!(
+            "inject log: frame size {new_frame} does not fit the legacy small header's 7 bits"
+        )));
+    }
+    let fh_sec = section_offset(file, "function_headers")
+        .ok_or_else(|| Error::Write("function_headers section missing".into()))?
+        as usize;
+    let slot = fh_sec + function_id as usize * 16;
+    let raw = file
+        .raw_bytes
+        .as_mut()
+        .ok_or_else(|| Error::Write("no raw_bytes".into()))?;
+    let mut bits = u128::from_le_bytes(raw[slot..slot + 16].try_into().unwrap());
+    bits = (bits & !(0x7fu128 << 89)) | ((new_frame as u128) << 89);
+    bits = (bits & !(0xffu128 << 104)) | ((cache as u128) << 104);
+    raw[slot..slot + 16].copy_from_slice(&bits.to_le_bytes());
+    Ok(cache)
 }
 
 // Kinds of bytecode stubs we plan to inject.
@@ -145,16 +194,7 @@ fn build_log_entry(
                 ));
             }
             let msg = leg.function_name;
-            let cache = leg.highest_read_cache_index;
-            if cache + 1 > u8::MAX as u32 {
-                return Err(Error::Write("inject log: read cache full".into()));
-            }
-            let leg = match file.function_headers.get_mut(function_id as usize) {
-                Some(FunctionHeader::Legacy(l)) => l,
-                _ => unreachable!(),
-            };
-            leg.highest_read_cache_index = cache + 1;
-            leg.frame_size = log_frame_size(leg.frame_size);
+            let cache = reserve_legacy_log_regs(file, function_id)?;
             (msg, cache)
         }
         Some(FunctionHeader::Modern(m)) => {

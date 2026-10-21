@@ -234,7 +234,11 @@ pub fn build_minimal_legacy(
         0, // env
         0,
         0,
-        0x12, // flags: no-construct typical
+        // ProhibitInvoke = None and nothing else. This was 0x12, whose 0x10 is
+        // hasDebugInfo: on an image with no debug section, the v96 engine went
+        // looking for this function's debug info the first time it built a stack
+        // trace and died with "LLVM ERROR: overflow past end of bytecode".
+        crate::format::PROHIBIT_NONE,
     );
     buf[func_header_pos..func_header_pos + 16].copy_from_slice(&fh);
 

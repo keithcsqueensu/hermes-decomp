@@ -448,8 +448,9 @@ fn an_overflowed_string_written_by_a_rebuild_runs() {
 /// trace: the name coming back whole proves the engine read the overflow record
 /// and the UTF-16 entry `create` wrote. (`create` emits no identifiers, so the
 /// log stub's property lookup throws -- which is what makes the name visible.
-/// v96 is not run with the stub: `inject-stub` on a created v96 image fails to
-/// load, before this change too; the created v96 images run clean.)
+/// v96 used to die here with "LLVM ERROR: overflow past end of bytecode" instead,
+/// because `create` flagged its global as having debug info; see
+/// `the_log_stub_keeps_every_function_working`.)
 #[test]
 fn create_writes_overflowed_and_utf16_strings_the_engine_reads() {
     let long = "L".repeat(300);
@@ -464,10 +465,6 @@ fn create_writes_overflowed_and_utf16_strings_the_engine_reads() {
             let parsed = BytecodeFile::parse_auto(&image).expect("created image reparses");
             assert_eq!(parsed.strings[0].value, name, "v{version}");
             assert_eq!(parsed.strings[0].is_utf16, !name.is_ascii(), "v{version}");
-            if version == 96 {
-                assert_runs(version, &image, "", &format!("create-strings-v{version}"));
-                continue;
-            }
             let mut file = parsed;
             let format = format_for(&file);
             let stubbed = inject_stub(
@@ -490,6 +487,48 @@ fn create_writes_overflowed_and_utf16_strings_the_engine_reads() {
                 run.stdout,
                 run.stderr
             );
+        }
+    }
+}
+
+/// The log stub, injected into each of `plain`'s three functions in turn, must
+/// print the function's name and leave the program's own output exactly as it
+/// was. Two legacy (v96) defects broke that and nothing noticed, because every
+/// earlier test injected into the global, whose frame already had room:
+///
+/// - the stub's frame bump was made in the parsed header only; once
+///   `patch_function_bytes` stopped re-encoding legacy headers from the model
+///   (R26) it was dropped, the stub wrote registers past the frame, and the v96
+///   engine crashed natively with no JS stack;
+/// - the stub took read-cache slot `highestReadCacheIndex` -- an index already
+///   in use, since on v96 that field is the highest index rather than a count --
+///   so its lookup of `print` shared a slot with the function's own property
+///   read: `greet` printed `tag` as `print`, and the global called `print` for
+///   `twice`.
+#[test]
+fn the_log_stub_keeps_every_function_working() {
+    let expected = [
+        "global\nhi bob alpha\n10",
+        "greet\nhi bob alpha\n10",
+        "hi bob alpha\ntwice\n10",
+    ];
+    for version in FIXTURE_VERSIONS {
+        for (id, want) in expected.iter().enumerate() {
+            let mut file = BytecodeFile::parse_auto(&fixture("plain", version)).unwrap();
+            let format = format_for(&file);
+            let out = inject_stub(
+                &mut file,
+                &format,
+                id as u32,
+                InjectStubKind::LogEntry,
+                &Default::default(),
+            )
+            .unwrap_or_else(|e| panic!("v{version} fn#{id}: {e}"));
+            assert!(
+                file.function_headers[id].frame_size() >= 4,
+                "v{version} fn#{id}: the frame was not grown for the stub's registers"
+            );
+            assert_runs(version, &out, want, &format!("log-fn{id}-v{version}"));
         }
     }
 }
