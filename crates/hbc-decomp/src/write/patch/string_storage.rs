@@ -201,12 +201,13 @@ pub(super) fn lay_out(
 
 // Append one encoding's strings to `storage`, recording each id's offset.
 //
-// Packed: sort by reversed bytes, *descending*, so every string comes straight
-// after a string it is a suffix of, if there is one -- strings sharing a reversed
-// prefix sort together and the longer one first. Sorting ascending puts each
-// suffix before its container, absorbs nothing, and still produces valid output,
-// so the saving is asserted in the tests rather than trusted. For UTF-16 both
-// lengths are even, so a byte suffix is a code-unit suffix and stays 2-aligned.
+// Packed (P1 + P2): a string that occurs anywhere inside another string is not
+// written at all; it is placed at that occurrence. Only the strings nothing
+// contains -- the roots -- are written out (`containers` finds the rest). A
+// container is always strictly longer than what it holds (exact duplicates are
+// merged first), so following parents from any string ends at a root and the
+// chain cannot cycle. Suffixes are just containment at the tail, so this
+// subsumes P1's suffix merge.
 fn pack_group(
     strings: &[StoredString],
     ids: &[usize],
@@ -224,35 +225,261 @@ fn pack_group(
         ids.iter().partition(|id| !pinned.contains(id));
     match packing {
         Packing::Unpacked => shared.iter().for_each(|&id| fresh(storage, offsets, id)),
-        Packing::Packed => {
-            let mut order = shared;
-            order.sort_by(|&a, &b| {
-                strings[b]
-                    .bytes
-                    .iter()
-                    .rev()
-                    .cmp(strings[a].bytes.iter().rev())
-            });
-            // The last string written out in full; anything that is its suffix
-            // is placed at its tail instead of written again.
-            let mut container: Option<usize> = None;
-            for id in order {
-                let bytes = &strings[id].bytes;
-                match container {
-                    Some(c) if strings[c].bytes.ends_with(bytes) => {
-                        offsets[id] = offsets[c] + (strings[c].bytes.len() - bytes.len()) as u32;
-                    }
-                    _ => {
-                        fresh(storage, offsets, id);
-                        container = Some(id);
-                    }
-                }
-            }
-        }
+        Packing::Packed => pack_contained(strings, &shared, storage, offsets),
     }
     for id in private {
         fresh(storage, offsets, id);
     }
+}
+
+fn pack_contained(
+    strings: &[StoredString],
+    ids: &[usize],
+    storage: &mut Vec<u8>,
+    offsets: &mut [u32],
+) {
+    use std::collections::HashMap;
+
+    // Distinct non-empty texts; `of[id]` is the index of the id's text in `reps`.
+    let mut index: HashMap<&[u8], usize> = HashMap::new();
+    let mut reps: Vec<&[u8]> = Vec::new();
+    let mut of: Vec<(usize, Option<usize>)> = Vec::with_capacity(ids.len());
+    for &id in ids {
+        let bytes = strings[id].bytes.as_slice();
+        if bytes.is_empty() {
+            of.push((id, None));
+            continue;
+        }
+        let r = *index.entry(bytes).or_insert_with(|| {
+            reps.push(bytes);
+            reps.len() - 1
+        });
+        of.push((id, Some(r)));
+    }
+
+    // parent[r] = (container rep, byte offset of r inside it).
+    let utf16 = ids.first().is_some_and(|&id| strings[id].is_utf16);
+    let parent = containers(&reps, utf16);
+
+    // Write the roots, in table order; then resolve every other text through
+    // its chain of containers to a root.
+    let mut placed: Vec<Option<u32>> = vec![None; reps.len()];
+    for (r, text) in reps.iter().enumerate() {
+        if parent[r].is_none() {
+            placed[r] = Some(storage.len() as u32);
+            storage.extend_from_slice(text);
+        }
+    }
+    for r in 0..reps.len() {
+        let mut chain = Vec::new();
+        let mut at = r;
+        while placed[at].is_none() {
+            chain.push(at);
+            at = parent[at]
+                .expect("a text with no placement has a container")
+                .0;
+        }
+        let mut base = placed[at].unwrap();
+        for &link in chain.iter().rev() {
+            base += parent[link].unwrap().1 as u32;
+            placed[link] = Some(base);
+        }
+    }
+    for (id, r) in of {
+        // An empty string reads no bytes; any in-range offset will do.
+        offsets[id] = r.map_or(storage.len() as u32, |r| placed[r].unwrap());
+    }
+}
+
+// For each distinct text, another text that contains it and where: `(container,
+// byte offset)`, or `None` when nothing does.
+//
+// All texts go into one sequence of symbols -- bytes, or UTF-16 code units so an
+// occurrence is always unit-aligned -- each followed by a separator, and the
+// sequence gets a suffix array. The suffixes that start with text `r` sit next to
+// each other in it, `r`'s own suffix among them; so `r` occurs somewhere else
+// exactly when a suffix adjacent to its own also starts with `r`. That is one
+// comparison of `r`'s length per neighbour. The occurrence cannot cross a
+// separator, since `r` contains none, so it lies wholly inside one other text;
+// and that text is strictly longer than `r`, since the texts are distinct.
+fn containers(reps: &[&[u8]], utf16: bool) -> Vec<Option<(usize, usize)>> {
+    let unit = if utf16 { 2 } else { 1 };
+    // Symbols: 0 is the final sentinel, 1 the separator, a unit `v` is `v + 2`.
+    let mut text: Vec<usize> = Vec::new();
+    let mut starts = Vec::with_capacity(reps.len());
+    for r in reps {
+        starts.push(text.len());
+        if utf16 {
+            text.extend(
+                r.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|u| u16::from_le_bytes(*u) as usize + 2),
+            );
+        } else {
+            text.extend(r.iter().map(|&b| b as usize + 2));
+        }
+        text.push(1);
+    }
+    text.push(0);
+    let alphabet = text.iter().max().map_or(1, |m| m + 1);
+    let sa = suffix_array(&text, alphabet);
+    let mut rank = vec![0usize; text.len()];
+    for (i, &p) in sa.iter().enumerate() {
+        rank[p] = i;
+    }
+
+    let len = |r: usize| reps[r].len() / unit;
+    let owner = |pos: usize| starts.partition_point(|&s| s <= pos) - 1;
+    (0..reps.len())
+        .map(|r| {
+            let (start, n) = (starts[r], len(r));
+            let own = &text[start..start + n];
+            let at = rank[start];
+            [at.checked_sub(1), Some(at + 1)]
+                .into_iter()
+                .flatten()
+                .filter_map(|j| sa.get(j).copied())
+                .find(|&q| text.get(q..q + n) == Some(own))
+                .map(|q| {
+                    let c = owner(q);
+                    (c, (q - starts[c]) * unit)
+                })
+        })
+        .collect()
+}
+
+// Suffix array of `s` by induced sorting (SA-IS; Nong, Zhang and Chan, 2009),
+// linear in the length. `s` must end with a 0 that occurs nowhere else, and
+// every symbol must be below `k`.
+fn suffix_array(s: &[usize], k: usize) -> Vec<usize> {
+    const NONE: usize = usize::MAX;
+    let n = s.len();
+    if n == 1 {
+        return vec![0];
+    }
+    // S-type: smaller than the suffix after it. The sentinel is S.
+    let mut stype = vec![false; n];
+    stype[n - 1] = true;
+    for i in (0..n - 1).rev() {
+        stype[i] = s[i] < s[i + 1] || (s[i] == s[i + 1] && stype[i + 1]);
+    }
+    let lms = |i: usize| i > 0 && stype[i] && !stype[i - 1];
+
+    let mut count = vec![0usize; k];
+    for &c in s {
+        count[c] += 1;
+    }
+    let heads = || {
+        let mut h = vec![0usize; k];
+        let mut sum = 0;
+        for c in 0..k {
+            h[c] = sum;
+            sum += count[c];
+        }
+        h
+    };
+    let tails = || {
+        let mut t = vec![0usize; k];
+        let mut sum = 0;
+        for c in 0..k {
+            sum += count[c];
+            t[c] = sum;
+        }
+        t
+    };
+    // From LMS suffixes already in place, induce the L-type then the S-type ones.
+    let induce = |sa: &mut [usize]| {
+        let mut h = heads();
+        for i in 0..n {
+            let j = sa[i];
+            if j != NONE && j > 0 && !stype[j - 1] {
+                let c = s[j - 1];
+                sa[h[c]] = j - 1;
+                h[c] += 1;
+            }
+        }
+        let mut t = tails();
+        for i in (0..n).rev() {
+            let j = sa[i];
+            if j != NONE && j > 0 && stype[j - 1] {
+                let c = s[j - 1];
+                t[c] -= 1;
+                sa[t[c]] = j - 1;
+            }
+        }
+    };
+
+    // 1. Sort the LMS substrings: drop LMS positions at their bucket tails, induce.
+    let mut sa = vec![NONE; n];
+    let mut t = tails();
+    for i in (0..n).rev() {
+        if lms(i) {
+            t[s[i]] -= 1;
+            sa[t[s[i]]] = i;
+        }
+    }
+    induce(&mut sa);
+
+    // 2. Name them; equal LMS substrings share a name.
+    let mut m = 0;
+    for i in 0..n {
+        if lms(sa[i]) {
+            sa[m] = sa[i];
+            m += 1;
+        }
+    }
+    sa[m..].fill(NONE);
+    let mut name = 0;
+    let mut prev = NONE;
+    for i in 0..m {
+        let pos = sa[i];
+        let mut differ = prev == NONE;
+        let mut d = 0;
+        while !differ {
+            if pos + d >= n
+                || prev + d >= n
+                || s[pos + d] != s[prev + d]
+                || stype[pos + d] != stype[prev + d]
+            {
+                differ = true;
+            } else if d > 0 && lms(pos + d) {
+                // Both substrings ended here, equal all the way.
+                break;
+            }
+            d += 1;
+        }
+        if differ {
+            name += 1;
+            prev = pos;
+        }
+        sa[m + pos / 2] = name - 1;
+    }
+    let reduced: Vec<usize> = sa[m..].iter().copied().filter(|&x| x != NONE).collect();
+    let positions: Vec<usize> = (0..n).filter(|&i| lms(i)).collect();
+
+    // 3. Order the LMS suffixes: directly when every name is distinct, else by
+    // recursing on the reduced string (whose last name is the sentinel's, 0).
+    let order = if name < m {
+        suffix_array(&reduced, name)
+    } else {
+        let mut o = vec![0; m];
+        for (i, &x) in reduced.iter().enumerate() {
+            o[x] = i;
+        }
+        o
+    };
+
+    // 4. Place the sorted LMS suffixes and induce the rest.
+    sa.fill(NONE);
+    let mut t = tails();
+    for &i in order.iter().rev() {
+        let p = positions[i];
+        t[s[p]] -= 1;
+        sa[t[s[p]]] = p;
+    }
+    induce(&mut sa);
+    sa
 }
 
 /// P0: every entry of the image `after` must read back, through its own tables,
@@ -404,6 +631,48 @@ mod tests {
         let strings = vec![ascii(&"a".repeat(300)), ascii("b")];
         let l = lay_out(&strings, &BTreeSet::new(), Packing::Packed).unwrap();
         assert_eq!(l.overflow.len(), 1);
+        assert_reads_back(&l, &strings);
+    }
+
+    // SA-IS against the obvious sort, over many small random texts with small
+    // alphabets -- the inputs that exercise repeated LMS substrings and the
+    // recursion.
+    #[test]
+    fn suffix_array_matches_a_naive_sort() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for case in 0..3000 {
+            let len = (next() % 40) as usize;
+            let k = 2 + (next() % 4) as usize;
+            let mut s: Vec<usize> = (0..len).map(|_| 1 + (next() as usize % (k - 1))).collect();
+            s.push(0);
+            let mut naive: Vec<usize> = (0..s.len()).collect();
+            naive.sort_by(|&a, &b| s[a..].cmp(&s[b..]));
+            assert_eq!(suffix_array(&s, k), naive, "case {case}: {s:?}");
+        }
+    }
+
+    #[test]
+    fn a_string_inside_another_is_placed_there() {
+        // `glob` and `bal` sit inside `global` at offsets 0 and 3; `lo` too.
+        let strings = vec![
+            ascii("glob"),
+            ascii("global"),
+            ascii("bal"),
+            ascii("lo"),
+            ascii("zz"),
+        ];
+        let l = lay_out(&strings, &BTreeSet::new(), Packing::Packed).unwrap();
+        assert_reads_back(&l, &strings);
+        assert_eq!(l.storage.len(), 6 + 2, "only global and zz are written");
+        // UTF-16: `ün` inside `über ün` at an even offset.
+        let strings = vec![ascii("über ün"), ascii("ün"), ascii("ber")];
+        let l = lay_out(&strings, &BTreeSet::new(), Packing::Packed).unwrap();
         assert_reads_back(&l, &strings);
     }
 
