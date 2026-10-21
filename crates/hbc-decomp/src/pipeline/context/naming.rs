@@ -363,6 +363,11 @@ impl PipelineContext {
             }
         }
         crate::analysis::closure::stamps::report("after W11e", all_ir, closure_ctx.as_ref());
+        crate::analysis::closure::identity::report_ir(
+            "end of naming",
+            all_ir,
+            closure_ctx.as_ref(),
+        );
 
         global_analysis
     }

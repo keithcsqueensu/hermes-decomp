@@ -334,6 +334,14 @@ fn render_bundle(
     }
 
     crate::analysis::closure::stamps::report_render();
+    if crate::analysis::closure::stamps::enabled() {
+        if let (Some(v), Some(ctx)) = (
+            pipeline.check_slot_identity(file),
+            pipeline.closure_ctx.as_ref(),
+        ) {
+            crate::analysis::closure::identity::log_violations("at codegen", &v, ctx);
+        }
+    }
 
     let n_lines = output.lines().count();
     let n_mods = pipeline.registry.modules.len();

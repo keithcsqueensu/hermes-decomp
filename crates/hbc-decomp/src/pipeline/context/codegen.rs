@@ -132,16 +132,11 @@ impl PipelineContext {
     }
 
     // Generate decompiled code for a single function using cached analysis.
-    pub fn generate_function_code(&self, file: &BytecodeFile, function_id: u32) -> String {
-        // Reanimated worklet: emit its recovered original source.
-        if let Some(src) = self.worklet_source_for(file, function_id) {
-            return format!("{src}\n");
-        }
-        let Some(statements) = self.all_ir.get(&function_id) else {
-            return format!("// Error: no IR for function {function_id}\n");
-        };
-
-        let mut statements = statements.clone();
+    // The statements a function renders from: its IR after the parameter names,
+    // the cleanups that only make sense on final names, and the collision repairs.
+    // Declarations are not inserted yet; that depends on how the body is placed.
+    fn codegen_statements(&self, function_id: u32, statements: &[Statement]) -> Vec<Statement> {
+        let mut statements = statements.to_vec();
 
         // Apply IPA parameter names to the IR
         if let Some(param_names) = self.global_analysis.param_names.get(&function_id) {
@@ -171,17 +166,12 @@ impl PipelineContext {
         // Same collision as prepare_render_bodies: the parameter rename is
         // what makes `kind = kind.kind` clobber the object.
         statements = transforms::repair_switch_clobbers(statements);
+        statements
+    }
 
-        // Get function name
-        // A name the bytecode confirmed for a proposal wins over the one the
-        // string table carries, which for an obfuscated helper is absent anyway.
-        let function_name = match self.cascade_names.get(&function_id) {
-            Some(name) => name.clone(),
-            None => get_function_name(file, function_id),
-        };
-
-        // Get params with IPA names
-        let params = if let Some(names) = self.global_analysis.param_names.get(&function_id) {
+    // The parameter names a top-level function renders with.
+    fn codegen_params(&self, file: &BytecodeFile, function_id: u32) -> Vec<String> {
+        if let Some(names) = self.global_analysis.param_names.get(&function_id) {
             crate::pipeline::params_from_names(
                 file,
                 function_id,
@@ -193,7 +183,46 @@ impl PipelineContext {
             )
         } else {
             get_function_params(file, function_id)
+        }
+    }
+
+    // A module factory's body as codegen emits it, declarations included: what
+    // `generate_function_code` renders, for the checks that need every body in
+    // its final form (`check_slot_identity`).
+    pub(super) fn prepare_factory_body(
+        &self,
+        file: &BytecodeFile,
+        function_id: u32,
+    ) -> Option<(Vec<String>, Vec<Statement>)> {
+        let statements = self.all_ir.get(&function_id)?;
+        let mut statements = self.codegen_statements(function_id, statements);
+        let params = self.codegen_params(file, function_id);
+        let extra = self.extra_writes_for_function(function_id);
+        transforms::insert_declarations_with_extra_writes(&mut statements, &params, &extra);
+        Some((params, statements))
+    }
+
+    pub fn generate_function_code(&self, file: &BytecodeFile, function_id: u32) -> String {
+        // Reanimated worklet: emit its recovered original source.
+        if let Some(src) = self.worklet_source_for(file, function_id) {
+            return format!("{src}\n");
+        }
+        let Some(statements) = self.all_ir.get(&function_id) else {
+            return format!("// Error: no IR for function {function_id}\n");
         };
+
+        let mut statements = self.codegen_statements(function_id, statements);
+
+        // Get function name
+        // A name the bytecode confirmed for a proposal wins over the one the
+        // string table carries, which for an obfuscated helper is absent anyway.
+        let function_name = match self.cascade_names.get(&function_id) {
+            Some(name) => name.clone(),
+            None => get_function_name(file, function_id),
+        };
+
+        // Get params with IPA names
+        let params = self.codegen_params(file, function_id);
 
         // Resolve module context and build import map
         let module = self.resolve_module_for_function(function_id);

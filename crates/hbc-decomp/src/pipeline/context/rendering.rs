@@ -28,6 +28,31 @@ use super::PipelineContext;
 impl PipelineContext {
     // Build pre-rendered inline function bodies for ALL functions.
     // Multi-pass approach for multi-level nesting support.
+    /// The slot identity check (closure model K4.3) over every body as codegen
+    /// renders it: nested bodies as `build_all_inline_bodies` prepares them and
+    /// module factories as `generate_function_code` does. `None` without a
+    /// closure context.
+    pub fn check_slot_identity(
+        &self,
+        file: &BytecodeFile,
+    ) -> Option<crate::analysis::closure::identity::Violations> {
+        use crate::analysis::closure::identity::{check_slot_identity, RenderedBody};
+        let ctx = self.closure_ctx.as_ref()?;
+        let prepared = self.prepare_render_bodies(file);
+        let factories: BTreeMap<u32, (Vec<String>, Vec<Statement>)> = self
+            .registry
+            .function_to_module
+            .keys()
+            .filter_map(|&f| self.prepare_factory_body(file, f).map(|b| (f, b)))
+            .collect();
+        let bodies = prepared
+            .iter()
+            .chain(factories.iter())
+            .map(|(&f, (params, stmts))| (f, RenderedBody { params, stmts }))
+            .collect();
+        Some(check_slot_identity(&bodies, ctx))
+    }
+
     pub(super) fn build_all_inline_bodies(&mut self, file: &BytecodeFile) {
         // Precompute IPA-renamed + cleaned statements once to avoid cloning per rendering pass
         let prepared = self.prepare_render_bodies(file);
