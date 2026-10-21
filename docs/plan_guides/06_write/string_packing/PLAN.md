@@ -133,7 +133,7 @@ turns the overlap guard from "usually true after a rebuild" into "never true for
   (4.25 MB) is under the 8 MB offset ceiling. This is worth watching: an unpacked rebuild pushes
   every later offset *up* by ~431 KB, i.e. toward that ceiling, while packing pushes them down.
   A bundle near 8 MB of storage could be tipped into needing new overflow entries by a rebuild —
-  and per the guide's own limitation list, **`create` cannot emit overflow string entries**.
+  and at the time of writing **`create` could not emit overflow string entries** (it can since R2).
   Packing is therefore mildly *de*-risking, not just smaller.
 - ASCII and UTF-16 storages are packed separately and concatenated; no cross-encoding sharing.
 - Packing changes **offsets only**. String ids, `string_kinds` and `identifier_hashes` are

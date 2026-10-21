@@ -206,8 +206,13 @@ harness gate.
   another at that occurrence, with the written entry pinned: 322 KB of the 437 KB the
   unpacked rebuild cost on 11.43.0. Only P3 (overlap chaining, the remaining ~115 KB) is
   open, and the plan already says not to build it without a reason.
-- **Encoding an overflow string entry** → R2. Detection is verified against 1,449 real entries;
-  *writing* one is still unimplemented, and `create` refuses it.
+- **Encoding an overflow string entry** → R2, **fixed**. One `SmallStringEntry`
+  (`format.rs`) reads and writes every small entry; overflow records are indexed by the entry,
+  as the engine indexes them; `create` and `retarget-string` accept overflow entries.
+- **`inject-stub --kind log` on a `create`-built v96 image fails to load** (`LLVM ERROR:
+  overflow past end of bytecode` from the v96 `hvm`), with plain ASCII strings, on `main`
+  before R2 too. Found while writing R2's VM test; not yet diagnosed. The created v96 image
+  alone runs, and v98/v99 created images take the stub fine.
 - **CLI argument-resolution coverage** → R17, relocated to `../07_frontends/RISKS.md` § CLI
   output surface along with the stdout/stderr contract. Tracked there, not here.
 - **Remaining unit-test gaps** (identifier-resize hash refresh, HASM error paths + handler
@@ -392,9 +397,10 @@ load-bearing for keeping the crate pure-Rust or the edits surgical.
 - **`retarget_string` refuses overflow entries** (v1 scope) and allows — but the CLI warns
   on — a string↔identifier cross-kind retarget (`strings.rs:257`; note moved to the CLI
   layer, see Q5).
-- **`create` cannot emit overflow string entries.** A string with `len >= 0xff` or
-  `offset >= 0x800000` is rejected (`serialize.rs:153`, `:292`). `create` is for minimal
-  images, not arbitrary tables.
+- **`create` builds minimal images.** One global function and the given strings, all of the
+  String kind (no identifiers, so a `*ById` lookup of one of them fails at runtime). Since R2
+  any string is accepted: one too long for a small entry gets an overflow record, and a
+  non-ASCII one is stored as UTF-16 (it used to be written as UTF-8 into an ASCII entry).
 - **`inject-stub log` preconditions:** requires a `"print"` string already in the table,
   refuses overflowed **legacy** functions (`inject.rs:143`), and needs the version to
   expose `GetGlobalObject`/`TryGetById`/`LoadConstUndefined`/`LoadConstString`/`Call2`.
@@ -504,7 +510,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R# | Hazard | § | Inherent | Residual | Mitigation (in tree) | Hardening (todo + open decision) |
 |---|---|---|---|---|---|---|
 | R1 | Chaining a 2nd op on stale `file.sections` (I2) | string/fn | M×H | ⬜ **fixed** | `commit_image` re-derives the whole model (including `sections`) from the finalized bytes, so a second op cannot see a stale layout. Pinned by `chained_size_changing_ops_need_no_reparse`, which runs three chained size-changing ops with no re-parse and requires the output to execute on a real VM | — (fixed). **Decision taken** (was: refresh vs dirty-guard): refresh. The guard would have removed the footgun; the refresh removes the *class*, and costs one parse per op (~40ms on a 5MB bundle) that I2 already told callers to pay. |
-| R2 | Overflow entry encode/decode (I8) | string | M×H | 🟩 | create/retarget refuse overflow; **now exercised against 1,449 real overflowed entries** by `tests/corpus.rs`, which re-implements the `len == 0xff` sentinel independently and requires it to agree with the header count | One `is_overflow_entry`/`encode_overflow_entry` keyed on `len == 0xff`, used by every string path; delete the dead `off == 0x800000` branches (`strings.rs:44`, `:123`). Downgraded from 🟧 because the *detection* rule is now verified against production data; **encoding** an overflow entry is still unbuilt and untested (`create` refuses it). |
+| R2 | Overflow entry encode/decode (I8) | string | M×H | ⬜ **fixed** | **One encoder/decoder, keyed on `len == 0xff`** (`format::SmallStringEntry`), used by the parser and every write path; the dead `offset == 0x800000` checks are gone. Overflow records are read **by the index the entry holds**, as the engine reads them (upstream: records "are indexed by the 'offset' field"), where every reader here counted overflowed entries in table order -- identical on hermesc output (asserted on both production bundles: 1,454 and 903 records, all in order) and wrong once an entry is retargeted. `create` emits overflow records and UTF-16; `retarget-string` accepts overflow entries both ways. VM: a 300-character value written by a rebuild prints whole at v96/v98/v99; a created v98/v99 global named by a 300-character or UTF-16 string is named whole in the engine's stack trace. Previously: create/retarget refused overflow; **now exercised against 1,449 real overflowed entries** by `tests/corpus.rs`, which re-implements the `len == 0xff` sentinel independently and requires it to agree with the header count | — (fixed) |
 | R3 | Legacy `debug_info_offset` position mis-gated | string/create | L×H | 🟧 | `legacy_debug_info_offset_pos` centralizes it | Round-trip assert after create/resize: reparse and check `debug_info_offset` + gated section sizes match intent (shared with R14). |
 | R4 | `string_kinds` / id-hash desync (I9/I12) | string | L×H | 🟩 | append-only path handled; Q7; model can no longer drift from the bytes (R5) | Assert identifier hashes against `hbcdump`'s printed values (`i3[…] #CE5FC8AC: risky`) rather than against our own Jenkins implementation — the corpus harness has the plumbing for it. |
 | R5 | Structured model ↔ bytes drift (I1) | all | M×M | ⬜ **fixed** | `commit_image` re-derives the model by reparsing, so the two cannot disagree. The debug assertion that preceded it found *every* op partly stale on its first run — see `reference/HARNESSES_AND_HISTORY.md` § Git history findings F8 | — (fixed). The remaining hand-sync code inside the ops is now redundant rather than load-bearing; harmless, but do not add more. |
@@ -548,7 +554,7 @@ E Low       R13 R16           R6 R27           R3 R10 R12
 L
   Fixed (each was a live defect, not a hypothetical):
       R1 ⬜ · R5 ⬜ · R8 ⬜ · R9 ⬜ · R11 ⬜ · R15 ⬜ · R24 ⬜ · R25 ⬜ · R26 ⬜ · R28 ⬜
-  Resolved earlier or downgraded by evidence: R4 🟩 · R7 ⬜ · R2 🟩 · R23 🟩
+  Resolved earlier or downgraded by evidence: R4 🟩 · R7 ⬜ · R2 ⬜ · R23 🟩
   CLI-surface risks live in ../07_frontends/RISKS.md: R17, R18 (open) · R20, R22 (fixed).
 ```
 
@@ -563,9 +569,8 @@ the way). What is left there is a capability gap — a replaced body cannot keep
 table — rather than a defect.
 
 **R19** is the standing tripwire for the next upstream reshape; detection, provenance and
-regeneration are all built now. **R2** dropped to 🟩 on evidence rather than on work — 1,449 real overflowed
-entries now exercise the detection rule — but note the asymmetry: *reading* an overflow entry
-is verified, *writing* one is still unimplemented. The remaining low-likelihood / high-impact
+regeneration are all built now. **R2** is closed: overflow entries are read and written by one
+encoder, indexed as the engine indexes them, and both directions are checked on real engines. The remaining low-likelihood / high-impact
 cluster (R3, R10, R12) is the offset-arithmetic and hardcoded-shape hazards that fire rarely
 and corrupt silently, so the payoff there is still **loud failure** over silent mis-encode.
 
@@ -590,7 +595,8 @@ testing nothing.
   `len == 0xff`; forgetting the 8-byte overflow-slot layout; forgetting to update
   `overflow_string_count` at `[56..60]` and `string_storage_size` at `[60..64]`. The
   *detection* rule is now checked against 1,449 real overflowed entries by
-  `tests/corpus.rs`; *encoding* one is still unimplemented.
+  `tests/corpus.rs`, and since R2 every path goes through `format::SmallStringEntry`, which
+  makes the first two mistakes impossible to repeat by copying.
 - **R3 · Header field positions.** String counts sit at fixed offsets `[44..64]` shared across
   layouts, but `debug_info_offset` differs: **modern fixed at byte 108**, **legacy computed
   by `debug_info_offset_pos`** (`reloc.rs`), which itself depends on

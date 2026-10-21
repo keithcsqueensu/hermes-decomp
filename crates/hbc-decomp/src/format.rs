@@ -38,6 +38,87 @@ pub const FLAG_HAS_DEBUG_INFO: u8 = 0x10;
 pub const FLAG_OVERFLOWED: u8 = 0x20;
 
 // ---------------------------------------------------------------------------
+// SmallStringTableEntry (I8, R2)
+// ---------------------------------------------------------------------------
+
+/// One `SmallStringTableEntry`: `isUTF16:1, offset:23, length:8` in a u32.
+///
+/// An entry is overflowed exactly when `length` is 0xff, and its `offset` is
+/// then the index of its record in the overflow table -- the engine's own rule
+/// (`SmallStringTableEntry::isOverflowed`; overflow records "are indexed by the
+/// 'offset' field of overflowed SmallStringTableEntry"). There is no offset
+/// sentinel: an offset is 23 bits, so `offset == 0x800000` can never be read.
+/// This is the one place either direction is spelled out; every string path
+/// reads and writes entries through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmallStringEntry {
+    pub is_utf16: bool,
+    /// Storage offset, or the overflow record index when overflowed.
+    pub offset: u32,
+    /// Length in characters (code units for UTF-16), or 0xff when overflowed.
+    pub length: u32,
+}
+
+impl SmallStringEntry {
+    /// Offsets must be below this to fit; at or past it, the string overflows.
+    pub const OFFSET_LIMIT: u32 = 1 << 23;
+    /// The length that marks an overflowed entry, so the longest that fits is 0xfe.
+    pub const LENGTH_OVERFLOW: u32 = 0xff;
+
+    pub fn decode(raw: u32) -> Self {
+        Self {
+            is_utf16: raw & 1 != 0,
+            offset: (raw >> 1) & (Self::OFFSET_LIMIT - 1),
+            length: raw >> 24,
+        }
+    }
+
+    pub fn encode(self) -> u32 {
+        (self.length << 24) | ((self.offset & (Self::OFFSET_LIMIT - 1)) << 1) | self.is_utf16 as u32
+    }
+
+    /// The overflow record this entry points at, when it is overflowed.
+    pub fn overflow_index(self) -> Option<u32> {
+        (self.length == Self::LENGTH_OVERFLOW).then_some(self.offset)
+    }
+
+    /// The `(storage offset, length)` this entry stands for, reading an
+    /// overflowed entry's record out of `overflow`; `None` when that record is
+    /// missing.
+    pub fn resolve(self, overflow: &[(u32, u32)]) -> Option<(u32, u32)> {
+        match self.overflow_index() {
+            Some(i) => overflow.get(i as usize).copied(),
+            None => Some((self.offset, self.length)),
+        }
+    }
+
+    /// The entry for a string stored at `offset` with `length`, when both fit; a
+    /// string that does not fit gets the overflowed entry pointing at record
+    /// `next_record`, and `true` to say the caller must append that record.
+    pub fn for_string(is_utf16: bool, offset: u32, length: u32, next_record: u32) -> (Self, bool) {
+        if offset < Self::OFFSET_LIMIT && length < Self::LENGTH_OVERFLOW {
+            (
+                Self {
+                    is_utf16,
+                    offset,
+                    length,
+                },
+                false,
+            )
+        } else {
+            (
+                Self {
+                    is_utf16,
+                    offset: next_record,
+                    length: Self::LENGTH_OVERFLOW,
+                },
+                true,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The header's `options` byte (OB1)
 // ---------------------------------------------------------------------------
 

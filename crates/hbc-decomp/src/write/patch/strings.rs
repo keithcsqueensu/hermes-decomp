@@ -15,93 +15,6 @@ use super::string_storage::{
 };
 use super::PatchOptions;
 
-// Locate string `id` UTF-8 bytes via the small/overflow string tables in raw bytes.
-// Returns (absolute file offset of content, byte length).
-// Hermes may pack strings so entries share storage, always use table offsets,
-// never a substring search.
-fn locate_string_bytes(file: &BytecodeFile, id: u32) -> Result<(usize, usize)> {
-    let entry = file
-        .strings
-        .get(id as usize)
-        .ok_or_else(|| Error::Write(format!("string id {id} out of range")))?;
-    if entry.is_utf16 {
-        return Err(Error::Write(
-            "patch_string: UTF-16 strings not yet supported".into(),
-        ));
-    }
-    let raw = file
-        .raw_bytes
-        .as_ref()
-        .ok_or_else(|| Error::Write("no raw_bytes".into()))?;
-    let small_off = section_offset(file, "small_string_table")
-        .ok_or_else(|| Error::Write("small_string_table section missing".into()))?
-        as usize;
-    let storage_off = section_offset(file, "string_storage")
-        .ok_or_else(|| Error::Write("string_storage section missing".into()))?
-        as usize;
-    let overflow_off = section_offset(file, "overflow_string_table").map(|o| o as usize);
-
-    const UTF16: u32 = 0x1;
-    const OFF_SHIFT: u32 = 1;
-    const OFF_MASK: u32 = 0x7f_ffff;
-    const LEN_SHIFT: u32 = 24;
-    const LEN_MASK: u32 = 0xff;
-    const LEN_OVERFLOW: u32 = 0xff;
-    const OFF_OVERFLOW: u32 = 0x800000;
-
-    // Count how many overflowed entries precede `id` so we know the overflow index.
-    let mut overflow_index = 0usize;
-    for i in 0..=id as usize {
-        let slot = small_off + i * 4;
-        if slot + 4 > raw.len() {
-            return Err(Error::Write("small string table OOB".into()));
-        }
-        let raw_e = u32::from_le_bytes(raw[slot..slot + 4].try_into().unwrap());
-        let is_utf16 = (raw_e & UTF16) != 0;
-        let offset = (raw_e >> OFF_SHIFT) & OFF_MASK;
-        let length = (raw_e >> LEN_SHIFT) & LEN_MASK;
-        let (off, len) = if length == LEN_OVERFLOW || offset == OFF_OVERFLOW {
-            let ov_base =
-                overflow_off.ok_or_else(|| Error::Write("overflow string table missing".into()))?;
-            let ov_slot = ov_base + overflow_index * 8;
-            if ov_slot + 8 > raw.len() {
-                return Err(Error::Write("overflow string table OOB".into()));
-            }
-            let o = u32::from_le_bytes(raw[ov_slot..ov_slot + 4].try_into().unwrap());
-            let l = u32::from_le_bytes(raw[ov_slot + 4..ov_slot + 8].try_into().unwrap());
-            overflow_index += 1;
-            (o, l)
-        } else {
-            (offset, length)
-        };
-        if i == id as usize {
-            if is_utf16 {
-                return Err(Error::Write("patch_string: UTF-16 not supported".into()));
-            }
-            let abs = storage_off + off as usize;
-            let byte_len = len as usize;
-            if abs + byte_len > raw.len() {
-                return Err(Error::Write("string content OOB".into()));
-            }
-            // Sanity: content should match decoded value (modulo packing).
-            let slice = &raw[abs..abs + byte_len];
-            if slice != entry.value.as_bytes() {
-                // Still allow patch if lengths match, packed substrings may decode
-                // via different views; trust table length.
-                if slice.len() != entry.value.len() {
-                    return Err(Error::Write(format!(
-                        "string id {id}: table length {} != decoded {}",
-                        slice.len(),
-                        entry.value.len()
-                    )));
-                }
-            }
-            return Ok((abs, byte_len));
-        }
-    }
-    Err(Error::Write(format!("string id {id} not found")))
-}
-
 // Hermes identifier hash: Jenkins one at a time over UTF-16 code units, seeded
 // with 0. This matches hermes::hashString feeding hermes::updateJenkinsHash.
 pub(super) fn hermes_identifier_hash(s: &str) -> u32 {
@@ -188,24 +101,14 @@ pub fn retarget_string(
         .ok_or_else(|| Error::Write("small_string_table section missing".into()))?
         as usize;
 
-    // Check for overflow entries — refuse for now (v1).
+    // Overflowed entries need nothing special. An overflowed small entry holds
+    // the index of its overflow record, which is how the engine finds it, so a
+    // copied entry shares to_id's record; an overflowed from_id leaves its own
+    // record behind, unreferenced and harmless.
     let from_slot = small_off + from_id as usize * 4;
     let to_slot = small_off + to_id as usize * 4;
     if from_slot + 4 > raw.len() || to_slot + 4 > raw.len() {
         return Err(Error::Write("string table slot out of range".into()));
-    }
-    let from_entry = u32::from_le_bytes(raw[from_slot..from_slot + 4].try_into().unwrap());
-    let to_entry = u32::from_le_bytes(raw[to_slot..to_slot + 4].try_into().unwrap());
-    // An overflowed small entry has length == 0xff (the sentinel); the 23-bit
-    // offset field then stores the overflow-table index, not a storage offset.
-    let is_overflow = |e: u32| {
-        let len = (e >> 24) & 0xff;
-        len == 0xff
-    };
-    if is_overflow(from_entry) || is_overflow(to_entry) {
-        return Err(Error::Write(
-            "retarget: overflow string entries not supported (use patch-string instead)".into(),
-        ));
     }
 
     // A cross-kind retarget (from_id and to_id differ in is_identifier) is
@@ -459,16 +362,20 @@ pub fn patch_string_by_id(
     if entry.is_utf16 || !new_value.is_ascii() {
         return patch_string_resize(file, id, new_value, packing);
     }
-    let (abs_off, old_len) = locate_string_bytes(file, id)?;
-    if new_value.len() != old_len {
-        return patch_string_resize(file, id, new_value, packing);
-    }
-    // Overlap guard: any other entry whose bytes intersect ours, read from the
-    // tables in one pass.
+    // Where every entry's bytes are, read from the tables in one pass; Hermes may
+    // share storage between entries, so this is never a substring search.
     let storage_off = section_offset(file, "string_storage")
         .ok_or_else(|| Error::Write("string_storage section missing".into()))?
         as usize;
     let locs = read_all_string_locs(file)?;
+    let (abs_off, old_len) = (
+        storage_off + locs[id as usize].storage_off as usize,
+        locs[id as usize].len_field as usize,
+    );
+    if new_value.len() != old_len {
+        return patch_string_resize(file, id, new_value, packing);
+    }
+    // Overlap guard: any other entry whose bytes intersect ours.
     let shared = locs.iter().enumerate().any(|(other, loc)| {
         let start = storage_off + loc.storage_off as usize;
         let end = start + loc.len_field as usize * if loc.is_utf16 { 2 } else { 1 };
@@ -779,30 +686,35 @@ mod tests {
         );
     }
 
-    // Regression: the overflow detection in retarget_string originally checked
-    // `off == 0x800000` which is unreachable after a 23-bit mask. Verify that
-    // the corrected check (length == 0xff) still catches overflow entries.
-    // We test indirectly: create a file with an overflow entry via add_string
-    // (a 256-char string forces overflow), then try to retarget from/to it.
+    // R2: retarget copies the 4-byte small entry, and an overflowed entry holds
+    // the index of its overflow record, so retargeting to or from one is just as
+    // valid -- it used to be refused. Retargeting entry 0 at the overflowed entry
+    // also makes entry 0 point at the *last* record while sitting first in the
+    // table, which a reader that counts overflowed entries in table order (as
+    // this crate's readers did) resolves to the wrong record; the engine indexes
+    // by the entry, and so does every reader now. P0 checks each step.
     #[test]
-    fn retarget_string_overflow_entry_refused() {
-        if !crate::write::corpus_fixture_present(FIXTURE) {
-            return;
-        }
-        let (mut file, format) = load(FIXTURE);
+    fn retarget_works_to_and_from_an_overflow_entry() {
+        let mut file = plain();
+        let format = BytecodeFormat::for_version(file.header.version).unwrap();
         let opts = PatchOptions::default();
-        // Append a long string to force an overflow entry.
         let long_val = "X".repeat(256);
-        let (_, overflow_id) = add_string(&mut file, &format, &long_val, false, &opts)
-            .expect("add long string for overflow test");
-        // Re-parse so sections are fresh for retarget_string.
-        let reparsed = BytecodeFile::parse_auto(file.raw_bytes.as_ref().unwrap()).unwrap();
-        let mut file2 = reparsed;
-        let result = retarget_string(&mut file2, &format, 0, overflow_id, &opts);
-        assert!(result.is_err(), "retarget to overflow entry should fail");
-        assert!(
-            result.unwrap_err().to_string().contains("overflow"),
-            "error should mention overflow"
+        let (_, long_id) = add_string(&mut file, &format, &long_val, false, &opts).unwrap();
+        assert_eq!(
+            file.header.overflow_string_count, 1,
+            "the long string overflows"
+        );
+
+        retarget_string(&mut file, &format, 0, long_id, &opts).expect("retarget to overflow");
+        assert_eq!(file.strings[0].value, long_val);
+        assert_eq!(file.strings[long_id as usize].value, long_val);
+
+        let one = file.strings[1].value.clone();
+        retarget_string(&mut file, &format, long_id, 1, &opts).expect("retarget from overflow");
+        assert_eq!(file.strings[long_id as usize].value, one);
+        assert_eq!(
+            file.strings[0].value, long_val,
+            "entry 0 still shares the record"
         );
     }
 

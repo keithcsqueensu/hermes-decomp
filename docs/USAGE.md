@@ -161,6 +161,7 @@ hermes-decomp patch-function app.hbc --function 5 --hasm f5.hasm -o app2.hbc
 hermes-decomp inject-stub app.hbc --function 5 --kind log -o app2.hbc
 hermes-decomp inject-stub dbg.hbc --function 5 --kind log -o out.hbc --allow-stale-debug-info
 hermes-decomp create --version 96 -o tiny.hbc
+hermes-decomp create --version 98 --string global --string "héllo" -o tiny98.hbc   # any length, any text
 ```
 
 ⚠️ **A function that carries debug info is handled carefully on a size-changing edit.** Its
@@ -215,8 +216,9 @@ write. For opcodes with multiple string operands (e.g. `CreateRegExp`), use
 copying its 4-byte `SmallStringTableEntry`. Metadata-only: no table rebuild, no
 storage growth, no code change. Every instruction that references the source id
 now gets the target's value. Accepts `--from-id`/`--to-id` (numeric) or
-`--from`/`--to` (by value, first match). Refuses overflow entries; warns when
-crossing string/identifier boundaries. If the source is an identifier, its hash
+`--from`/`--to` (by value, first match). Works on overflow entries too (strings
+of 255+ characters, which keep their real length in a separate overflow table);
+warns when crossing string/identifier boundaries. If the source is an identifier, its hash
 is updated to match the target's value.
 
 `add-string` appends a new entry to the string table and prints its id to stdout.
