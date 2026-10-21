@@ -536,7 +536,7 @@ retired it — kept to show the downgrade). Sort by `Residual` for priority.
 | R9 | Exception-handler offsets stale on resize | fn/inject | M×H | ⬜ | Q3/Q4 guard rejects the edit, and now reads `flags` from the right byte on every supported layout (R8). Both directions pinned by `size_change_on_real_handler_table_is_refused` and `handler_free_functions_accept_size_change_and_still_run` on **real v96/v98/v99 fixtures**, not synthetic flags | — (guarded; full relocation = Pending impl plans / Q3, no longer blocked) |
 | R10 | Relative jump broken by a partial insertion | fn | L×H | 🟧 | only whole-body / front-insert used today | Keep insertions whole-body or front-only; document the same-shift invariant so a future partial-insert op can't quietly break it. |
 | R11 | Reg/cache reservation magic offsets | inject | L×H | ⬜ | The offsets were correct (the 8×u32 prefix never moved) but were literals; now taken from `ModernLayout`, so they are a checked fact rather than luck | — (fixed with R8) |
-| R12 | Hardcoded injected-opcode operand shapes | inject | L×H | 🟧 | availability checked, layout assumed | Validate injected opcodes' arity/types against the def table at inject time instead of hardcoding `TryGetById`/`Call2`. |
+| R12 | Hardcoded injected-opcode operand shapes | inject | L×H | ⬜ **fixed** | The log prologue is built from each version's opcode table (`stub_insn`): the table supplies every operand's type, and the stub says only what each value is -- a register, a cache index, a string id. Another arity, an operand of another kind, or a width too narrow for the value is refused, and the whole prologue is checked before the header is touched. The shape is uniform from v41 to v99; v40 has no `Call2` and is refused (`the_log_prologue_follows_the_opcode_table_at_every_version`). It also stops mislabelling the two string ids as plain `UInt16` | — (fixed) |
 | R13 | `NopPad` appended after a non-terminator | inject | L×L | 🟩 | usually terminator-ended | Guard: error if the function doesn't end on a terminator. |
 | R14 | `create` section-order / header field gating | create | M×H | 🟩 | `create` checks its own output before returning it (`check_created`): one function holding the body, the strings in order, every other count, size and offset zero. The version gates come from the parser's constants rather than literals. `create_reads_back_as_built_at_every_version` runs it at v40-v96 and v98-v99 with an overflowed and a UTF-16 string (v97 is refused by design); `create_minimal_runs_on_vm` runs v96/v98/v99 on real engines | Residual: for the 56 versions with no engine here, the read-back is against this crate's own parser, so a gate that both sides got wrong the same way would pass (R23's class); `upstream_pin` pins the format only for v96-v99. CLI harness: R17 |
 | R15 | Modern large-header field order in `create` | create | L×H | ⬜ **fixed** | `build_minimal_modern` writes fields at `ModernLayout` offsets and sets `PROHIBIT_NONE` at `large_flags_pos()`. `create_minimal_runs_on_vm` asserts the output **executes** on the matching engine for every fixture version | — (fixed with R8) |
@@ -566,10 +566,10 @@ Grid (residual likelihood × impact; resolved items listed below it for the down
 L
 I Med         ·               ·                R19  R21
 K
-E Low       R13 R16           R6 R27           R10 R12
+E Low       R13 R16           R6 R27           R10
 L
   Fixed (each was a live defect, not a hypothetical):
-      R1 ⬜ · R3 ⬜ · R5 ⬜ · R8 ⬜ · R9 ⬜ · R11 ⬜ · R15 ⬜ · R24 ⬜ · R25 ⬜ · R26 ⬜ · R28 ⬜
+      R1 ⬜ · R3 ⬜ · R5 ⬜ · R8 ⬜ · R9 ⬜ · R11 ⬜ · R12 ⬜ · R15 ⬜ · R24 ⬜ · R25 ⬜ · R26 ⬜ · R28 ⬜
   Resolved earlier or downgraded by evidence: R4 🟩 · R7 ⬜ · R2 ⬜ · R14 🟩 · R23 🟩
   CLI-surface risks live in ../07_frontends/RISKS.md: R17, R18 (open) · R20, R22 (fixed).
 ```
