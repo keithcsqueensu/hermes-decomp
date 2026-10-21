@@ -93,6 +93,8 @@ hermes-decomp deps app.hbc --module 0 --depth 3
 
 hermes-decomp dump app.hbc --kind strings
 hermes-decomp dump app.hbc --kind obj-shapes --json
+# regexp: each entry's /pattern/flags (from the CreateRegExp using it), its
+#   capture groups and flags, and its decoded regex bytecode
 # kinds: strings, functions, cjs-modules, regexp, obj-shapes,
 #   function-sources, string-kinds, sections, big-int, array-buffer
 
@@ -252,7 +254,7 @@ regex compiler here: let `hermesc` compile the pattern and lift it out.
 ```bash
 echo 'var re = /^nope-(\d+)$/i; print(re.test(""));' > donor.js
 hermesc -emit-binary -out donor.hbc donor.js
-hermes-decomp dump donor.hbc --kind regexp          # entry 0 is the payload
+hermes-decomp dump donor.hbc --kind regexp          # entry 0 is the payload, decoded
 hermes-decomp regexp-set app.hbc --index 12 --donor donor.hbc -o app2.hbc
 ```
 

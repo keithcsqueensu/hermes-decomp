@@ -723,7 +723,25 @@ know a relocation test tests anything: relocation moves addresses and leaves lin
 still execute on real v96/v98/v99 engines, which is the check that the rewritten debug section
 is not merely reparseable.
 
-### P3 — Disassemble RegExp
+### P3 — Disassemble RegExp — ✅ **shipped**
+
+**As shipped.** `crate::regex` decodes the header and the 29-opcode stream (`decode_regex`),
+strictly: an unknown opcode, an instruction past the end, or a byte left over is an error. On
+top of the acceptance below, `RegexProgram::check` holds a program to its own header -- every jump
+lands on an instruction boundary, every capture group is below `markedCount`, every loop id below
+`loopCount`, and the stream ends in `Goal` -- which is what makes a clean decode on real data
+evidence the format model is right rather than merely that the bytes did not run out.
+`dump --kind regexp` keeps each raw line and adds the `/pattern/flags` of the first
+`CreateRegExp` using the entry, the header, and the listing; `--json` gains the same fields.
+`regexp-set` refuses a donor that does not decode and check. **[measured]**: all 911 entries of
+Equinox 11.43.0 and 497 of CoachRx 2.1.223 decode and check, using 22 opcodes between them; the
+`regexp_ops` fixture produces the other seven (`U16*`, `MatchAny`, the case-insensitive
+non-ASCII matchers), and its test requires all 29. The listings match their source patterns
+character for character.
+
+One correction to the header comment upstream carries: `markedCount` is the number of capture
+groups, and compiled streams number them from **0** -- `/^nope-(\d+)$/i` has `markedCount` 1 and
+`BeginMarkedSubexpression 0`, though `BeginMarkedSubexpressionInsn`'s comment says the first is 1.
 
 **Goal.** Turn `dump --kind regexp` from a byte dump into a listing, and give
 `CreateRegExp`'s operands something to resolve to.
@@ -982,7 +1000,7 @@ the whole image.
 P0  ✅ ──────────► shipped: the guard
 P1  ✅ ──► P2 ✅    shipped: the reader, then relocation for insertions
 P1b                specified and measured; blocked on the closure model — ../../03_analysis/closure_model/PLAN.md K1/K3
-P3  ──► P4         disassemble before you assemble; P4 only on demand
+P3 ✅ ──► P4       shipped: the decoder; P4 (an assembler) only on demand
 P4a ✅ ────────────► shipped: regexp-set; the donor comes from hermesc, not from us
 P5  ✅ ────────────► shipped: the bitfield, and the CJS labels with it
 P6                 blocked on P1+P2 for debug info, and on a demand that does not exist yet

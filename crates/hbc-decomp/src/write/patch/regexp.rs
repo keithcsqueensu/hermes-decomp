@@ -65,12 +65,7 @@ impl RegexpSetReport {
     /// The flag letters of a `syntaxFlags` byte, in Hermes' bit order from bit 0
     /// up: `i g m u s y d` (`SyntaxFlags::toByte`).
     pub fn flags_text(flags: u8) -> String {
-        "igmusyd"
-            .chars()
-            .enumerate()
-            .filter(|(bit, _)| flags & (1 << bit) != 0)
-            .map(|(_, c)| c)
-            .collect()
+        crate::regex::flags_text(flags)
     }
 }
 
@@ -128,6 +123,11 @@ pub fn set_regexp(
     let old = regexp_payload(file, index)?;
     let (old_marked, old_flags) = header_of(old, &format!("regexp {index}"))?;
     let (new_marked, new_flags) = header_of(payload, "the payload")?;
+    // A payload that is not a whole, self-consistent regex program would land in
+    // the bundle and fail only when the regex is first used.
+    crate::regex::decode_regex(payload)
+        .and_then(|p| p.check())
+        .map_err(|e| Error::Write(format!("the payload is not a valid regex program: {e}")))?;
     if new_marked < old_marked {
         return Err(Error::Write(format!(
             "regexp {index} has {old_marked} capture group(s) and the payload has \
