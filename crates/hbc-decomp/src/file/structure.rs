@@ -54,7 +54,7 @@ pub struct SectionInfo {
     pub entries: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExceptionHandler {
     pub start: u32,
     pub end: u32,

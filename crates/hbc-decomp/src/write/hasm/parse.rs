@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
-use crate::file::{BytecodeFile, Instruction};
+use crate::file::{BytecodeFile, ExceptionHandler, Instruction};
 use crate::opcode::{BytecodeFormat, Operand, OperandType, OperandValue};
 use crate::util::escape_js_string;
 
@@ -19,11 +19,24 @@ use super::{HasmFunction, HasmModule};
 //   Ret r0
 //
 // `string_lookup` maps literal content → string id (from the host BytecodeFile).
+// Any `.handler` lines are parsed and dropped; `parse_hasm_function_full` keeps them.
 pub fn parse_hasm_function(
     text: &str,
     format: &BytecodeFormat,
     string_lookup: &HashMap<String, u32>,
 ) -> Result<Vec<Instruction>> {
+    Ok(parse_hasm_function_full(text, format, string_lookup)?.0)
+}
+
+// `parse_hasm_function`, plus the function's exception handlers when the text
+// states them, as `.handler <start>, <end>, <target>` lines -- each a label or a
+// body offset, `end` exclusive (emit-hasm writes them with labels, so they follow
+// the code through edits). `None` when the text has no `.handler` line.
+pub fn parse_hasm_function_full(
+    text: &str,
+    format: &BytecodeFormat,
+    string_lookup: &HashMap<String, u32>,
+) -> Result<(Vec<Instruction>, Option<Vec<ExceptionHandler>>)> {
     // Opcode name → opcode byte (first definition wins; names are unique per version).
     let mut name_to_op: HashMap<String, u8> = HashMap::new();
     for def in &format.definitions {
@@ -40,10 +53,21 @@ pub fn parse_hasm_function(
     }
     let mut raw_lines: Vec<RawLine> = Vec::new();
     let mut pending_label: Option<String> = None;
+    let mut handler_specs: Vec<Vec<String>> = Vec::new();
 
     for line in text.lines() {
         let line = strip_comment(line).trim();
         if line.is_empty() {
+            continue;
+        }
+        if let Some(spec) = line.strip_prefix(".handler") {
+            let parts: Vec<String> = spec.split(',').map(|t| t.trim().to_string()).collect();
+            if parts.len() != 3 || parts.iter().any(String::is_empty) {
+                return Err(Error::Write(format!(
+                    "`{line}`: a handler is `.handler <start>, <end>, <target>`"
+                )));
+            }
+            handler_specs.push(parts);
             continue;
         }
         // Skip function banners
@@ -106,6 +130,37 @@ pub fn parse_hasm_function(
         sized2.push((offset, op, raw.ops.clone(), def.operand_types.clone()));
         offset = offset.wrapping_add(len);
     }
+    // A label after the last instruction marks the end of the body -- where an
+    // exclusive handler `end` points when the try region runs to the end.
+    if let Some(lab) = pending_label.take() {
+        label_offsets.insert(lab, offset);
+    }
+    let resolve = |tok: &str| -> Result<u32> {
+        if let Some(&off) = label_offsets.get(tok) {
+            return Ok(off);
+        }
+        let parsed = match tok.strip_prefix("0x").or_else(|| tok.strip_prefix("0X")) {
+            Some(hex) => u32::from_str_radix(hex, 16).ok(),
+            None => tok.parse().ok(),
+        };
+        parsed.ok_or_else(|| Error::Write(format!(".handler: unknown label or offset `{tok}`")))
+    };
+    let handlers = if handler_specs.is_empty() {
+        None
+    } else {
+        Some(
+            handler_specs
+                .iter()
+                .map(|t| {
+                    Ok(ExceptionHandler {
+                        start: resolve(&t[0])?,
+                        end: resolve(&t[1])?,
+                        target: resolve(&t[2])?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )
+    };
 
     // Pass 3: build Instructions with resolved jumps/strings.
     let mut out = Vec::with_capacity(sized2.len());
@@ -123,7 +178,7 @@ pub fn parse_hasm_function(
             length,
         });
     }
-    Ok(out)
+    Ok((out, handlers))
 }
 
 // Parse multi-function disasm text (best-effort). Functions start with
@@ -217,11 +272,20 @@ pub fn parse_hasm_with_context(
     format: &BytecodeFormat,
     file: &BytecodeFile,
 ) -> Result<Vec<Instruction>> {
+    Ok(parse_hasm_body_with_context(text, format, file)?.0)
+}
+
+// `parse_hasm_with_context`, keeping any `.handler` lines (`parse_hasm_function_full`).
+pub fn parse_hasm_body_with_context(
+    text: &str,
+    format: &BytecodeFormat,
+    file: &BytecodeFile,
+) -> Result<(Vec<Instruction>, Option<Vec<ExceptionHandler>>)> {
     let mut lookup = HashMap::new();
     for (i, s) in file.strings.iter().enumerate() {
         lookup.entry(s.value.clone()).or_insert(i as u32);
     }
-    parse_hasm_function(text, format, &lookup)
+    parse_hasm_function_full(text, format, &lookup)
 }
 
 fn operand_size(ty: OperandType) -> usize {
@@ -357,16 +421,17 @@ fn parse_operand_token(
             }
         }
         OperandType::Addr8 | OperandType::Addr32 => {
-            let target = if let Some(lab) = tok.strip_prefix('L') {
-                if let Ok(abs) = lab.parse::<u32>() {
-                    abs
-                } else {
-                    *labels
-                        .get(tok)
-                        .ok_or_else(|| Error::Write(format!("unknown label {tok}")))?
-                }
-            } else if let Some(&abs) = labels.get(tok) {
+            // A label defined in the text wins. Emitted labels are named after the
+            // offset they had (`L30`), so reading the name as the offset -- as this
+            // used to, before even looking for the label -- sent every jump past an
+            // inserted instruction to the old address. Only a label the text does
+            // not define is taken as a literal offset.
+            let target = if let Some(&abs) = labels.get(tok) {
                 abs
+            } else if let Some(abs) = tok.strip_prefix('L').and_then(|l| l.parse::<u32>().ok()) {
+                abs
+            } else if tok.starts_with('L') {
+                return Err(Error::Write(format!("unknown label {tok}")));
             } else {
                 return Err(Error::Write(format!("bad address operand {tok}")));
             };
@@ -582,5 +647,60 @@ Dec r0, r1
 Ret r0
 ";
         assert_eq!(parse(text), vec!["Add", "Dec", "Ret"]);
+    }
+}
+
+#[cfg(test)]
+mod label_and_handler_tests {
+    use super::parse_hasm_function_full;
+    use crate::file::ExceptionHandler;
+    use crate::opcode::{BytecodeFormat, OperandValue};
+    use std::collections::HashMap;
+
+    fn parse(
+        text: &str,
+    ) -> crate::Result<(Vec<crate::file::Instruction>, Option<Vec<ExceptionHandler>>)> {
+        let format = BytecodeFormat::for_version(96).unwrap();
+        parse_hasm_function_full(text, &format, &HashMap::new())
+    }
+
+    // Emitted labels are named after the offset they had. Once code is inserted
+    // before one, the name and the offset disagree, and the jump must follow the
+    // label -- it used to follow the name.
+    #[test]
+    fn a_jump_follows_its_label_not_the_number_in_its_name() {
+        let (insns, _) =
+            parse("AsyncBreakCheck\nAsyncBreakCheck\nJmp L2\nL2:\nLoadConstZero r0\nRet r0\n")
+                .unwrap();
+        // Jmp sits at 2 and L2 now marks offset 4, not 2.
+        assert_eq!(insns[2].operands[0].value, OperandValue::I8(2));
+        // With no label of that name, `L<n>` is still a literal offset.
+        let (insns, _) = parse("Jmp L4\nLoadConstZero r0\nRet r0\n").unwrap();
+        assert_eq!(insns[0].operands[0].value, OperandValue::I8(4));
+    }
+
+    #[test]
+    fn handlers_resolve_labels_numbers_and_the_end_of_the_body() {
+        let text = "L0:\nLoadConstZero r0\nL2:\nCatch r0\nRet r0\nL9:\n\
+                    .handler L0, L2, L2\n.handler 0x0, L9, 2\n";
+        let (insns, handlers) = parse(text).unwrap();
+        assert_eq!(insns.len(), 3);
+        let h = |start, end, target| ExceptionHandler { start, end, target };
+        assert_eq!(handlers.unwrap(), vec![h(0, 2, 2), h(0, 6, 2)]);
+        assert_eq!(
+            parse("Ret r0\n").unwrap().1,
+            None,
+            "no .handler line, no handlers"
+        );
+    }
+
+    #[test]
+    fn a_malformed_handler_is_refused() {
+        let err = parse("Ret r0\n.handler L0, L2\n").unwrap_err().to_string();
+        assert!(err.contains(".handler <start>, <end>, <target>"), "{err}");
+        let err = parse("Ret r0\n.handler Lx, 0, 0\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown label or offset `Lx`"), "{err}");
     }
 }

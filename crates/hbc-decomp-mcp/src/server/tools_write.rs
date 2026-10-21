@@ -5,10 +5,9 @@ use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router, ErrorData as McpError};
 
 use hbc_decomp::{
-    create_minimal, emit_hasm_function, format_secrets_report, generate_frida_for_file,
-    inject_stub, parse_hasm_with_context, patch_function_body, patch_string_by_id,
-    patch_string_replace, scan_secrets, CreateOptions, FridaHookOptions, InjectStubKind,
-    PatchOptions,
+    assemble_function_hasm_with, create_minimal, emit_hasm_function, format_secrets_report,
+    generate_frida_for_file, inject_stub, patch_string_by_id, patch_string_replace, scan_secrets,
+    CreateOptions, FridaHookOptions, InjectStubKind, PatchOptions,
 };
 
 use super::params::*;
@@ -109,7 +108,7 @@ impl HermesService {
     }
 
     #[tool(
-        description = "Assemble a function body from HASM text and write a new .hbc. HASM is our disasm dialect (see emit_hasm). A same size body patches in place. Both legacy and modern (v97 plus) files also support growing or shrinking the body."
+        description = "Assemble a function body from HASM text and write a new .hbc. HASM is our disasm dialect (see emit_hasm). A same size body patches in place. Both legacy and modern (v97 plus) files also support growing or shrinking the body. A function with exception handlers can change size only when the HASM gives its `.handler start, end, target` lines, which emit_hasm writes."
     )]
     fn patch_function(
         &self,
@@ -117,13 +116,12 @@ impl HermesService {
     ) -> Result<CallToolResult, McpError> {
         self.with_file(|loaded| {
             let mut file = loaded.file.clone();
-            let insns = parse_hasm_with_context(&params.hasm, &loaded.format, &file)
-                .map_err(|e| McpError::invalid_params(format!("{e}"), None))?;
-            let out = patch_function_body(
+            // `.handler` lines in the HASM place the function's exception handlers.
+            let out = assemble_function_hasm_with(
                 &mut file,
                 &loaded.format,
                 params.function_id,
-                &insns,
+                &params.hasm,
                 &PatchOptions::default(),
             )
             .map_err(|e| McpError::internal_error(format!("{e}"), None))?;

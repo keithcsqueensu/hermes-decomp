@@ -446,8 +446,11 @@ fn a_string_append_and_a_body_grow_relocate_identically() {
     };
     let target = (0..before.function_headers.len())
         .filter(|&i| {
+            // A function with handlers cannot change size through
+            // patch_function_bytes: nothing says where its handlers went (Q3).
             let h = &before.function_headers[i];
-            h.is_overflowed() || (h.bytecode_size_in_bytes() as i64 + delta) < small_max
+            !h.has_exception_handler()
+                && (h.is_overflowed() || (h.bytecode_size_in_bytes() as i64 + delta) < small_max)
         })
         .min_by_key(|&i| before.function_headers[i].offset())
         .expect("a growable function");

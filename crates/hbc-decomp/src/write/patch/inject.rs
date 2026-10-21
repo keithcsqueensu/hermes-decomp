@@ -14,14 +14,46 @@ use crate::write::header_write::read_modern_large_pointer;
 use crate::write::serialize::{commit_image, section_offset, HeaderEdit};
 
 use super::debug_reloc;
-use super::functions::patch_function_body;
+use super::functions::patch_function_body_with;
+use super::handlers::HandlerUpdate;
 use super::PatchOptions;
 
-// Reserve room for the injected `print(name)` call: r0..r3 plus the outgoing call
-// frame Hermes lays out above frame_size. A compiled leaf `print("x")` uses about
-// frame_size 11, so bump by eight over a four register floor.
-fn log_frame_size(current: u32) -> u32 {
-    current.max(4) + 8
+// The frame the log stub needs, and whether it may have it.
+//
+// A call puts the callee's frame header (six slots) and `this` plus its arguments
+// in the *top* registers of the caller's frame (`StackFrameLayout.h`), so the
+// stub's `Call2` needs the top 8, and its own r0..r3 must sit below them: 12 in
+// all. A frame that already has 12 is left alone. A smaller one has to grow --
+// but `Call`, `Construct` and their relatives take their arguments "from the end
+// of the current frame" (BytecodeList.def), so growing the frame of a function
+// that uses one moves its arguments out from under it. That function is refused.
+// (The old rule grew every frame by 8, which broke exactly those: a v96 function
+// doing `new Error(...)` crashed the engine.)
+const LOG_FRAME_NEEDED: u32 = 4 + 6 + 2;
+
+// Whether an opcode reads its arguments from the end of the frame. Every call or
+// construct does except those that name their argument registers.
+fn reads_args_from_frame_end(name: &str) -> bool {
+    (name.starts_with("Call") || name.starts_with("Construct"))
+        && !matches!(name, "Call1" | "Call2" | "Call3" | "Call4" | "CallRequire")
+}
+
+fn log_frame(format: &BytecodeFormat, body: &[Instruction], frame_now: u32) -> Result<u32> {
+    if frame_now >= LOG_FRAME_NEEDED {
+        return Ok(frame_now);
+    }
+    let fixed = body.iter().find_map(|i| {
+        let name = format.definitions.get(i.opcode as usize)?.name.as_str();
+        reads_args_from_frame_end(name).then_some(name)
+    });
+    match fixed {
+        Some(name) => Err(Error::Write(format!(
+            "inject log: the frame has {frame_now} registers and the stub needs \
+             {LOG_FRAME_NEEDED}, but growing it would move the arguments this function's \
+             {name} reads from the end of its frame"
+        ))),
+        None => Ok(LOG_FRAME_NEEDED),
+    }
 }
 
 // Modern functions keep frame_size and the read cache count in the out-of-line
@@ -29,15 +61,18 @@ fn log_frame_size(current: u32) -> u32 {
 // overflowed). Patch them in `raw_bytes` before the resize splice, which copies
 // those bytes verbatim, so the runtime allocates the registers the log call needs.
 // Returns the read cache slot index to use for the injected TryGetById.
-fn reserve_modern_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<u32> {
-    let (frame_now, cache_now) = match file.function_headers.get(function_id as usize) {
-        Some(FunctionHeader::Modern(m)) => (m.frame_size, m.read_cache_size as u32),
+fn reserve_modern_log_regs(
+    file: &mut BytecodeFile,
+    function_id: u32,
+    new_frame: u32,
+) -> Result<u32> {
+    let cache_now = match file.function_headers.get(function_id as usize) {
+        Some(FunctionHeader::Modern(m)) => m.read_cache_size as u32,
         _ => return Err(Error::Write("inject log: not a modern function".into())),
     };
     if cache_now + 1 > u8::MAX as u32 {
         return Err(Error::Write("inject log: read cache full".into()));
     }
-    let new_frame = log_frame_size(frame_now);
     // Version-keyed large-header layout (plan_guides/06_write/RISKS.md R8/R11). The eight u32
     // fields are the same in every supported modern version, so frame_size and
     // read_cache_size happen not to have moved -- but go through the descriptor
@@ -99,16 +134,19 @@ fn reserve_modern_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<
 // answer that read with `print` (`greet` printed `tag` as `print`, and the
 // global called `print` for `twice`). Returns the read cache slot index to use
 // for the injected TryGetById.
-fn reserve_legacy_log_regs(file: &mut BytecodeFile, function_id: u32) -> Result<u32> {
-    let (frame_now, highest) = match file.function_headers.get(function_id as usize) {
-        Some(FunctionHeader::Legacy(l)) => (l.frame_size, l.highest_read_cache_index),
+fn reserve_legacy_log_regs(
+    file: &mut BytecodeFile,
+    function_id: u32,
+    new_frame: u32,
+) -> Result<u32> {
+    let highest = match file.function_headers.get(function_id as usize) {
+        Some(FunctionHeader::Legacy(l)) => l.highest_read_cache_index,
         _ => return Err(Error::Write("inject log: not a legacy function".into())),
     };
     let cache = highest + 1;
     if cache > u8::MAX as u32 {
         return Err(Error::Write("inject log: read cache full".into()));
     }
-    let new_frame = log_frame_size(frame_now);
     if new_frame >= 1 << 7 {
         return Err(Error::Write(format!(
             "inject log: frame size {new_frame} does not fit the legacy small header's 7 bits"
@@ -270,9 +308,11 @@ fn build_log_entry(
     // Check the prologue's shape at this version before anything is written: the
     // reservation below edits the header's bytes.
     log_prologue(format, 0, print_id, msg_id)?;
+    let frame_now = file.function_headers[function_id as usize].frame_size();
+    let new_frame = log_frame(format, body, frame_now)?;
     let cache_idx = match file.function_headers.get(function_id as usize) {
-        Some(FunctionHeader::Legacy(_)) => reserve_legacy_log_regs(file, function_id)?,
-        _ => reserve_modern_log_regs(file, function_id)?,
+        Some(FunctionHeader::Legacy(_)) => reserve_legacy_log_regs(file, function_id, new_frame)?,
+        _ => reserve_modern_log_regs(file, function_id, new_frame)?,
     };
     let mut seq = log_prologue(format, cache_idx, print_id, msg_id)?;
 
@@ -340,15 +380,21 @@ pub fn inject_stub(
                     })
                     .unwrap_or(body.len());
                 insert_at = body.iter().take(nop_at).map(|i| i.length).sum();
-                body.insert(
-                    nop_at,
-                    Instruction {
-                        offset: 0,
-                        opcode: op,
-                        operands: vec![],
-                        length: 1,
-                    },
-                );
+                // Four of them: the body stays 4-byte aligned without the resize
+                // padding elsewhere, so `insert_at` is the one point everything
+                // moved at -- the contract the line table and the handler table
+                // are both relocated by.
+                for _ in 0..4 {
+                    body.insert(
+                        nop_at,
+                        Instruction {
+                            offset: 0,
+                            opcode: op,
+                            operands: vec![],
+                            length: 1,
+                        },
+                    );
+                }
             }
         }
         InjectStubKind::LogEntry => {
@@ -366,7 +412,15 @@ pub fn inject_stub(
         ..options.clone()
     };
     // Recompute offsets in the instruction list for encode (encode ignores insn.offset).
-    let out = patch_function_body(file, format, function_id, &body, &body_options)?;
+    // Handlers at or past the insertion point move with the code (Q3 phase 1).
+    let out = patch_function_body_with(
+        file,
+        format,
+        function_id,
+        &body,
+        &body_options,
+        HandlerUpdate::Insert { at: insert_at },
+    )?;
 
     // `file` was refreshed by the commit inside `patch_function_body`, so its
     // headers and debug_info_offset describe the image we are holding.

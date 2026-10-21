@@ -143,7 +143,7 @@ HASM = our disasm dialect. Patches the binary. Does **not** recompile decompiled
 
 ```bash
 hermes-decomp emit-hasm app.hbc --function 5 -o f5.hasm
-hermes-decomp asm app.hbc f5.hasm --function 5 -o app_patched.hbc
+hermes-decomp asm app.hbc f5.hasm --function 5 -o app_patched.hbc   # edit f5.hasm in between
 hermes-decomp asm-check app.hbc --function 5
 
 hermes-decomp add-string app.hbc --value "myNewString" -o app2.hbc
@@ -163,6 +163,18 @@ hermes-decomp inject-stub dbg.hbc --function 5 --kind log -o out.hbc --allow-sta
 hermes-decomp create --version 96 -o tiny.hbc
 hermes-decomp create --version 98 --string global --string "héllo" -o tiny98.hbc   # any length, any text
 ```
+
+**Functions with try/catch.** A function's exception handlers are offsets into its body, so
+a size-changing edit has to say where they went. `emit-hasm` writes them as
+`.handler <start>, <end>, <target>` lines naming labels it places at each boundary; edit the
+code around the labels and `asm` writes the handlers where the edited code puts them. A body
+edit can move handlers but not add or remove one. `inject-stub` relocates them itself. Without
+`.handler` lines, `asm` refuses to change the size of such a function.
+
+`inject-stub --kind log` needs a 12-register frame for its `print` call. A function whose frame
+is smaller is given one, unless it contains a `Call`, `Construct` or similar instruction that
+reads its arguments from the end of the frame, which growing it would break; that function is
+refused with the reason.
 
 ⚠️ **A function that carries debug info is handled carefully on a size-changing edit.** Its
 location stream stores bytecode addresses *within* the function, so a resize that ignored them
