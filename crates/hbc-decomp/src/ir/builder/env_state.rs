@@ -26,10 +26,6 @@ pub struct EnvRegMap {
     /// register → the (level, slot) it was loaded from, for a register that later
     /// turns out to hold an environment
     reg_source_slot: BTreeMap<u32, (u32, u32)>,
-    /// The function never creates the environment it runs in, so what
-    /// `GetParentEnvironment N` hands back is the Nth ancestor of the ENCLOSING
-    /// function, one hop further out than the IR level contract assumes.
-    borrows_current_env: bool,
     /// registers holding an environment this function just created
     created_envs: HashSet<u32>,
     /// Whether the environment this function runs in has already been created.
@@ -46,22 +42,25 @@ impl EnvRegMap {
         Self::default()
     }
 
-    /// Declare that this function does not create the environment it runs in.
-    /// Set once, before any instruction is dispatched.
-    pub fn set_borrows_current_env(&mut self, borrows: bool) {
-        self.borrows_current_env = borrows;
-    }
-
-    /// The IR level a `GetParentEnvironment N` denotes. The IR contract is
-    /// `level 0 = this function's environment, 1 = its parent, ...`. A function
-    /// that creates no environment of its own runs in the enclosing one, so its
-    /// `GetParentEnvironment 0` already IS the parent and every level shifts out
-    /// by one. Without the shift a generator body read its grandparent's slots
-    /// against its parent, and the SecureStore key `pilote_jwt` held by the
-    /// factory two hops up resolved to the state label sitting at the same slot
-    /// index one hop up.
+    /// The IR level a closure-relative environment load denotes: v98+'s
+    /// `GetParentEnvironment N` and v96's two-operand `GetEnvironment N`. Both
+    /// count from "the environment from the closure" (BytecodeList.def) -- the
+    /// one the function was created with -- never from the environment the
+    /// function itself creates, which it reaches only through the register
+    /// `Create*Environment` returned. The IR contract is `level 0 = this
+    /// function's own environment, 1 = the next one out, ...`, so the closure's
+    /// environment is level 1 and `N` is level `N + 1`, whether or not the
+    /// function creates one of its own.
+    ///
+    /// This used to add the 1 only for a function that creates no environment.
+    /// In one that does, `GetParentEnvironment 0` then landed on level 0, the
+    /// function's own: a function whose slot 0 and whose parent's slot 0 held
+    /// different variables printed both as `closure_0`, and wrote one where the
+    /// source wrote the other. How far out the closure's environment itself
+    /// sits -- a closure need not be created with its creator's own -- is a
+    /// whole-program fact, applied afterwards (`shift_env_levels`).
     pub fn parent_env_level(&self, operand_level: u32) -> u32 {
-        operand_level + u32::from(self.borrows_current_env)
+        operand_level + 1
     }
 
     /// Register `reg` now holds the environment at nesting `level`. An
@@ -182,26 +181,15 @@ mod tests {
         assert_eq!(m.level_of(99), 0); // unknown → current
     }
 
-    // A function that creates the environment it runs in keeps the plain IR
-    // contract: GetParentEnvironment N is the Nth ancestor.
+    // GetParentEnvironment N counts from the closure's environment, which is
+    // level 1 whether or not the function also creates one of its own (level
+    // 0). This is also the v98 generator body's case: GetParentEnvironment 1
+    // is the grandparent, where the factory keeps its constants.
     #[test]
-    fn owning_function_keeps_parent_levels() {
-        let mut m = EnvRegMap::new();
-        m.set_borrows_current_env(false);
-        assert_eq!(m.parent_env_level(0), 0); // own environment
-        assert_eq!(m.parent_env_level(1), 1); // direct parent
-    }
-
-    // A function with no environment of its own runs in the enclosing one, so
-    // every GetParentEnvironment level shifts out by one. This is the v98
-    // generator body: GetParentEnvironment 1 is the grandparent, which is where
-    // the factory keeps its constants (the SecureStore key).
-    #[test]
-    fn borrowing_function_shifts_parent_levels() {
-        let mut m = EnvRegMap::new();
-        m.set_borrows_current_env(true);
-        assert_eq!(m.parent_env_level(0), 1); // already the parent
-        assert_eq!(m.parent_env_level(1), 2); // grandparent, not the parent
+    fn closure_relative_loads_start_at_level_one() {
+        let m = EnvRegMap::new();
+        assert_eq!(m.parent_env_level(0), 1);
+        assert_eq!(m.parent_env_level(1), 2);
     }
 
     // An environment created here and then stored into a slot of the enclosing

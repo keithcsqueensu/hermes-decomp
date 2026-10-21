@@ -40,6 +40,12 @@ pub struct ClosureContext {
     // was created with). Such a child's parent is that block scope.
     #[serde(default)]
     pub creation_scopes: BTreeMap<u32, (u32, u32)>,
+    // function -> how many hops past its creator the environment it was created
+    // with sits; absent means 0, the creator's own. Its IR levels are already
+    // shifted by this (`ir::shift_env_levels`), so level L is always L hops up
+    // the parent chain; kept so a function built later is shifted the same way.
+    #[serde(default)]
+    pub env_offsets: BTreeMap<u32, u32>,
 }
 
 // Synthetic ids count down from the top of the range; a bundle has far fewer
@@ -125,6 +131,140 @@ impl ClosureContext {
         self.parent_function.insert(child, parent);
     }
 
+    // Decide slot names so that no function sees two variables under one name.
+    //
+    // A slot is rendered by its owner's name for it in every function that
+    // reads it, so names are decided per owner, outermost scope first: a slot
+    // whose derived name an enclosing scope's slot already uses -- or another of
+    // the owner's own slots does -- gets a distinct one. A placeholder becomes
+    // `closure_N$K`, kept out of the `closure_L_S` shape that names a level; a
+    // recovered name takes a numeric suffix. Decided names are recorded on the
+    // owner's `ClosureInfo::names` and copied with the slots into every
+    // function's combined view.
+    pub fn allocate_slot_names(&mut self) {
+        let mut depth: BTreeMap<u32, usize> = BTreeMap::new();
+        for &scope in self.function_closures.keys() {
+            depth.insert(scope, self.ancestors_of(scope).len());
+        }
+        let mut order: Vec<u32> = depth.keys().copied().collect();
+        order.sort_by_key(|s| (depth[s], *s));
+
+        let mut decided: BTreeMap<u32, BTreeMap<u32, String>> = BTreeMap::new();
+        for scope in order {
+            let Some(info) = self.function_closures.get_mut(&scope) else {
+                continue;
+            };
+            let previous = std::mem::take(&mut info.names);
+            let mut visible: HashSet<String> = HashSet::new();
+            for anc in self.ancestors_of(scope) {
+                if let Some(names) = decided.get(&anc) {
+                    visible.extend(names.values().cloned());
+                }
+            }
+            let info = self.function_closures.get_mut(&scope).unwrap();
+            let mut mine = BTreeMap::new();
+            let slots: Vec<u32> = info
+                .slots
+                .keys()
+                .copied()
+                .filter(|s| s >> 24 == 0)
+                .collect();
+            for slot in slots {
+                let base = info.derived_slot_name(slot);
+                // A placeholder already decided and baked into the IR stays: a
+                // later pass may have renamed the clashing ancestor away, but
+                // the body still says `closure_N$K`, and codegen declares the
+                // slot by the name decided here.
+                let kept = previous
+                    .get(&slot)
+                    .filter(|p| {
+                        p.strip_prefix(base.as_str())
+                            .is_some_and(|k| k.starts_with('$'))
+                    })
+                    .filter(|p| !visible.contains(*p));
+                let name = if let Some(p) = kept {
+                    p.clone()
+                } else if visible.contains(&base) {
+                    let mut k = 2u32;
+                    loop {
+                        let candidate = if base.starts_with("closure_") {
+                            format!("{base}${k}")
+                        } else {
+                            format!("{base}{k}")
+                        };
+                        if !visible.contains(&candidate) {
+                            break candidate;
+                        }
+                        k += 1;
+                    }
+                } else {
+                    base.clone()
+                };
+                if name != base {
+                    info.names.insert(slot, name.clone());
+                }
+                visible.insert(name.clone());
+                mine.insert(slot, name);
+            }
+            decided.insert(scope, mine);
+        }
+    }
+
+    // `scope`'s ancestors, nearest first, stopping at a cycle.
+    fn ancestors_of(&self, scope: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::from([scope]);
+        let mut cur = scope;
+        while let Some(&p) = self.parent_function.get(&cur) {
+            if !seen.insert(p) {
+                break;
+            }
+            out.push(p);
+            cur = p;
+        }
+        out
+    }
+
+    pub fn env_offset(&self, function: u32) -> u32 {
+        self.env_offsets.get(&function).copied().unwrap_or(0)
+    }
+
+    // Each function's environment offset, from where it was created: a closure
+    // given its creator's own environment (level 0) reads one hop up at level 1
+    // and needs none; one given the creator's level-N environment sits N hops
+    // further out -- plus however far out the creator's own levels already sat.
+    // `created` is (creator, child, level of the environment given).
+    pub fn set_env_offsets(&mut self, created: &[(u32, u32, u32)]) {
+        let by_child: BTreeMap<u32, (u32, u32)> = created
+            .iter()
+            .rev()
+            .map(|&(creator, child, level)| (child, (creator, level)))
+            .collect();
+        fn offset(
+            f: u32,
+            by_child: &BTreeMap<u32, (u32, u32)>,
+            memo: &mut BTreeMap<u32, u32>,
+            seen: &mut HashSet<u32>,
+        ) -> u32 {
+            if let Some(&o) = memo.get(&f) {
+                return o;
+            }
+            let o = match by_child.get(&f) {
+                Some(&(creator, level)) if level > 0 && creator != f && seen.insert(f) => {
+                    level + offset(creator, by_child, memo, seen)
+                }
+                _ => 0,
+            };
+            memo.insert(f, o);
+            o
+        }
+        let mut memo = BTreeMap::new();
+        for &child in by_child.keys() {
+            offset(child, &by_child, &mut memo, &mut HashSet::new());
+        }
+        self.env_offsets = memo.into_iter().filter(|&(_, o)| o > 0).collect();
+    }
+
     pub fn set_creation_scope(&mut self, child: u32, creator: u32, level: u32) {
         self.creation_scopes.insert(child, (creator, level));
     }
@@ -147,6 +287,9 @@ impl ClosureContext {
                 );
             }
             info.slots.insert(slot, ClosureSlotValue::Variable(name));
+            // A decided name was decided against the old value; the next
+            // `allocate_slot_names` decides again against this one.
+            info.names.remove(&slot);
         }
     }
 
@@ -262,5 +405,52 @@ mod constant_name_tests {
         let info = ctx.get_closure_info_for(1);
         assert_eq!(info.get_slot_name(0), "GuildSelector_str");
         assert_eq!(info.get_slot_name(1), "ADMINISTRATOR");
+    }
+}
+
+#[cfg(test)]
+mod slot_name_tests {
+    use super::ClosureContext;
+    use crate::analysis::closure::info::{encode_level_slot, ClosureInfo, ClosureSlotValue};
+
+    fn unknown_slots(n: u32) -> ClosureInfo {
+        let mut info = ClosureInfo::new();
+        for s in 0..n {
+            info.store_slot(s, ClosureSlotValue::Unknown);
+        }
+        info
+    }
+
+    // outer's slot 0 and mid's slot 0 are different variables; inner reads
+    // both, and they must not print as one name.
+    #[test]
+    fn a_slot_does_not_reuse_an_enclosing_slots_name() {
+        let mut ctx = ClosureContext::new();
+        ctx.add_child(1, 2);
+        ctx.add_child(2, 3);
+        ctx.add_closure_info(1, unknown_slots(1));
+        ctx.add_closure_info(2, unknown_slots(2));
+        ctx.allocate_slot_names();
+        let inner = ctx.get_closure_info_for(3);
+        assert_eq!(inner.get_slot_name(encode_level_slot(2, 0)), "closure_0");
+        assert_eq!(inner.get_slot_name(encode_level_slot(1, 0)), "closure_0$2");
+        assert_eq!(inner.get_slot_name(encode_level_slot(1, 1)), "closure_1");
+        assert_eq!(ctx.get_closure_info_for(2).get_slot_name(0), "closure_0$2");
+    }
+
+    // A decided placeholder is baked into the IR; a later pass renaming the
+    // ancestor away must not undo it, or codegen declares a name the body
+    // no longer uses.
+    #[test]
+    fn a_baked_placeholder_survives_reallocation() {
+        let mut ctx = ClosureContext::new();
+        ctx.add_child(1, 2);
+        ctx.add_closure_info(1, unknown_slots(1));
+        ctx.add_closure_info(2, unknown_slots(1));
+        ctx.allocate_slot_names();
+        ctx.update_slot_variable(1, 0, "bridge".into());
+        ctx.allocate_slot_names();
+        assert_eq!(ctx.get_closure_info_for(1).get_slot_name(0), "bridge");
+        assert_eq!(ctx.get_closure_info_for(2).get_slot_name(0), "closure_0$2");
     }
 }

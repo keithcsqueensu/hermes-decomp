@@ -32,6 +32,12 @@ the `b7b61b2` run except where marked re-measured; the 11.39.0 bundle is no long
 landed. Upstream also added the C5 discriminator in the IR builder, though not where K1 puts it
 (see C5 and K1). C1, C2, C4, C6, C7 and C8 stand. No K-phase has shipped as specified.
 
+**Status after K1/K2 (2026-10).** K1 and K2 have shipped, K1 in a different shape from the one
+specified: the levels are now exact rather than discriminated (K1), and C2 is fixed (K2). Doing
+so exposed **C9**, a correctness bug the old level mapping had been hiding: two different
+captured variables printed under one name. It is fixed for the paths it was found on. C1, C4,
+C6, C7 and C8 stand; K3 and K4 are open.
+
 ---
 
 ## 1. The model as it stands
@@ -278,6 +284,64 @@ P1b needs. It should not be backlogged with P1b.
 > still returns `FlowResult::Noop`, now after claiming a level via `claim_function_env` /
 > `claim_created_env`.
 
+### C9 — two captured variables printed as one name **[measured] [code]** — fixed
+
+A function's own slot `N` and an enclosing function's slot `N` are different variables, and
+both printed as `closure_N`. Probe (`examples/react-native/expressions/closure_levels.js`):
+
+```js
+function outer(seed){ var alpha = seed + 1;
+  function mid(m){ var beta = m * 2;
+    function inner(x){ return alpha + beta + x; }   // printed `closure_0 + closure_0 + x`
+    beta = beta + alpha; …                         // printed `closure_0 = closure_0 + closure_0`
+```
+
+Three causes, one under the other:
+
+1. **The level mapping was off by one in any function that creates an environment.** v98+'s
+   `GetParentEnvironment N` and v96's two-operand `GetEnvironment N` both count from the
+   environment the closure was *created with*, never from the one the function creates (which
+   it reaches only through the register `Create*Environment` returned). The upstream shift
+   (C5's note) added the hop only for a function that borrows its environment; in one that
+   owns it, `N = 0` landed on level 0, the function's own. Now `parent_env_level(N) = N + 1`
+   unconditionally (`ir/builder/env_state.rs`). How far out the creation environment itself
+   sits is a whole-program fact: a closure created with its creator's level-ℓ environment sits
+   ℓ further out (`ClosureContext::set_env_offsets`, applied by `ir::shift_env_levels`).
+2. **The `merge.rs` level-0 heuristics** (C5) merged an ancestor's slot into level 0 when the
+   local one was missing or looked temporary. With the levels right they only ever
+   misattributed, and are removed.
+3. **Names were not allocated, they were derived**, and two slots can derive the same text.
+   `ClosureContext::allocate_slot_names` now decides names per owner, outermost first: a slot
+   whose derived name an enclosing scope's slot already uses gets `closure_N$K` (a placeholder)
+   or `name2` (a recovered name), recorded on `ClosureInfo::names`, and kept across resolve
+   passes once baked. W10 (`rename_closure_variables_cross_function`) keyed a bare `closure_N`
+   on the direct parent's slot `N`; it now keys every placeholder on the bake record, and
+   refuses a rename whose target name is already bound, read, or a parameter anywhere from the
+   owner down to a reader.
+
+**[measured]**, Equinox 11.43.0 (v96, `index.android.bundle.backup`), before → after:
+
+| | before | after |
+|---|---|---|
+| `closure_N` | 40,322 | 40,599 |
+| `closure_L_S` | 7,796 | 374 |
+| `closure_N$K` (disambiguated) | — | 4,678 |
+| bare `let closure_…;` declarations | 1,940 | 1,091 |
+| output | 42,408,553 B / 981,719 lines | 42,458,760 B / 981,444 lines |
+
+The 4,678 `$` names are each a variable that previously shared its name with an ancestor's.
+React Native's `genMethod` is the visible case: before, its promise wrapper called
+`type.enqueueNativeCall(array, error, …)` — the method's `type` argument standing in for the
+native bridge, and the wrong two arguments — and now calls
+`closure_2.enqueueNativeCall(closure_0, index, array, …)`. The `closure_levels` snippet
+failed the round trip before and passes at v96 and v98; `closure_owners` (the `genMethod` shape:
+a capture two levels up named like the method's own slot) is the regression probe for W10's
+keying and passes at both.
+
+What is *not* claimed: other renaming passes (W11 definition naming, the inherit passes,
+`capture_sync`) were not audited for the same text-keying, only observed not to reintroduce a
+collision on these probes and on `genMethod`.
+
 ### C6 — `ClosureSlotValue` has no room for a better source of truth **[code]**
 
 Per §1: the enum is a value with no provenance. Adding debug names means either a new variant
@@ -371,7 +435,13 @@ Two constraints on any such change:
 Ordered so each phase is separately justified and separately shippable. **K1 and K2 pay for
 themselves with zero debug info** and are the ones worth doing regardless of P1b.
 
-### K1 — record `has_own_environment`; retire the "often" (C5) — open; the bit is measured, not carried
+### K1 — record `has_own_environment`; retire the "often" (C5) — ✅ shipped, as exact levels
+
+*As shipped:* no bit was needed. The ambiguity the bit would have resolved does not exist once
+closure-relative loads are counted from the creation environment (C9, cause 1), and the
+`merge.rs` heuristics are gone (C9, cause 2). The upstream `borrows_current_env` shift is
+removed with them. The original text follows.
+
 Set a per-function bool in `handle_create_environment`, carry it on `ClosureContext`, and use
 it in `merge.rs:65,96` instead of the ancestor-merge heuristic. Small, local, and it is P1b's
 measured discriminator arriving early. Acceptance: Equinox output diff is explainable
@@ -380,7 +450,13 @@ previously merged by guess. *Status:* upstream now computes the bool in `IRBuild
 it on a level shift (C5's note); what remains is carrying it to `ClosureContext` and retiring
 the `merge.rs` heuristic, which first needs checking against that shift.
 
-### K2 — one spelling, one predicate (C2, C3) — half landed: the predicate (C3) is fixed, the spelling (C2) is not
+### K2 — one spelling, one predicate (C2, C3) — ✅ shipped
+
+*As shipped:* `target_to_key` returns `Value::closure_var_name`, so level 0 is `closure_N`
+everywhere. Acceptance as written: the level ≥ 1 count fell from 7,796 to 374 (C9's table); the
+total did not fall, because C9 split 4,678 previously-merged names apart, which is the point.
+The original text follows.
+
 Make `target_to_key` delegate to `Value::closure_var_name`; make `is_closure_name` accept the
 level form by delegating to `parse_closure_slot`, which already handles it. *Status:* the
 second edit landed upstream by a different route (C3's note); `target_to_key`

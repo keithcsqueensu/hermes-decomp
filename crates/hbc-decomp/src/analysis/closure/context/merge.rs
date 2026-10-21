@@ -1,6 +1,5 @@
 // Merge ancestor slot maps, reanalyze whole-program, IPA/Metro name hooks.
 use super::super::info::{encode_level_slot, ClosureInfo, ClosureSlotValue};
-use super::helpers::{is_ephemeral_name, slot_value_is_stable};
 use super::walk::is_parameter_placeholder;
 use super::ClosureContext;
 use crate::ir::Statement;
@@ -37,6 +36,12 @@ impl ClosureContext {
                         .entry(encode_level_slot(level, slot))
                         .or_insert_with(|| value.clone());
                 }
+                for (&slot, name) in &info.names {
+                    combined
+                        .names
+                        .entry(encode_level_slot(level, slot))
+                        .or_insert_with(|| name.clone());
+                }
             }
         }
 
@@ -57,56 +62,26 @@ impl ClosureContext {
                     // Closer ancestors win if a deeper one already filled the key
                     // (should not happen, each level is unique).
                     combined.slots.entry(key).or_insert_with(|| value.clone());
+                    if let Some(name) = ancestor_info.names.get(&slot) {
+                        combined.names.entry(key).or_insert_with(|| name.clone());
+                    }
                 }
             }
         }
 
-        // Local env (IR level 0): raw slot keys == encode_level_slot(0, slot).
-        // Hermes GetEnvironment(0) in a nested function is often the *captured*
-        // parent environment (no local CreateEnvironment). Local analysis may
-        // then record only the temp `sum = c0+1; store sum`, renaming the slot
-        // to `sum`. Prefer a stable ancestor name for the same raw slot index.
-        // Known limit: a v98 constructor storing `this` into its own slot 0
-        // has that slot dropped as a temporary and the factory's slot 0
-        // (`require`) exposed in its place (`require = this` in 134
-        // constructors of the reference bundle). Keeping the local slot when
-        // the function owns an environment breaks relocated async bodies,
-        // whose level 0 is the wrapper's environment: the fix needs the
-        // builder's created-versus-borrowed knowledge in this context.
+        // Local env (IR level 0) is this function's own environment and nothing
+        // else: every closure-relative load is level 1 or more
+        // (`EnvRegMap::parent_env_level`). Level 0 used to be read as "often the
+        // captured parent environment", and an ancestor's slot was merged in at
+        // level 0 when the local one was missing or looked temporary; once the
+        // levels were right, that put a parent's variable under the name of the
+        // function's own slot of the same index.
         if let Some(local_info) = self.function_closures.get(&function_id) {
             for (slot, value) in &local_info.slots {
-                let key = *slot; // level 0
-                let use_local = match value {
-                    ClosureSlotValue::Variable(v) if is_ephemeral_name(v) => {
-                        // Keep ancestor stable binding if present at any encoded level.
-                        !ancestors.iter().any(|anc| {
-                            self.function_closures.get(anc).is_some_and(|ai| {
-                                ai.slots.get(slot).is_some_and(slot_value_is_stable)
-                            })
-                        })
-                    }
-                    _ => true,
-                };
-                if use_local {
-                    combined.slots.insert(key, value.clone());
-                }
+                combined.slots.insert(*slot, value.clone());
             }
-        }
-
-        // Also: if level-0 key is missing but ancestors have a stable slot, expose
-        // it at level 0 so Hermes-level-0 loads of the captured env resolve.
-        for (depth, &ancestor) in ancestors.iter().enumerate() {
-            if let Some(ancestor_info) = self.function_closures.get(&ancestor) {
-                for (&slot, value) in &ancestor_info.slots {
-                    if !slot_value_is_stable(value) || slot >> 24 != 0 {
-                        continue;
-                    }
-                    // Hermes: nested fn's env level 0 is often the same object as
-                    // the parent's CreateEnvironment (depth 0 ancestor).
-                    if depth == 0 {
-                        combined.slots.entry(slot).or_insert_with(|| value.clone());
-                    }
-                }
+            for (slot, name) in &local_info.names {
+                combined.names.insert(*slot, name.clone());
             }
         }
 

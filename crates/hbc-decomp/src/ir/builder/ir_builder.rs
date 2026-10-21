@@ -26,6 +26,11 @@ pub struct IRBuilder<'a> {
     // function: with the function as parent, `addEventPoolingTo` resolved the
     // factory's block slot 40 (`releasePooledEvent`) as an unnamed slot.
     pub created_in_block: Vec<(u32, u32)>,
+    // Every other function the last built function created, with the builder
+    // level of the environment it was given: 0 for the creator's own, N >= 1
+    // for one N levels out. A closure reads its environments counting from the
+    // one it was given, so its own levels are offset by this (shift_env_levels).
+    pub created_with_env: Vec<(u32, u32)>,
 }
 
 impl<'a> IRBuilder<'a> {
@@ -39,11 +44,13 @@ impl<'a> IRBuilder<'a> {
             format,
             options,
             created_in_block: Vec::new(),
+            created_with_env: Vec::new(),
         }
     }
 
     pub fn build_function(&mut self, function_id: u32) -> Result<CFG> {
         self.created_in_block.clear();
+        self.created_with_env.clear();
         let instructions = self
             .file
             .decode_function_instructions(self.format, function_id)?;
@@ -161,20 +168,6 @@ impl<'a> IRBuilder<'a> {
         let mut current_stmts: Vec<Statement> = Vec::new();
         // Flow-insensitive last-write map: env register → nesting level.
         let mut env_map = EnvRegMap::new();
-        // Whether the function creates the environment it runs in. An additional
-        // environment built later (CreateTopLevelEnvironment) does not count: the
-        // function still runs in the enclosing one.
-        let owns_current_env = instructions.iter().any(|inst| {
-            let name = self
-                .format
-                .definitions
-                .get(inst.opcode as usize)
-                .map(|d| d.name.as_str())
-                .unwrap_or("");
-            name == "CreateFunctionEnvironment"
-                || (name == "CreateEnvironment" && inst.operands.len() < 3)
-        });
-        env_map.set_borrows_current_env(!owns_current_env);
 
         for inst in instructions {
             if let Some(&block_id) = offset_to_block.get(&inst.offset) {
@@ -211,6 +204,8 @@ impl<'a> IRBuilder<'a> {
                 let level = env_map.level_of(env_reg);
                 if level >= super::env_state::NESTED_ENV_LEVEL_BASE {
                     self.created_in_block.push((child, level));
+                } else {
+                    self.created_with_env.push((child, level));
                 }
             }
 

@@ -24,6 +24,13 @@ pub enum ClosureSlotValue {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClosureInfo {
     pub slots: BTreeMap<u32, ClosureSlotValue>,
+    /// A name decided for a slot, which `get_slot_name` renders ahead of
+    /// anything derived from the slot's value. Set by
+    /// `ClosureContext::allocate_slot_names` where the derived name would
+    /// repeat one an enclosing scope already uses: two variables under one name
+    /// in a function body change what the code means.
+    #[serde(default)]
+    pub names: BTreeMap<u32, String>,
 }
 
 impl Default for ClosureInfo {
@@ -36,6 +43,7 @@ impl ClosureInfo {
     pub fn new() -> Self {
         Self {
             slots: BTreeMap::new(),
+            names: BTreeMap::new(),
         }
     }
 

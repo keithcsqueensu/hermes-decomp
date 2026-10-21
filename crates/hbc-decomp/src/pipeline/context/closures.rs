@@ -26,6 +26,9 @@ impl PipelineContext {
             // Metro/IPA may have renamed factory slots after reanalyze.
             closure_ctx.enrich_function_slot_names();
         }
+        // Names are final for this pass now: decide them so no function sees
+        // two variables under one name.
+        closure_ctx.allocate_slot_names();
 
         let mut keys: Vec<_> = all_ir.keys().copied().collect();
         keys.sort();
