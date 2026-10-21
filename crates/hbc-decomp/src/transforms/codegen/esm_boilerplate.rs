@@ -292,18 +292,10 @@ impl Codegen {
             }
         }
 
-        // Pattern 1b: const prototype = globalThis.X.prototype (chained member on built-in)
-        // Also handles: const valueOf = globalThis.Boolean.prototype.valueOf
-        if let Expression::Member {
-            object,
-            property: PropertyKey::Ident(prop),
-            ..
-        } = value
-        {
-            if Self::is_global_builtin_chain(object) && name == prop.as_str() {
-                return true;
-            }
-        }
+        // Only `globalThis.X` itself: `const captureStackTrace =
+        // globalThis.Error.captureStackTrace` binds a name that is no global, and
+        // dropping it left `captureStackTrace(...)` calling nothing (the same for
+        // `prototype` and `valueOf` taken off a built-in).
 
         // Pattern 2: const X = globalThis (direct Global value). Only redundant
         // when X is a conventional global alias (window/self/global/globalThis),         // those are interchangeable with `globalThis`. For any other name, dropping
@@ -328,34 +320,33 @@ impl Codegen {
 
         false
     }
+}
 
-    // Check if an expression is a chain of member accesses starting from a global built-in.
-    // e.g., globalThis.Object, globalThis.Boolean.prototype, globalThis.ReferenceError.prototype
-    pub(super) fn is_global_builtin_chain(expr: &crate::ir::Expression) -> bool {
-        use crate::ir::{Expression, PropertyKey, Value};
-        match expr {
-            // Base case: globalThis.BuiltIn
-            Expression::Member {
-                object,
-                property: PropertyKey::Ident(name),
-                ..
-            } => {
-                let is_global = match object.as_ref() {
-                    Expression::Value(Value::Global) => true,
-                    Expression::Value(Value::Binding(crate::ir::Binding::Variable(v)))
-                        if v == "globalThis" =>
-                    {
-                        true
-                    }
-                    _ => false,
-                };
-                if is_global && crate::ir::expr::display::is_builtin_global(name) {
-                    return true;
-                }
-                // Recursive case: (some chain).property
-                Self::is_global_builtin_chain(object)
-            }
-            _ => false,
+#[cfg(test)]
+mod tests {
+    use crate::ir::{Expression, Value};
+    use crate::transforms::Codegen;
+
+    fn global(path: &[&str]) -> Expression {
+        let mut e = Expression::Value(Value::Global);
+        for p in path {
+            e = Expression::member(e, p);
         }
+        e
+    }
+
+    // Only `globalThis.X` bound as `X` is redundant: a name taken off a
+    // built-in (`Error.captureStackTrace`) is no global of its own.
+    #[test]
+    fn a_member_of_a_builtin_is_no_global_alias() {
+        assert!(Codegen::is_global_alias_def("Object", &global(&["Object"])));
+        assert!(!Codegen::is_global_alias_def(
+            "captureStackTrace",
+            &global(&["Error", "captureStackTrace"])
+        ));
+        assert!(!Codegen::is_global_alias_def(
+            "valueOf",
+            &global(&["Boolean", "prototype", "valueOf"])
+        ));
     }
 }
