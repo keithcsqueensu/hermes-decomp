@@ -1,5 +1,5 @@
 use crate::ir::{AssignTarget, Binding, Expression, Statement, Value, VarKind};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod patterns;
 mod scan;
@@ -8,6 +8,7 @@ mod writes;
 use patterns::collect_pattern_names;
 use scan::{
     collect_scope_info, free_captured_vars, names_assigned_in_nested_bodies_and_used_outside,
+    own_slots_escaping_their_block,
 };
 use writes::count_writes;
 
@@ -43,7 +44,9 @@ pub fn insert_declarations_with_extra_writes(
 // stamps (`stamps::own_slot_names`). Each is declared here even when it is read
 // before it is written, which otherwise passes for a capture, and even when an
 // ancestor's slot is spelled the same, which otherwise keeps it out: the stamp
-// says whose variable it is.
+// says whose variable it is. `read_by` names, per function id, the slots in
+// `own_used` that function or one below it reads, so creating a closure counts
+// as a read when a declaration is placed.
 pub fn insert_declarations_with_slots(
     stmts: &mut Vec<Statement>,
     params: &[String],
@@ -51,6 +54,7 @@ pub fn insert_declarations_with_slots(
     outer_names: &HashSet<String>,
     own_slots: &HashSet<String>,
     own_used: &HashSet<String>,
+    read_by: &HashMap<u32, HashSet<String>>,
 ) {
     let outer: HashSet<String>;
     let outer_names = if own_used.iter().any(|n| outer_names.contains(n)) {
@@ -66,6 +70,7 @@ pub fn insert_declarations_with_slots(
         outer_names,
         own_slots,
         own_used,
+        read_by,
     );
 }
 
@@ -84,7 +89,16 @@ pub fn insert_declarations_with_outer(
 ) {
     let _ = skip_env_slots;
     let none = HashSet::new();
-    insert_declarations_impl(stmts, params, extra_writes, outer_names, &none, &none);
+    let no_reads = HashMap::new();
+    insert_declarations_impl(
+        stmts,
+        params,
+        extra_writes,
+        outer_names,
+        &none,
+        &none,
+        &no_reads,
+    );
 }
 
 fn insert_declarations_impl(
@@ -94,6 +108,7 @@ fn insert_declarations_impl(
     outer_names: &HashSet<String>,
     own_slots: &HashSet<String>,
     own_used: &HashSet<String>,
+    read_by: &HashMap<u32, HashSet<String>>,
 ) {
     // Phase 1: Count total writes per variable across the entire function body
     let mut write_count: BTreeMap<String, usize> = BTreeMap::new();
@@ -201,9 +216,18 @@ fn insert_declarations_impl(
         }
     }
     // An own slot the body reads before it writes, or never writes (its
-    // closures do): taken for a capture above, declared here by its stamp.
+    // closures do): taken for a capture above, declared here by its stamp. So
+    // is one the body first writes inside a block and uses outside it, a
+    // closure created there included: a `let` at that write would leave the
+    // closure unbound (a generator's branch storing a slot that a helper
+    // declared at the top of the function reads).
+    let escaping = if own_used.is_empty() {
+        Vec::new()
+    } else {
+        own_slots_escaping_their_block(stmts, own_used, read_by)
+    };
     for name in own_used {
-        if free_closures.contains(name)
+        if (free_closures.contains(name) || escaping.contains(name))
             && !skip_decl(name)
             && !hoist.contains(name)
             && is_valid_js_identifier(name)

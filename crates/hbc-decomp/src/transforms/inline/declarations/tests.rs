@@ -207,12 +207,28 @@ fn an_own_slot_read_first_is_declared_by_its_stamp() {
     let body = || vec![Statement::Expr(read("pending"))];
     let none = HashSet::new();
     let mut unstamped = body();
-    insert_declarations_with_slots(&mut unstamped, &[], &BTreeMap::new(), &none, &none, &none);
+    insert_declarations_with_slots(
+        &mut unstamped,
+        &[],
+        &BTreeMap::new(),
+        &none,
+        &none,
+        &none,
+        &Default::default(),
+    );
     assert!(matches!(unstamped[0], Statement::Expr(_)), "{unstamped:?}");
 
     let own_used = HashSet::from(["pending".to_string()]);
     let mut stamped = body();
-    insert_declarations_with_slots(&mut stamped, &[], &BTreeMap::new(), &none, &none, &own_used);
+    insert_declarations_with_slots(
+        &mut stamped,
+        &[],
+        &BTreeMap::new(),
+        &none,
+        &none,
+        &own_used,
+        &Default::default(),
+    );
     match &stamped[0] {
         Statement::Let { name, kind, .. } => {
             assert_eq!(name, "pending");
@@ -236,7 +252,15 @@ fn an_own_slot_named_like_an_ancestor_slot_is_declared() {
     let outer = HashSet::from(["l".to_string()]);
     let none = HashSet::new();
     let mut by_name = body();
-    insert_declarations_with_slots(&mut by_name, &[], &BTreeMap::new(), &outer, &none, &none);
+    insert_declarations_with_slots(
+        &mut by_name,
+        &[],
+        &BTreeMap::new(),
+        &outer,
+        &none,
+        &none,
+        &Default::default(),
+    );
     assert!(
         matches!(by_name[0], Statement::Assign { .. }),
         "{by_name:?}"
@@ -251,9 +275,75 @@ fn an_own_slot_named_like_an_ancestor_slot_is_declared() {
         &outer,
         &none,
         &own_used,
+        &Default::default(),
     );
     assert!(
         matches!(&by_stamp[0], Statement::Let { name, .. } if name == "l"),
         "{by_stamp:?}"
     );
+}
+
+// K4.4a: an own slot first written inside a block is declared at the top when
+// a closure created outside the block reads it, and at the write otherwise.
+#[test]
+fn an_own_slot_written_in_a_block_is_hoisted_for_a_closure_outside() {
+    let body = || {
+        vec![
+            Statement::Expr(Expression::Function {
+                id: crate::ir::FunctionId(9),
+                name: None,
+                is_arrow: true,
+                is_async: false,
+                is_generator: false,
+            }),
+            Statement::If {
+                condition: Expression::constant(Constant::Bool(true)),
+                then_body: vec![Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Variable("seen".into())),
+                    value: Expression::constant(Constant::Integer(1)),
+                }],
+                else_body: vec![],
+            },
+        ]
+    };
+    let none = HashSet::new();
+    let own_used = HashSet::from(["seen".to_string()]);
+    let no_reads = std::collections::HashMap::new();
+
+    let mut local = body();
+    insert_declarations_with_slots(
+        &mut local,
+        &[],
+        &BTreeMap::new(),
+        &none,
+        &none,
+        &own_used,
+        &no_reads,
+    );
+    assert!(matches!(local[0], Statement::Expr(_)), "{local:?}");
+
+    let read_by = std::collections::HashMap::from([(9u32, own_used.clone())]);
+    let mut stmts = body();
+    insert_declarations_with_slots(
+        &mut stmts,
+        &[],
+        &BTreeMap::new(),
+        &none,
+        &none,
+        &own_used,
+        &read_by,
+    );
+    assert!(
+        matches!(&stmts[0], Statement::Let { name, .. } if name == "seen"),
+        "{stmts:?}"
+    );
+    match &stmts[2] {
+        Statement::If { then_body, .. } => {
+            assert!(
+                matches!(then_body[0], Statement::Assign { .. }),
+                "{then_body:?}"
+            )
+        }
+        other => panic!("expected the if, got {other:?}"),
+    }
 }

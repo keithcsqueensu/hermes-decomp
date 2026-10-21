@@ -445,3 +445,83 @@ fn visit_nested_bodies(stmt: &Statement, f: &mut dyn FnMut(&[Statement])) {
         _ => {}
     }
 }
+
+// The own slots (K4.4a) a nested body assigns that are used outside it, where
+// creating a closure counts as a use of every slot its functions read
+// (`read_by`, by function id): a `let` at that write would not reach them.
+// Mirrors `names_assigned_in_nested_bodies_and_used_outside`, which cannot see
+// a read that happens inside a closure body.
+pub(super) fn own_slots_escaping_their_block(
+    stmts: &[Statement],
+    names: &std::collections::HashSet<String>,
+    read_by: &std::collections::HashMap<u32, std::collections::HashSet<String>>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in names {
+        let all = slot_uses(stmts, name, read_by);
+        if all == 0 {
+            continue;
+        }
+        let mut escapes = false;
+        for stmt in stmts {
+            visit_nested_bodies(stmt, &mut |body| {
+                let mut assigned = Vec::new();
+                collect_assigned(body, &mut assigned);
+                if assigned.iter().any(|a| a == name) && slot_uses(body, name, read_by) < all {
+                    escapes = true;
+                }
+            });
+            if escapes {
+                break;
+            }
+        }
+        if escapes {
+            out.push(name.clone());
+        }
+    }
+    out.sort();
+    out
+}
+
+// Reads of `name` in `stmts`, counting each closure created there whose
+// functions read it.
+fn slot_uses(
+    stmts: &[Statement],
+    name: &str,
+    read_by: &std::collections::HashMap<u32, std::collections::HashSet<String>>,
+) -> usize {
+    use crate::ir::Visitor;
+    struct U<'n> {
+        name: &'n str,
+        read_by: &'n std::collections::HashMap<u32, std::collections::HashSet<String>>,
+        n: usize,
+    }
+    impl<'a> Visitor<'a> for U<'_> {
+        fn visit_expression(&mut self, e: &'a Expression) {
+            match e {
+                Expression::Value(Value::Binding(Binding::Variable(v))) if v.name == self.name => {
+                    self.n += 1
+                }
+                Expression::Function { id, .. }
+                    if self
+                        .read_by
+                        .get(&id.0)
+                        .is_some_and(|r| r.contains(self.name)) =>
+                {
+                    self.n += 1
+                }
+                _ => {}
+            }
+            self.walk_expression(e);
+        }
+    }
+    let mut u = U {
+        name,
+        read_by,
+        n: 0,
+    };
+    for s in stmts {
+        u.visit_statement(s);
+    }
+    u.n
+}

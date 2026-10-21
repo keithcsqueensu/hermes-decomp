@@ -266,9 +266,62 @@ impl PipelineContext {
         let outer = self.ancestor_env_slots.get(&func_id).unwrap_or(&empty);
         let own_slots = self.own_env_slot_names(func_id);
         let own_used = crate::analysis::closure::stamps::own_slot_names(func_id, stmts);
+        let read_by = self.own_slots_read_below(func_id, stmts, &own_used);
         transforms::insert_declarations_with_slots(
-            stmts, params, &extra, outer, &own_slots, &own_used,
+            stmts, params, &extra, outer, &own_slots, &own_used, &read_by,
         );
+    }
+
+    // For each closure `stmts` create, the slots of `func_id` among `names`
+    // that it or a function below it reads, by stamp.
+    fn own_slots_read_below(
+        &self,
+        func_id: u32,
+        stmts: &[Statement],
+        names: &HashSet<String>,
+    ) -> HashMap<u32, HashSet<String>> {
+        use crate::ir::{Expression, Visitor};
+        let mut out = HashMap::new();
+        if names.is_empty() {
+            return out;
+        }
+        struct Ids(Vec<u32>);
+        impl<'a> Visitor<'a> for Ids {
+            fn visit_expression(&mut self, e: &'a Expression) {
+                if let Expression::Function { id, .. } = e {
+                    self.0.push(id.0);
+                }
+                self.walk_expression(e);
+            }
+        }
+        let mut ids = Ids(Vec::new());
+        for s in stmts {
+            ids.visit_statement(s);
+        }
+        for id in ids.0 {
+            let mut read = HashSet::new();
+            let mut stack = vec![id];
+            let mut seen = HashSet::new();
+            while let Some(f) = stack.pop() {
+                if !seen.insert(f) {
+                    continue;
+                }
+                if let Some(body) = self.all_ir.get(&f) {
+                    for (name, slot) in crate::analysis::closure::stamps::var_refs(body) {
+                        if slot.is_some_and(|s| s.owner == func_id) && names.contains(name) {
+                            read.insert(name.to_string());
+                        }
+                    }
+                }
+                if let Some(children) = self.child_functions.get(&f) {
+                    stack.extend(children.iter().copied());
+                }
+            }
+            if !read.is_empty() {
+                out.insert(id, read);
+            }
+        }
+        out
     }
 
     // Names each function's nested functions read or write (see

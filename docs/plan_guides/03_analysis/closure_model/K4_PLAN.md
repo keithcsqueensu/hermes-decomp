@@ -223,6 +223,20 @@ own slots (block scopes excluded) off the stamps; `insert_declarations_with_slot
 them as `own_used`, removes them from `outer_names` and hoists any the body reads first.
 Both render paths go through one `PipelineContext::insert_body_declarations`.
 
+Discord's `worse:` list found the placement half. A slot belongs to the whole function, but
+the declaration pass put its `let` at the first write, and when that write sits in a branch
+a closure created outside the branch cannot see it. Before, the module-level `let` covered
+for it. Examples: a generator's branch stores `force_survey_id` that a helper declared at
+the top of the function reads, and `mapAsyncIterator`'s `abruptClose` is a function
+declared in an `if` while `mapResult` above it reads it, which is block-scoped and unbound
+in a strict module. The escape scan (`names_assigned_in_nested_bodies_and_used_outside`)
+only sees direct reads, so `own_slots_escaping_their_block` also counts creating a closure
+as a read of every own slot that closure, or a function below it, reads by stamp
+(`read_by`, from `PipelineContext::own_slots_read_below`). An own slot that escapes its
+block is hoisted. Hoisting every own slot written in a block instead tripled the diff
+(1,966 hunks) for a smaller gain, because it also turned block-local helpers into
+`let f; … f = function f…`.
+
 One more change came out of the gates. The module-level `let` was hiding a second class:
 lodash's `cloneRegExp` destructures into a local `source` it never declared, because an
 ancestor's slot is called `source` *in the context* but nowhere in the IR, and the stale name
@@ -241,8 +255,8 @@ measurement.
 | I3 `Undeclared` | 1,270 → 14 | 889 → 23 |
 | I2 `Shadowed` | 167 → 175 | 124 → 139 |
 | I1, other I2, other I3 | unchanged | unchanged |
-| undeclared references (harness) | 3,124 → 3,088 | 5,046 → 5,042 |
-| hunks | 289 | 168 |
+| undeclared references (harness) | 3,124 → 3,000 | 5,046 → 4,990 |
+| hunks | 671 | 423 |
 
 Every changed line is a declaration (`x = …` → `const x = …`, a hoisted `let x;`, a name
 leaving a module-level `let` list). No `name -> name` substitutions. The +23 `Shadowed` are
