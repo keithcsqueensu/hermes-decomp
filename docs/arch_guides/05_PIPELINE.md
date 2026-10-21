@@ -10,7 +10,7 @@
 Files: `pipeline/` — `decompiler.rs`, `ir_gen.rs`, `stages.rs`, `mod.rs`, `batch.rs`,
 `cache.rs`, `progress.rs`, `context/*` (incl. `context/naming/`, `context/rendering/`). The
 proposal-artifact format and verifier that the `cascade` option feeds live outside, in
-`crate::cascade`.
+`crate::cascade`, described in [`03_ANALYSIS.md`](03_ANALYSIS.md) § cascade.
 
 ---
 
@@ -149,7 +149,7 @@ backs the CLI dead-code report and `callgraph`, `inspect.rs`, and the MCP analyz
 
 `PipelineContext::build_cached` serializes the built context to `<input>.hdcache`
 (MessagePack via `rmp_serde`). The `CacheHeader` key = MAGIC `HDC1` + `CACHE_VERSION`
-(currently **5**, bumped only on schema change) + SHA-256 of the bytecode bytes +
+(currently **6**, bumped only on schema change) + SHA-256 of the bytecode bytes +
 `binary_fingerprint()` (SHA-256 of the compile-time `DECOMP_BUILD_FINGERPRINT` — auto-
 invalidates on any rebuild) + `options_key` (hashes the **whole** `DecompileOptionsV2`, so no
 field can silently desync — regression-tested by

@@ -70,7 +70,7 @@ A test keeps `stages.rs` in step with the `// STAGE` markers in the code.
 |---|---|---|
 | [`01_READ_LAYER.md`](01_READ_LAYER.md) | binary → `BytecodeFile`; opcode tables; disasm | `BytecodeFile::parse_auto`, `disassemble_function` |
 | [`02_IR.md`](02_IR.md) | the per-function IR: `Expression`/`Statement`/`CFG`, its construction and traversal | `IRBuilder::build_function` |
-| [`03_ANALYSIS.md`](03_ANALYSIS.md) | read-only fact-gathering: closures, Metro, IPA, naming, structure, dataflow, xref | `resolve_closures`, `run_ipa`, `MetroRegistry::analyze` |
+| [`03_ANALYSIS.md`](03_ANALYSIS.md) | read-only fact-gathering: closures, Metro, IPA, naming, structure, dataflow, xref; cascade (offline name proposals, verified against the bytecode) | `resolve_closures`, `run_ipa`, `MetroRegistry::analyze` |
 | [`04_TRANSFORMS_CODEGEN.md`](04_TRANSFORMS_CODEGEN.md) | the staged rewrite passes and JS text emission | `generate_ir`, `Codegen::generate_statements` |
 | [`05_PIPELINE.md`](05_PIPELINE.md) | orchestration: the `Decompiler` façade, stage order, `PipelineContext`, batch/parallel, cache | `Decompiler`, `decompile_all_v2_with_closures` |
 | [`06_WRITE_PATH.md`](06_WRITE_PATH.md) | encode/HASM/patch/serialize — summary + pointer to `../plan_guides` | `write/` module |

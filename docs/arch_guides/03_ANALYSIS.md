@@ -6,10 +6,12 @@
 > the IR it reads to [`02_IR.md`](02_IR.md), and every *rewrite* that consumes these facts to
 > [`04_TRANSFORMS_CODEGEN.md`](04_TRANSFORMS_CODEGEN.md). The decompiler's closure/env-slot
 > *model* — and why closure names are not yet recovered from debug info — is owned by
-> `../plan_guides/03_analysis/closure_model/PLAN.md`.
+> `../plan_guides/03_analysis/closure_model/PLAN.md`. Also owns **cascade** (`crate::cascade`),
+> the offline name-proposal chain, which lives beside `analysis/` rather than in it.
 
 Files: `analysis/` — `closure/`, `dataflow/`, `ipa/`, `metro/`, `naming/`, `structure/`, plus
-`liveness.rs`, `reaching.rs`, `loops.rs`, `xref.rs`.
+`liveness.rs`, `reaching.rs`, `loops.rs`, `xref.rs`; and `cascade/` — `mod.rs`,
+`candidates.rs`, `verify.rs`, `tests.rs`.
 
 ---
 
@@ -126,6 +128,58 @@ Operates on the raw `BytecodeFile`/`Instruction` (not IR). `find_string_xrefs`
 instructions for string-id or function-id operands, returning
 `XrefResult { function_id, offset, opcode }`.
 
+### cascade/ — offline name proposals, verified against the bytecode (`crate::cascade`)
+Upstream feature (`46f92b7`), after the CASCADE paper (arXiv 2507.17691). The paper's split
+is the point: a model is good at recognising what an unnamed or obfuscated helper *is* and
+cannot be trusted about it, so it only ever **proposes** a name, and deterministic code
+**decides** whether the bytecode supports it. That is what makes it compatible with the
+naming rule everywhere else in this layer — never guess a name. Nothing in the module talks
+to a network, and the decompile path never does.
+
+The chain is four steps, two of them offline:
+
+1. **Extract** — `candidates::extract(all_ir, names)` (`cascade/candidates.rs:34`) keeps a
+   function only if its body has one of the shapes verification can judge *and* its current
+   name says nothing (`metro::is_obviously_generic`; a function with a recovered name is left
+   alone, because a proposal could only overwrite what the bytecode already established). Each
+   `Candidate` carries the observed `shape` — the role a proposal must claim — and, for a
+   decoder, a sample of the strings it yields. CLI: `cascade extract` writes
+   `{version, bundle, candidates}` JSON.
+2. **Propose** — a reader (model or person) writes an `Artifact`: `{version, bundle,
+   proposals: [{function_id, name, role}]}`. Outside the tool.
+3. **Verify** — `verify::verify_against_file` (`cascade/verify.rs:12`) rejects the whole
+   artifact on a version mismatch or a foreign bundle, then checks each proposal: the name is
+   an identifier and not reserved, the function exists, and its body has the claimed shape.
+   Every rejection is kept as a `Rejection` reason, so the **confirmation rate** can be read
+   per reason; the module's own comment is the right warning — a chain that confirms
+   everything is verifying nothing. CLI: `cascade verify` prints the rate and each refusal.
+4. **Apply** — `cascade::apply` (`cascade/mod.rs:174`) sets the confirmed name on every
+   `Expression::Function { id, name }` for that function in the IR; a refused proposal changes
+   nothing. In a decompile this is pipeline stage **W4a** (`--cascade <artifact>`, see
+   [`05_PIPELINE.md`](05_PIPELINE.md)), and codegen prints the confirmed name in the function
+   header ahead of the string table's (`pipeline/context/codegen.rs:178`).
+
+The **roles** are only those the bytecode can refute on its own (`Role`, `cascade/mod.rs:71`):
+
+| role | confirmed when the body (comments and empty blocks ignored) is |
+|---|---|
+| `noop` | empty, a bare `return`, or `return undefined` |
+| `identity` | a single `return` of one of its parameters |
+| `constant_returner` | a single `return` of a constant |
+| `string_decoder` | a `return` of an indexed read from an array of string constants (inline, or bound in the same body) — **and** every string in that array is in this bundle's string table, so a decoder from another build is refused (`StringsAbsentFromTable`) |
+
+**Binding to one build.** `BundleFingerprint` (`cascade/mod.rs:37`) is the HBC version, the
+function and string counts, and an FNV-1a digest of the string table in order. Function ids
+are positions in a particular build, so an artifact applied to another one would rename by
+coincidence; a mismatch refuses every proposal (`WrongBundle`).
+
+**[measured]** Equinox 11.43.0 (v96, 63,957 functions): `cascade extract` takes ~45 s (a full
+build) and finds 656 candidates — 497 `noop`, 95 `constant_returner`, 64 `identity`, **0**
+`string_decoder` (the bundle is not obfuscated); 643 have no name at all. A two-proposal
+artifact — one `identity` claim on an `identity` candidate, one on a `noop` candidate — verifies
+as 1 of 2, the second refused with "role not confirmed, the body is a single return of
+something else". There is no MCP tool for any of this.
+
 ## How analyses feed the pipeline
 
 **Pipeline-consumed** (drive transforms/codegen): `ipa` (wired through `pipeline/stages.rs`,
@@ -136,6 +190,8 @@ dependency rewriting), `closure` (`resolve_closures`, `resolve_closures_recordin
 (via IPA collection).
 **Standalone:** `xref` is a CLI/search facility over the raw file, not part of the transform
 chain; `liveness.rs` has no caller outside its own module.
+**Optional:** `cascade` enters the pipeline only when `DecompileOptionsV2::cascade` names an
+artifact (stage W4a); `cascade extract`/`verify` build the pipeline and read its result.
 
 ## Notable design decisions / gotchas
 
@@ -159,6 +215,20 @@ chain; `liveness.rs` has no caller outside its own module.
 - **`xref.rs::has_function_operand` is heuristic** — it matches any UInt16/32 operand
   numerically because `BytecodeFormat` doesn't distinguish FunctionID from other indices, so
   false positives are possible (the comment flags it; the user verifies).
+- **A cascade name reaches less than its stage comment says.** `stages.rs` (W4a) and
+  `context/mod.rs` say W4a runs before naming "so a confirmed name reaches the call
+  resolution index". It does not: `build_function_name_index` (`pipeline/mod.rs:360`) reads
+  only the string table. A confirmed name reaches the IR's `Expression::Function` names and the
+  rendered header, and IPA call resolution still sees the function as unnamed.
+- **`cascade verify` and `decompile --cascade` judge different IR.** The CLI verifies against
+  the IR after the whole naming pipeline (`cascade_cmd.rs`, `build_cached`); W4a verifies
+  against the optimized IR *before* naming. The shape checks read structure, which naming
+  does not change, but the decoder check resolves the array through a `Let`/`Assign` by name,
+  so a report from `cascade verify` is strong evidence for, not a guarantee of, what a
+  `--cascade` decompile applies. The decompile's own `cascade: N of M proposals confirmed`
+  status line is the authoritative count.
+- **A cascade build never uses the `.hdcache`** (`pipeline/cache.rs:154`): the snapshot does
+  not carry `cascade_names`, so a hit would drop the confirmed header names.
 - **`MAX_PARAM_SLOTS = 1<<16`** guards against a corrupt param index driving gigabyte
   allocations in the propagation vectors.
 
@@ -193,3 +263,7 @@ chain; `liveness.rs` has no caller outside its own module.
 | `reaching.rs` | `ReachingDefs` (forward CFG dataflow; SSA + copy propagation) |
 | `loops.rs` | `detect_loops`, `LoopInfo`, `compute_dominators` |
 | `xref.rs` | `find_string_xrefs`, `find_function_refs` (CLI search) |
+| `cascade/mod.rs` *(beside `analysis/`)* | `Artifact`, `Proposal`, `Role`, `BundleFingerprint`, `Rejection`, `VerifiedArtifact`, `apply` |
+| `cascade/candidates.rs` | `extract`, `Candidate` — functions worth proposing a name for |
+| `cascade/verify.rs` | `verify`, `verify_against_file`, `decoded_strings` — the role checks |
+| `cascade/tests.rs` | unit tests over synthetic IR: each role confirmed and refused, each rejection, extraction |
