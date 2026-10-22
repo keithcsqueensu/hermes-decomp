@@ -438,6 +438,24 @@ pub(crate) fn propagate_module_names_to_closures(
 
     let mut closure_func_ids: Vec<_> = functions.keys().copied().collect();
     closure_func_ids.sort();
+    // Every store into each slot, by stamp, from any function: a closure's
+    // `callback = nop` is one of the four stores into `eos`'s callback slot,
+    // three of them in `eos` itself. Before W6 nothing is stamped and a store
+    // counts only among its own function's, as it always has.
+    let mut stamped_writes: HashMap<crate::ir::SlotRef, usize> = HashMap::new();
+    for stmts in functions.values() {
+        for stmt in stmts {
+            if let Statement::Assign {
+                target: crate::ir::AssignTarget::Binding(Binding::Variable(var)),
+                ..
+            } = stmt
+            {
+                if let Some(slot) = var.slot {
+                    *stamped_writes.entry(slot).or_insert(0) += 1;
+                }
+            }
+        }
+    }
     for func_id in &closure_func_ids {
         let stmts = &functions[func_id];
         let mut reg_params: HashMap<String, u32> = HashMap::new();
@@ -449,7 +467,7 @@ pub(crate) fn propagate_module_names_to_closures(
         let mut slot_writes: HashMap<(u32, u32), usize> = HashMap::new();
         for stmt in stmts.iter() {
             if let Statement::Assign { target, .. } = stmt {
-                if let Some(key) = closure_write_target(target) {
+                if let Some(key) = slot_write_target(*func_id, target, closure_ctx.as_ref()) {
                     *slot_writes.entry(key).or_insert(0) += 1;
                 }
             }
@@ -521,10 +539,10 @@ pub(crate) fn propagate_module_names_to_closures(
 
             // Check if Assign target is a closure variable
             if let Statement::Assign { target, value } = stmt {
-                let Some((level, slot)) = closure_write_target(target) else {
+                let Some((owner, slot)) = slot_write_target(*func_id, target, closure_ctx.as_ref())
+                else {
                     continue;
                 };
-                let owner = closure_slot_owner(*func_id, level, closure_ctx);
                 let module_id =
                     resolve_require_module(value, *func_id, registry, &reg_params, &reg_props)
                         .or_else(|| {
@@ -547,7 +565,7 @@ pub(crate) fn propagate_module_names_to_closures(
 
                 let name = if let Some(module_id) = module_id {
                     module_names.get(&module_id).cloned()
-                } else if slot_writes.get(&(level, slot)).copied().unwrap_or(0) == 1 {
+                } else if single_store(target, &slot_writes, &stamped_writes, (owner, slot)) {
                     name_stored_in_slot(value)
                 } else {
                     None
@@ -569,37 +587,60 @@ pub(crate) fn propagate_module_names_to_closures(
     }
 }
 
-// `(level, slot)` of a write into an env slot. `closure_5` is level 0.
-// `closure_2_14` is the parent env two hops up, slot 14. A raw `ClosureVar`
-// carries the level on the binding.
-fn closure_write_target(target: &crate::ir::AssignTarget) -> Option<(u32, u32)> {
-    match target {
-        crate::ir::AssignTarget::Binding(Binding::Variable(name)) => {
-            crate::ir::placeholder::parse(name)
-                .filter(|p| p.variant.is_none())
-                .map(|p| (p.level, p.slot))
+// The `(owner, slot)` a store into a still unnamed env slot writes, `owner`
+// being the function or block scope that holds the slot. Only a placeholder
+// target or a raw `ClosureVar` is one: a slot that already has a name keeps
+// it. A stamped target says whose slot it is outright; the spelling does not,
+// once names are allocated per owner. Otherwise the level does, through the
+// context's scope tree, which knows block scopes: `closure_5` and a raw
+// `ClosureVar` at level 0 are this function's, `closure_2_14` is slot 14 two
+// scopes up. A level the context cannot place names no slot: naming this
+// function's own slot instead put a class name on the `global` parameter.
+pub(super) fn slot_write_target(
+    func_id: u32,
+    target: &crate::ir::AssignTarget,
+    closure_ctx: Option<&ClosureContext>,
+) -> Option<(u32, u32)> {
+    let (level, slot) = match target {
+        crate::ir::AssignTarget::Binding(Binding::Variable(var)) => {
+            let p = crate::ir::placeholder::parse(var).filter(|p| p.variant.is_none())?;
+            if let Some(s) = var.slot {
+                // After W6 a name given to a block scope's slot in the context
+                // never reaches its builder's IR: d3's `calendar` kept `let
+                // closure_5 = timeDay` while its readers became `timeDay2`.
+                if closure_ctx.is_some_and(|c| c.is_block_scope(s.owner)) {
+                    return None;
+                }
+                return Some((s.owner, s.slot));
+            }
+            (p.level, p.slot)
         }
-        crate::ir::AssignTarget::Binding(Binding::ClosureVar { slot, level }) => {
-            Some((*level, *slot))
-        }
-        _ => None,
+        crate::ir::AssignTarget::Binding(Binding::ClosureVar { slot, level }) => (*level, *slot),
+        _ => return None,
+    };
+    if level == 0 {
+        return Some((func_id, slot));
     }
+    Some((closure_ctx?.slot_owner(func_id, level)?, slot))
 }
 
-fn closure_slot_owner(
-    func_id: u32,
-    level: u32,
-    closure_ctx: &mut Option<crate::analysis::ClosureContext>,
-) -> u32 {
-    if level == 0 {
-        return func_id;
-    }
-    // A slot at another level belongs to another scope; naming this
-    // function's own slot instead put a class name on the `global` parameter.
-    closure_ctx
-        .as_ref()
-        .and_then(|ctx| ctx.slot_owner(func_id, level))
-        .unwrap_or(u32::MAX)
+// Whether the store into `(owner, slot)` is the slot's only one (see
+// `propagate_module_names_to_closures`).
+fn single_store(
+    target: &crate::ir::AssignTarget,
+    slot_writes: &HashMap<(u32, u32), usize>,
+    stamped_writes: &HashMap<crate::ir::SlotRef, usize>,
+    key: (u32, u32),
+) -> bool {
+    let stamped = match target {
+        crate::ir::AssignTarget::Binding(Binding::Variable(var)) => var.slot,
+        _ => None,
+    };
+    let n = match stamped {
+        Some(slot) => stamped_writes.get(&slot),
+        None => slot_writes.get(&key),
+    };
+    n.copied().unwrap_or(0) == 1
 }
 
 // The name a slot may take from the value stored into it. An import binding

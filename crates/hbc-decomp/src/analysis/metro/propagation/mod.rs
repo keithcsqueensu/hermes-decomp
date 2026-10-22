@@ -420,25 +420,7 @@ pub fn propagate_module_names(
                             renames.insert(var_name, name.clone());
                         }
 
-                        // Handle closure variables specifically
-                        if let crate::ir::AssignTarget::Binding(Binding::ClosureVar {
-                            slot,
-                            level,
-                            ..
-                        }) = target
-                        {
-                            if let Some(ctx) = closure_ctx {
-                                // Walk up levels to find the defining function
-                                let mut defining_func = *func_id;
-                                for _ in 0..*level {
-                                    if let Some(&p) = ctx.parent_function.get(&defining_func) {
-                                        defining_func = p;
-                                    }
-                                }
-                                // Update the slot name
-                                ctx.update_slot_variable(defining_func, *slot, name.clone());
-                            }
-                        }
+                        update_written_slot(*func_id, target, closure_ctx, name);
                     }
                 } else if matches!(
                     value,
@@ -461,22 +443,7 @@ pub fn propagate_module_names(
                             if let Some(var_name) = target_to_key(target) {
                                 renames.insert(var_name, name.clone());
                             }
-                            if let crate::ir::AssignTarget::Binding(Binding::ClosureVar {
-                                slot,
-                                level,
-                                ..
-                            }) = target
-                            {
-                                if let Some(ctx) = closure_ctx {
-                                    let mut defining_func = *func_id;
-                                    for _ in 0..*level {
-                                        if let Some(&p) = ctx.parent_function.get(&defining_func) {
-                                            defining_func = p;
-                                        }
-                                    }
-                                    ctx.update_slot_variable(defining_func, *slot, name.clone());
-                                }
-                            }
+                            update_written_slot(*func_id, target, closure_ctx, &name);
                         }
                     }
                 } else if let Expression::Call {
@@ -529,36 +496,7 @@ pub fn propagate_module_names(
                             if let Some(var_name) = target_to_key(target) {
                                 renames.insert(var_name, name.clone());
                             }
-                            // 4. Update Closure Context if it's a closure variable
-                            if let crate::ir::AssignTarget::Binding(Binding::ClosureVar {
-                                slot,
-                                level,
-                                ..
-                            }) = target
-                            {
-                                if let Some(ctx) = closure_ctx {
-                                    let mut defining_func = *func_id;
-                                    for _ in 0..*level {
-                                        if let Some(&p) = ctx.parent_function.get(&defining_func) {
-                                            defining_func = p;
-                                        }
-                                    }
-                                    ctx.update_slot_variable(defining_func, *slot, name.clone());
-                                }
-                            } else if let crate::ir::AssignTarget::Binding(Binding::Variable(v)) =
-                                target
-                            {
-                                // Fallback: handle "closure_N" as a slot update
-                                if let Some(slot_id_str) =
-                                    v.strip_prefix(crate::ir::placeholder::PREFIX)
-                                {
-                                    if let Ok(slot) = slot_id_str.parse::<u32>() {
-                                        if let Some(ctx) = closure_ctx {
-                                            ctx.update_slot_variable(*func_id, slot, name.clone());
-                                        }
-                                    }
-                                }
-                            }
+                            update_written_slot(*func_id, target, closure_ctx, &name);
                         }
                     }
                 }
@@ -569,6 +507,22 @@ pub fn propagate_module_names(
         if !renames.is_empty() {
             crate::analysis::naming::rename_variables_in_stmts(stmts, &renames);
         }
+    }
+}
+
+// Name the env slot a store writes, wherever it lives (`slot_write_target`).
+fn update_written_slot(
+    func_id: u32,
+    target: &crate::ir::AssignTarget,
+    closure_ctx: &mut Option<ClosureContext>,
+    name: &str,
+) {
+    let Some((owner, slot)) = phases::slot_write_target(func_id, target, closure_ctx.as_ref())
+    else {
+        return;
+    };
+    if let Some(ctx) = closure_ctx {
+        ctx.update_slot_variable(owner, slot, name.to_string());
     }
 }
 

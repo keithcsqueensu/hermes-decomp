@@ -455,6 +455,57 @@ Replace each text-or-record resolution of a slot with the stamp, measuring each 
 Then `baked_captures` has no readers and goes (`CACHE_VERSION`). *Acceptance:* the behaviour
 gates per commit; I1/I2 counts non-rising.
 
+**K4.5.1 ✅ shipped (metro).** One resolver, `phases::slot_write_target`, now gives the
+`(owner, slot)` of a slot store for both metro passes. A stamped target names it outright;
+otherwise the level is resolved through `ClosureContext::slot_owner`, which knows block
+scopes. It replaces `closure_write_target` plus `closure_slot_owner`, the three
+hand-rolled level walks in phase 2, and its `closure_N` fallback. Two facts shaped it:
+
+- **Metro runs on both sides of W6.** W5 and the re-injection run before W6, when nothing
+  is stamped and every store is a raw `ClosureVar{level, slot}`, so there the change is
+  only block scopes in the walk. W7b runs `propagate_module_names_to_closures` again after
+  W6. There the old code parsed `closure_2` in a child as level 0 and renamed the
+  *child's* slot 2, mostly a no-op. Now the stamp reaches the real owner, which puts
+  three old weaknesses in play, each held to its old reach:
+  - *Eligibility is unchanged.* Only a placeholder target, or a raw `ClosureVar`, names a
+    slot. Accepting any stamped store renamed slots that already had names.
+  - *The single-store rule counts across functions, for stamped stores.* Node's `eos`
+    writes its `callback` slot three times and a closure writes `callback = nop` once.
+    Counted per function, that one store named the slot `nop`. A stamped store now counts
+    every stamped store into its slot; a store before W6 still counts among its own
+    function's. Counting across functions before W6 too lost good names (counters went
+    back to `c12`, React's `promise` slot to `_null`).
+  - *No block-scope owner after W6.* A name given in the context to a block scope's slot
+    never reaches its builder's IR. d3-scale's `calendar` kept `let closure_5 = timeDay`
+    while its readers became `timeDay2`. Measured on Expensify, dropping block-scope
+    owners: 46 changed lines, and no new undeclared name except the three below; dropping
+    every stamped store: 468 lines.
+
+**[measured]** K4.4c → K4.5.1, changed lines / I1 / undeclared references per module:
+
+| | lines | I1 | undeclared |
+|---|---|---|---|
+| Equinox | 0 | 2,294 → 2,294 | 7,404 → 7,404 |
+| CoachRx | 5 | 2,807 → 2,806 | 7,844 → 7,844 |
+| Expensify | 46 | 4,790 → 4,790 | 37,578 → 37,578 |
+| Discord | 234 | 9,452 → 9,454 | 108,976 → 108,982 |
+
+I2 and I3 are unchanged, except Discord `Unused` 134 → 133. Each change is a slot that had
+the name of a value stored in a different slot:
+- **CoachRx.** tanstack's `createNotifyManager` declared `let systemSetTimeoutZero2;`, never
+  assigned it, and called it to schedule. The owner's binding is `closure_4 =
+  systemSetTimeoutZero`, and the readers now call `closure_4`.
+- **v98: Metro's `require`.** Two scopes up, `require` (`closure_2_0`, `closure_2_1`) wore a
+  sibling slot's name: `webviewUrl2(dependencyMap[6]).intl`, `translate2(dependencyMap[8])`,
+  and `sidecarUrl2(…)` while the real `sidecarUrl` was passed as `closure_0`. Every one of
+  them was a dead local in the reading function. Both sides are now placeholders, and the
+  value slot keeps the name. That is all of Discord's 110 name → placeholder substitutions,
+  and Expensify's 18. The `worse:` lists (`closure_2_0`, `closure_2_1`, `closure_2_5`,
+  `closure_2_6`, `closure_3_0`; +6 references on Discord, net 0 on Expensify) are those
+  same reads: a ReferenceError now, a call on `undefined` before. The undeclared nested
+  `require` placeholder is an older class (207 references on Expensify before this
+  change); it is K4.R's.
+
 ### K4.6 — `rename_slot` — behaviour
 One operation, `rename_slot(all_ir, ctx, SlotRef, new_name)`: renames every `Var` carrying the
 `SlotRef`, in every body, and the context's name with it, refusing when `new_name` is already
