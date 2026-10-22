@@ -451,7 +451,9 @@ impl Codegen {
         // in the text as one for the whole module (React's current fiber,
         // `_null2`, unbound in every hook once one helper had a `_null2`).
         if !self.module_slot_names.is_empty() {
-            let top = top_level_bound_names(&imports, &body_stmts, &exports);
+            // The import aliases (`const X = X2;`) sit in `extra_consts`.
+            let top_lines: Vec<String> = body_stmts.iter().chain(&extra_consts).cloned().collect();
+            let top = top_level_bound_names(&imports, &top_lines, &exports);
             for name in &self.module_slot_names {
                 let name = crate::util::sanitize_identifier(name);
                 if !top.contains(name.as_str())
