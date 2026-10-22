@@ -30,6 +30,15 @@ pub(super) fn fold_slot_index_fills_here(statements: &mut Vec<Statement>) {
             i += 1;
             continue;
         };
+        // Only a placeholder slot takes a fill, each at most once: with none
+        // left the scan below can fold nothing more. Without this cut it ran on
+        // through every side-effect free statement after every literal, which
+        // in a module of thousands of literals is quadratic.
+        let mut open = placeholder_count(&statements[i]);
+        if open == 0 {
+            i += 1;
+            continue;
+        }
 
         // Registers/variables defined AFTER the object literal while scanning
         // forward. A fill value that references one of these was produced later, so
@@ -59,6 +68,10 @@ pub(super) fn fold_slot_index_fills_here(statements: &mut Vec<Statement>) {
                             &mut defined_after_vars,
                         );
                         j += 1;
+                        open -= 1;
+                        if open == 0 {
+                            break;
+                        }
                         continue;
                     }
                 }
@@ -104,6 +117,12 @@ fn fold_named_placeholder_fills_here(statements: &mut Vec<Statement>) {
             i += 1;
             continue;
         };
+        // As above: nothing to fold once no placeholder is left.
+        let mut open = placeholder_count(&statements[i]);
+        if open == 0 {
+            i += 1;
+            continue;
+        }
         let mut defined_after_vars: Vec<String> = Vec::new();
         let mut defined_after_regs: Vec<u32> = Vec::new();
         let mut j = i + 1;
@@ -124,6 +143,10 @@ fn fold_named_placeholder_fills_here(statements: &mut Vec<Statement>) {
                                 &mut defined_after_vars,
                             );
                             j += 1;
+                            open -= 1;
+                            if open == 0 {
+                                break;
+                            }
                             continue;
                         }
                     }
@@ -522,6 +545,24 @@ fn expr_uses_var(expr: &Expression, name: &str) -> bool {
     let mut c = C(name, false);
     c.visit_expression(expr);
     c.1
+}
+
+// The literal's slots still waiting for a fill.
+fn placeholder_count(stmt: &Statement) -> usize {
+    match stmt {
+        Statement::Assign {
+            value: Expression::Object { properties },
+            ..
+        }
+        | Statement::Let {
+            value: Expression::Object { properties },
+            ..
+        } => properties
+            .iter()
+            .filter(|p| is_placeholder(&p.value))
+            .count(),
+        _ => 0,
+    }
 }
 
 fn is_placeholder(expr: &Expression) -> bool {
