@@ -506,6 +506,71 @@ the name of a value stored in a different slot:
   `require` placeholder is an older class (207 references on Expensify before this
   change); it is K4.R's.
 
+**K4.5.2 ✅ shipped (W10), narrowed.** Two of W10's three resolutions now go by stamp.
+- **Phase 1.** A capture's `(owner, slot)` comes from its stamp when the body uses that
+  name for one function-owned slot only; otherwise from the bake record or the level, as
+  before. Which names are captures at all is unchanged.
+- **`owner_var`**, the owner binding a slot's new name renames. It is the placeholder the
+  owner's own references are stamped with (`closure_3`, and the `cN` counters), when that
+  spelling means only this slot in the owner's body. The old answer was the context's
+  decided placeholder, which the owner often did not use. On v98 the old W10 renamed every
+  reader of Sentry's tracing options (`traceFetch`, `enableHTTPTimings`, …) while the owner
+  went on initialising `c62 = undefined`. The readers read dead locals, and now the owner
+  binds the names. Renaming the owner's spelling is safe only when nothing is left behind,
+  so `SlotFollow::owner_binding` takes the stamped binding only when every other reference
+  to the slot is renamed with it. Otherwise it falls back to the decided placeholder, as
+  before. The references that block it, each found as a `worse:` name:
+  - another body's reference that W10 does not reach (XHR's `c14`, read in a class method);
+  - one inside a `Statement::Class`, where the class pass already moved the method bodies
+    and no per-function rename reaches (`allowTouches`, read as `c15` in a constructor);
+  - one below the owner that lost its stamp.
+
+  The owner's spelling must also be unique to the slot in its body. A rename goes by
+  spelling, so a `c12` that spells two slots took `dependencyMap` with it. Finally, no
+  owner binding is renamed to a constant's spelling (`_undefined`, `_null`, …). Those names
+  come from a slot whose only known value is that constant, and two such slots in one owner
+  then bind one name (Expensify `c15` +14 before this rule).
+
+The object-key pass (`apply_object_key_literals`) keeps its old resolution. Resolving it by
+stamp reached owners its level-0 shortcut never did. Some of that fixed things (Apollo's
+`const DELETE = Object.create(null)`, GraphQL `query` documents), but it also renamed
+bindings into names the owner already used. Two examples: `let closure_8 =
+Base64.encode("facility:" + facilityId)` became `facilityId = …`, and reanimated's
+`styleAnimations` lost the binding its worklet reads, which the old shortcut had renamed
+right by accident. Each guard added for one case uncovered the next, so that pass is left
+for its own commit, after `rename_slot` (K4.6) makes owner and readers move together.
+
+**[measured]** K4.5.1 → K4.5.2:
+
+| | lines | I1 | I2 | undeclared |
+|---|---|---|---|---|
+| Equinox | 345 | 2,294 → 2,245 | 2,117 → 2,109 | 7,404 → 7,404 |
+| CoachRx | 322 | 2,806 → 2,781 | 1,373 → 1,363 | 7,844 → 7,844 |
+| Expensify | 5,922 | 4,790 → 4,661 | 5,318 → 5,264 | 37,578 → 37,568 |
+| Discord | 34,163 | 9,454 → 9,318 | 11,989 → 12,036 | 108,982 → 108,895 |
+
+- **v96.** No `worse:` names. The placeholder → name substitutions are owners now binding
+  the name their readers use. Before, the readers read a dangling module `let` or a dead
+  local: Sentry's `flavorVersion`, `sentry_version`, `ttl`; XHR's `OPENED`…`DONE`. The
+  name → placeholder substitutions are readers that move off a dead local onto the owner's
+  real binding: RevenueCat's `CheckoutSessionStart`, a replay `logger` now
+  `closure_85 = makeReplayLogger()`. A hook with two `useRef`s now writes the one its
+  closure actually reads (slot 1, not slot 0).
+- **Discord I2.** The rise is entirely Metro's `require`. Readers of the factory's
+  `require` slot now print `require`, the spelling of the factory's own parameter (220
+  `CaptureAndParam`, 135 `TwoSlots` where an async wrapper's merged body reads the same
+  slot under a second stamp). Same value, same name. It is also why 677 lines of
+  `require("module_724")` inside functions became hoisted imports. Without those, I2 falls:
+  `CaptureAndLocal` 9,010 → 8,819, `Shadowed` 1,529 → 1,410, `TwoSlots` (other) 860 → 866.
+- **`worse:` on v98.** Each name checked by hand was a read that was already broken:
+  - `authStore` (+16): a dead `let authStore;` before, so a TypeError on `undefined`; a
+    ReferenceError now. The read wants the `GuildRoomStore` import.
+  - Expensify's `_var2` (+2): a slot named `var`, sanitized two ways. One of its three
+    reads is now bound where none was.
+  - The `closure_N_M`: nested `require` as in K4.5.1.
+
+  The rest are 1–8 references each, not all read.
+
 ### K4.6 — `rename_slot` — behaviour
 One operation, `rename_slot(all_ir, ctx, SlotRef, new_name)`: renames every `Var` carrying the
 `SlotRef`, in every body, and the context's name with it, refusing when `new_name` is already

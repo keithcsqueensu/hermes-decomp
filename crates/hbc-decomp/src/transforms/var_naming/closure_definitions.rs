@@ -40,6 +40,7 @@ pub fn rename_closure_variables_cross_function(
     all_ir_keys.sort();
     for func_id in all_ir_keys {
         let stmts = &all_ir[&func_id];
+        let stamps = stamped_slots(stmts);
         // Collect usage in this function
         let mut usage_map: BTreeMap<String, ClosureUsageInfo> = BTreeMap::new();
         for stmt in stmts.iter() {
@@ -66,11 +67,21 @@ pub fn rename_closure_variables_cross_function(
                 // direct parent gave the factory's `closure_2` (a native-bridge
                 // object) the name of `genMethod`'s own slot 2 (`type`). The
                 // direct parent remains only for a name with no record.
-                let (pid, slot) = match (recorded, parsed) {
-                    (Some((owner, slot)), _) => (Some(owner), slot),
-                    (None, Some((0, slot))) => (parent_id, slot),
-                    (None, Some((level, slot))) => (closure_ctx.slot_owner(func_id, level), slot),
-                    (None, None) => continue,
+                // The stamp says it outright, where the body uses the name for
+                // one slot only, and the slot is a function's: a block scope
+                // has no body of its own to rename its binding in.
+                let stamped = stamps
+                    .get(closure_name.as_str())
+                    .and_then(only_slot)
+                    .filter(|s| !closure_ctx.is_block_scope(s.owner));
+                let (pid, slot) = match (stamped, recorded, parsed) {
+                    (Some(s), _, _) => (Some(s.owner), s.slot),
+                    (None, Some((owner, slot)), _) => (Some(owner), slot),
+                    (None, None, Some((0, slot))) => (parent_id, slot),
+                    (None, None, Some((level, slot))) => {
+                        (closure_ctx.slot_owner(func_id, level), slot)
+                    }
+                    (None, None, None) => continue,
                 };
 
                 if let Some(pid) = pid {
@@ -97,6 +108,7 @@ pub fn rename_closure_variables_cross_function(
     if slot_usage.is_empty() {
         return apply_object_key_literals(all_ir, closure_ctx, param_names);
     }
+    let owner_names = owner_slot_names(all_ir, closure_ctx);
 
     // Phase 2: Infer one name per (parent_id, slot) from aggregated usage
     let mut slot_names: BTreeMap<(u32, u32), String> = BTreeMap::new();
@@ -167,7 +179,7 @@ pub fn rename_closure_variables_cross_function(
         let mut chain: BTreeMap<u32, Option<String>> = BTreeMap::new();
         chain.insert(
             closure_ctx.scope_function(owner),
-            Some(owner_var(closure_ctx, owner, slot)),
+            Some(owner_var(closure_ctx, &owner_names, owner, slot)),
         );
         for &(reader, old) in readers.get(&key).map(|v| v.as_slice()).unwrap_or(&[]) {
             chain.insert(reader, Some(old.clone()));
@@ -209,11 +221,19 @@ pub fn rename_closure_variables_cross_function(
     // The slot owner writes `closure_{slot} = param`. Rename that binding too,
     // and fill the parameter from an object-key name. Look up the param index
     // before rewriting the slot value (`arg0` → `login`).
+    let follow = SlotFollow::new(all_ir);
     for ((parent_id, slot), new_name) in &slot_names {
+        let var = follow.owner_binding(
+            closure_ctx,
+            &owner_names,
+            (*parent_id, *slot),
+            new_name,
+            &per_func_renames,
+        );
         per_func_renames
             .entry(*parent_id)
             .or_default()
-            .entry(owner_var(closure_ctx, *parent_id, *slot))
+            .entry(var)
             .or_insert_with(|| new_name.clone());
         if object_key_slots.contains(&(*parent_id, *slot)) {
             if let Some(idx) =
@@ -245,9 +265,36 @@ pub fn rename_closure_variables_cross_function(
     total_renamed
 }
 
-// The name the owner's own body uses for an unnamed slot: its decided
-// placeholder.
-fn owner_var(closure_ctx: &ClosureContext, owner: u32, slot: u32) -> String {
+// The name the owner's own body uses for an unnamed slot: the placeholder
+// (`closure_3`, `c8`) its references to the slot are stamped with, when they
+// all use one, else its decided placeholder. A name the owner's body gives
+// the slot that is no placeholder (a parameter it aliases) is not renamed.
+fn owner_var(
+    closure_ctx: &ClosureContext,
+    owner_names: &OwnerSlotNames,
+    owner: u32,
+    slot: u32,
+) -> String {
+    stamped_owner_var(owner_names, crate::ir::SlotRef { owner, slot })
+        .unwrap_or_else(|| decided_owner_var(closure_ctx, owner, slot))
+}
+
+fn stamped_owner_var(owner_names: &OwnerSlotNames, slot: crate::ir::SlotRef) -> Option<String> {
+    let names = owner_names.get(&slot).filter(|n| n.len() == 1)?;
+    let name = names.iter().next()?;
+    let placeholder = crate::ir::placeholder::parse(name).is_some()
+        || (name.len() <= 7 && crate::ir::placeholder::is_counter_slot(name));
+    placeholder.then(|| name.clone())
+}
+
+// `_undefined`, `_null2`: the sanitized spelling of a constant, numbered.
+fn is_constant_spelling(name: &str) -> bool {
+    let base = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    matches!(base, "_undefined" | "_null" | "_true" | "_false")
+}
+
+// The owner's decided placeholder for the slot, whether or not its body uses it.
+fn decided_owner_var(closure_ctx: &ClosureContext, owner: u32, slot: u32) -> String {
     closure_ctx
         .function_closures
         .get(&owner)
@@ -269,6 +316,239 @@ fn parse_closure_capture(name: &str) -> Option<(u32, u32)> {
         return Some((0, name[1..].parse().ok()?));
     }
     None
+}
+
+// For each slot, the names its owner's body references it by, by stamp.
+type OwnerSlotNames = BTreeMap<crate::ir::SlotRef, std::collections::BTreeSet<String>>;
+
+fn owner_slot_names(
+    all_ir: &BTreeMap<u32, Vec<Statement>>,
+    closure_ctx: &ClosureContext,
+) -> OwnerSlotNames {
+    let mut out = OwnerSlotNames::new();
+    for (&func, stmts) in all_ir {
+        add_owner_slot_names(func, stmts, closure_ctx, &mut out);
+    }
+    out
+}
+
+// The names `func`'s body references its own slots by. A name the body also
+// uses for another slot, or unstamped, counts as two names for the slot: a
+// rename by spelling would take the other variable with it (a `c12` that
+// also spelled `dependencyMap`'s slot became `_undefined`).
+fn add_owner_slot_names(
+    func: u32,
+    stmts: &[Statement],
+    closure_ctx: &ClosureContext,
+    out: &mut OwnerSlotNames,
+) {
+    let mut uses: std::collections::HashMap<
+        &str,
+        (std::collections::BTreeSet<crate::ir::SlotRef>, bool),
+    > = std::collections::HashMap::new();
+    for (name, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
+        let u = uses.entry(name).or_default();
+        match slot {
+            Some(slot) => {
+                u.0.insert(slot);
+            }
+            None => u.1 = true,
+        }
+    }
+    for (name, (slots, unstamped)) in uses {
+        for slot in &slots {
+            if closure_ctx.scope_function(slot.owner) != func {
+                continue;
+            }
+            let names = out.entry(*slot).or_default();
+            names.insert(name.to_string());
+            if slots.len() > 1 || unstamped {
+                names.insert(String::new());
+            }
+        }
+    }
+}
+
+// Who else references each slot, to decide which owner binding a rename may
+// take (`owner_binding`).
+struct SlotFollow {
+    stamped: BTreeMap<crate::ir::SlotRef, std::collections::BTreeSet<(u32, String)>>,
+    unstamped: std::collections::HashMap<String, std::collections::BTreeSet<u32>>,
+}
+
+impl SlotFollow {
+    fn new(all_ir: &BTreeMap<u32, Vec<Statement>>) -> Self {
+        let mut unstamped: std::collections::HashMap<String, std::collections::BTreeSet<u32>> =
+            std::collections::HashMap::new();
+        for (&func, stmts) in all_ir {
+            for (name, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
+                if slot.is_none() && is_closure_name(name) {
+                    unstamped.entry(name.to_string()).or_default().insert(func);
+                }
+            }
+            for (name, slot) in class_method_refs(stmts) {
+                if slot.is_none() && is_closure_name(&name) {
+                    unstamped.entry(name).or_default().insert(IN_CLASS);
+                }
+            }
+        }
+        SlotFollow {
+            stamped: stamped_slot_refs(all_ir),
+            unstamped,
+        }
+    }
+
+    // The owner binding to rename to `new_name`. The one the owner's references
+    // are stamped with, when every other reference to the slot is renamed with
+    // it (`renames`): one left behind would read a name nothing binds any more,
+    // whether another body's (an XHR class method's `c14`), one inside a class
+    // statement no per-function rename reaches, or one below the owner that
+    // lost its stamp (Sentry's `allowTouches`, read as `c15`). Otherwise the
+    // owner's decided placeholder, as before.
+    fn owner_binding(
+        &self,
+        closure_ctx: &ClosureContext,
+        owner_names: &OwnerSlotNames,
+        (owner, slot): (u32, u32),
+        new_name: &str,
+        renames: &BTreeMap<u32, BTreeMap<String, String>>,
+    ) -> String {
+        self.owner_binding_if_follows(closure_ctx, owner_names, (owner, slot), new_name, renames)
+            .unwrap_or_else(|| decided_owner_var(closure_ctx, owner, slot))
+    }
+
+    // `owner_binding`'s stamped binding, when every reference follows it.
+    fn owner_binding_if_follows(
+        &self,
+        closure_ctx: &ClosureContext,
+        owner_names: &OwnerSlotNames,
+        (owner, slot): (u32, u32),
+        new_name: &str,
+        renames: &BTreeMap<u32, BTreeMap<String, String>>,
+    ) -> Option<String> {
+        let key = crate::ir::SlotRef { owner, slot };
+        let owner_fn = closure_ctx.scope_function(owner);
+        let renamed = |f: u32, n: &str| {
+            n == new_name
+                || renames.get(&f).and_then(|m| m.get(n)).map(String::as_str) == Some(new_name)
+        };
+        let stamped_follow = || {
+            self.stamped
+                .get(&key)
+                .into_iter()
+                .flatten()
+                .filter(|(f, _)| *f != owner_fn)
+                .all(|(f, n)| *f != IN_CLASS && renamed(*f, n))
+        };
+        let unstamped_follow = |var: &str| {
+            self.unstamped.get(var).into_iter().flatten().all(|&f| {
+                f != IN_CLASS
+                    && (f == owner_fn
+                        || !closure_ctx.ancestors_of(f).contains(&owner_fn)
+                        || renamed(f, var))
+            })
+        };
+        // A name that only spells a constant the slot once held (`_undefined`,
+        // `_null`) is no name to give the owner's binding: two slots of one
+        // owner that both start out `undefined` would bind the same name.
+        if is_constant_spelling(new_name) {
+            return None;
+        }
+        match stamped_owner_var(owner_names, key) {
+            Some(var) if stamped_follow() && unstamped_follow(&var) => Some(var),
+            _ => None,
+        }
+    }
+}
+
+// Every body's references to each slot, by stamp: (function, name).
+fn stamped_slot_refs(
+    all_ir: &BTreeMap<u32, Vec<Statement>>,
+) -> BTreeMap<crate::ir::SlotRef, std::collections::BTreeSet<(u32, String)>> {
+    let mut out: BTreeMap<crate::ir::SlotRef, std::collections::BTreeSet<(u32, String)>> =
+        BTreeMap::new();
+    for (&func, stmts) in all_ir {
+        for (name, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
+            if let Some(slot) = slot {
+                out.entry(slot)
+                    .or_default()
+                    .insert((func, name.to_string()));
+            }
+        }
+        // A class's methods already live inside its statement, where no
+        // per-function rename reaches; a reference there never follows.
+        for (name, slot) in class_method_refs(stmts) {
+            if let Some(slot) = slot {
+                out.entry(slot).or_default().insert((IN_CLASS, name));
+            }
+        }
+    }
+    out
+}
+
+// Stands for "inside a class statement" among function ids.
+const IN_CLASS: u32 = u32::MAX;
+
+// Every variable reference in the bodies of the class methods `stmts` hold,
+// nested classes included (the IR walker does not visit methods).
+fn class_method_refs(stmts: &[Statement]) -> Vec<(String, Option<crate::ir::SlotRef>)> {
+    struct Classes(Vec<(String, Option<crate::ir::SlotRef>)>);
+    impl<'a> Visitor<'a> for Classes {
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Class { methods, .. } = s {
+                for m in methods {
+                    if let Some(body) = &m.body {
+                        for (n, slot) in crate::analysis::closure::stamps::var_refs(body) {
+                            self.0.push((n.to_string(), slot));
+                        }
+                        for st in body {
+                            self.visit_statement(st);
+                        }
+                    }
+                }
+            }
+            self.walk_statement(s);
+        }
+    }
+    let mut c = Classes(Vec::new());
+    for s in stmts {
+        c.visit_statement(s);
+    }
+    c.0
+}
+
+// `owner_slot_names` for one owner's body only.
+fn owner_slot_names_of(
+    all_ir: &BTreeMap<u32, Vec<Statement>>,
+    closure_ctx: &ClosureContext,
+    owner: u32,
+) -> OwnerSlotNames {
+    let func = closure_ctx.scope_function(owner);
+    let mut out = OwnerSlotNames::new();
+    if let Some(stmts) = all_ir.get(&func) {
+        add_owner_slot_names(func, stmts, closure_ctx, &mut out);
+    }
+    out
+}
+
+// Each name `stmts` reference, with the slots its stamped references name.
+fn stamped_slots(
+    stmts: &[Statement],
+) -> std::collections::HashMap<&str, std::collections::BTreeSet<crate::ir::SlotRef>> {
+    let mut out: std::collections::HashMap<&str, std::collections::BTreeSet<crate::ir::SlotRef>> =
+        std::collections::HashMap::new();
+    for (name, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
+        if let Some(slot) = slot {
+            out.entry(name).or_default().insert(slot);
+        }
+    }
+    out
+}
+
+// The one slot of a set, if it has exactly one: a body that uses one name
+// for two slots (I2) says nothing about either.
+fn only_slot(slots: &std::collections::BTreeSet<crate::ir::SlotRef>) -> Option<crate::ir::SlotRef> {
+    (slots.len() == 1).then(|| *slots.iter().next().unwrap())
 }
 
 fn param_index_stored_in_slot(
@@ -298,7 +578,12 @@ fn param_index_stored_in_slot(
     param_index_from_slot_store(
         stmts,
         slot,
-        &owner_var(closure_ctx, parent_id, slot),
+        &owner_var(
+            closure_ctx,
+            &owner_slot_names_of(all_ir, closure_ctx, parent_id),
+            parent_id,
+            slot,
+        ),
         slot_var,
         param_names.get(&parent_id).map(|v| v.as_slice()),
     )
@@ -537,7 +822,7 @@ fn apply_object_key_literals(
         per_func
             .entry(*owner)
             .or_default()
-            .entry(owner_var(closure_ctx, *owner, *slot))
+            .entry(decided_owner_var(closure_ctx, *owner, *slot))
             .or_insert_with(|| key.clone());
         if let Some(info) = closure_ctx.function_closures.get(owner) {
             if let Some(ClosureSlotValue::Variable(v)) = info.slots.get(slot) {
