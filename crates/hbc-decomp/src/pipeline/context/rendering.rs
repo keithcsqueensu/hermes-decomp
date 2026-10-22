@@ -263,55 +263,55 @@ impl PipelineContext {
         params: &[String],
     ) {
         let extra = self.extra_writes_for_function(func_id);
-        let empty = HashSet::new();
-        let mut outer_owned;
-        let mut outer = self.ancestor_env_slots.get(&func_id).unwrap_or(&empty);
-        if let Some(ctx) = self.closure_ctx.as_ref() {
-            let captured: Vec<String> =
-                crate::analysis::closure::stamps::captured_slot_names(ctx, func_id, stmts)
-                    .into_iter()
-                    .filter(|(name, slots)| {
-                        !outer.contains(name)
-                            && slots.iter().all(|s| self.owner_binds(ctx, *s, name))
-                    })
-                    .map(|(name, _)| name)
-                    .collect();
-            if !captured.is_empty() {
-                outer_owned = outer.clone();
-                outer_owned.extend(captured);
-                outer = &outer_owned;
+        // The names this body stores into an ancestor's slot under, by stamp,
+        // where the owner binds them; and the ancestors' slot names (as the
+        // context has them) that a function nested here uses, so a local
+        // declared here cannot hide the ancestor's variable from it. Any other
+        // name an ancestor's slot merely shares is this body's local (each of a
+        // module's functions with its own `hasOwnProperty` temporary). Without
+        // a closure context, the ancestors' slot names as the context has them.
+        let ancestors = self.ancestor_env_slots.get(&func_id);
+        let outer: HashSet<String> = match self.closure_ctx.as_ref() {
+            Some(ctx) => {
+                let mut outer: HashSet<String> =
+                    crate::analysis::closure::stamps::captured_slot_names(ctx, func_id, stmts)
+                        .into_iter()
+                        .filter(|(name, slots)| {
+                            slots.iter().all(|s| self.owner_binds(ctx, *s, name))
+                        })
+                        .map(|(name, _)| name)
+                        .collect();
+                if let (Some(ancestors), Some(below)) =
+                    (ancestors, self.captured_by_descendants.get(&func_id))
+                {
+                    outer.extend(ancestors.intersection(below).cloned());
+                }
+                outer
             }
-        }
+            None => ancestors.cloned().unwrap_or_default(),
+        };
         let mut own_slots = self.own_env_slot_names(func_id);
-        own_slots.extend(self.slot_names_of(func_id));
-        if let Ok(dbg) = std::env::var("HD_DBG_NAME") {
-            let refs: Vec<_> = crate::analysis::closure::stamps::var_refs(stmts)
+        let slot_names = self.slot_names_of(func_id);
+        own_slots.extend(slot_names.iter().cloned());
+        // The names the body uses for its own slots: by stamp, and by the name
+        // the other bodies give the slot when this body's own reference lost
+        // its stamp (moment's `keys = Object.keys`, read by `hooks.locales()`).
+        let mut own_used = crate::analysis::closure::stamps::own_slot_names(func_id, stmts);
+        if !slot_names.is_empty() {
+            let here: HashSet<&str> = crate::analysis::closure::stamps::var_refs(stmts)
                 .into_iter()
-                .filter(|(n, _)| *n == dbg)
-                .map(|(_, s)| s)
+                .map(|(n, _)| n)
                 .collect();
-            if !refs.is_empty() {
-                let mut st: Vec<_> = refs.iter().map(|s| format!("{s:?}")).collect();
-                st.sort();
-                st.dedup();
-                eprintln!(
-                    "DBGN F{func_id} {:?} refs {} stamps {st:?} outer {} own_slots {} parent {:?}",
-                    self.closure_ctx
-                        .as_ref()
-                        .and_then(|c| c.get_function_name(func_id)),
-                    refs.len(),
-                    outer.contains(&dbg),
-                    own_slots.contains(&dbg),
-                    self.closure_ctx
-                        .as_ref()
-                        .and_then(|c| c.parent_function.get(&func_id))
-                );
-            }
+            own_used.extend(
+                slot_names
+                    .iter()
+                    .filter(|n| here.contains(n.as_str()) && !outer.contains(*n))
+                    .cloned(),
+            );
         }
-        let own_used = crate::analysis::closure::stamps::own_slot_names(func_id, stmts);
         let read_by = self.own_slots_read_below(func_id, stmts, &own_used);
         transforms::insert_declarations_with_slots(
-            stmts, params, &extra, outer, &own_slots, &own_used, &read_by,
+            stmts, params, &extra, &outer, &own_slots, &own_used, &read_by,
         );
     }
 
@@ -444,6 +444,16 @@ impl PipelineContext {
                     self.0.push(id.0);
                 }
                 self.walk_expression(e);
+            }
+            // A class's methods are closures too, but the walker does not
+            // visit them (moment's `hooks.locales()` reads the `keys` slot).
+            fn visit_statement(&mut self, s: &'a Statement) {
+                if let Statement::Class { methods, .. } = s {
+                    for m in methods {
+                        self.visit_expression(&m.value);
+                    }
+                }
+                self.walk_statement(s);
             }
         }
         let mut ids = Ids(Vec::new());
@@ -715,6 +725,20 @@ impl PipelineContext {
                     self.0.insert(id.0);
                 }
                 self.walk_expression(e);
+            }
+            // A class creates its methods; the walker does not visit them.
+            fn visit_statement(&mut self, s: &'a Statement) {
+                if let Statement::Class { methods, .. } = s {
+                    for m in methods {
+                        self.visit_expression(&m.value);
+                        if let Some(body) = &m.body {
+                            for st in body {
+                                self.visit_statement(st);
+                            }
+                        }
+                    }
+                }
+                self.walk_statement(s);
             }
         }
         let mut ids = Ids(HashSet::new());

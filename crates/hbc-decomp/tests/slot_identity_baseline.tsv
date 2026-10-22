@@ -1,5 +1,5 @@
 # Per-bundle ceilings on slot identity violations (closure model K4.3), checked by
 # tests/slot_identity.rs against HBC_CORPUS_BUNDLE. Columns: SHA-256 of the bundle,
 # label, I1, I2, I3. Lower a ceiling whenever the real count drops.
-085c10a82cd273a1c9e9f7b84bc2c8f2571eae4e92a6c9d5226418cd7a73e75e	equinox 11.43.0 (v96)	2294	2132	228
-702c2b611a3366676f28bb6a58f8e3bf57acd1e46a51a08d0ba226ecf01a72bb	coachrx 2.1.223	2807	1383	267
+085c10a82cd273a1c9e9f7b84bc2c8f2571eae4e92a6c9d5226418cd7a73e75e	equinox 11.43.0 (v96)	2294	2134	230
+702c2b611a3366676f28bb6a58f8e3bf57acd1e46a51a08d0ba226ecf01a72bb	coachrx 2.1.223	2807	1384	272

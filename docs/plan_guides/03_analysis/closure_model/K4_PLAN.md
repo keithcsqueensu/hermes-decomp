@@ -289,7 +289,13 @@ counts a `let x` *anywhere* in the module as binding `x` everywhere. Each piece 
 found by the gates' `worse:` list going up on one bundle or another.
 
 - **The rule, per body.** `stamps::captured_slot_names` gives the names this body uses, by
-  stamp, for an ancestor's slot. They join `outer_names` for this body only. Making
+  stamp, for an ancestor's slot. They make up `outer_names` for this body, together with the
+  ancestors' slot names (as the context has them) that a function nested in this body uses,
+  so a local declared here never hides the ancestor's variable from it. Any other name an
+  ancestor's slot merely shares is the body's own local. The context's names used to block
+  those for every body: each function in a module using its own `hasOwnProperty`
+  temporary stayed undeclared, kept alive only by the module `let`. Dropping the context's
+  names entirely more than doubled `Shadowed` (168 → 399), hence the nested-use guard. Making
   `outer_names` the IR names of all ancestor slots, for every body, suppressed real locals
   (K4.4a's note). Only an *ancestor* counts as an owner: statements inlined from another
   function keep that function's stamps, and its slot is a local here (the checker's I3 now
@@ -313,27 +319,55 @@ found by the gates' `worse:` list going up on one bundle or another.
   (lodash `createWrap`'s `applyResult`).
 - **Class method bodies got no declarations at all.** The class pass rebuilds them inside
   `Statement::Class`, where no declaration pass reached, so every constructor local lived on
-  the module `let` (`declare_class_methods`).
+  the module `let` (`declare_class_methods`). The IR walker does not visit a class's methods
+  either, so they also counted as neither closures (moment's `keys` slot, read by
+  `hooks.locales()`, stayed declared inside the branch that set it) nor created functions
+  (every slot a class method owns looked like it had no rendering owner).
 - **Codegen dropped `const x = globalThis.Builtin.….x`** as a global alias. That is only
   right for `globalThis.X` itself: `captureStackTrace` and `valueOf` are not globals (a
   separate commit).
 
-**[measured]** at codegen, K4.4a (with the JSX fix) → K4.4b:
+**[measured]** at codegen, K4.4a (with the JSX fix) → K4.4b. Undeclared references are
+counted per module (`compare.sh` with `PER_MODULE=1`, new), because K4.4b moves declarations
+between modules' top levels, and the file-wide count credited a reference in one module to
+another module's `let`:
 
 | | Equinox | CoachRx |
 |---|---|---|
-| I3 `DeclaresCapture` | 306 → 0 | 335 → 2 (I1 in owners that no longer render) |
-| I2 | 2,195 → 2,132 | 1,443 → 1,383 |
-| I1, I3 `Undeclared`, I3 `Unused` | 2,294 / 14 / 217 → 2,294 / 14 / 214 | unchanged (243 → 242 unused) |
-| undeclared references (harness) | 3,000 → 1,199 | 4,990 → 4,201 |
+| I3 `DeclaresCapture` | 306 → 3 | 335 → 4 |
+| I2 | 2,195 → 2,134 | 1,443 → 1,384 |
+| I3 `Undeclared` / `Unused` | 14 / 217 → 12 / 215 | 23 / 243 → 22 / 246 |
+| undeclared references, per module | 19,954 → 7,404 | 12,707 → 7,844 |
 | modules that do not parse | 1,653 → 1,653 | 1,125 → 1,114 |
-| hunks | 12,361 | 4,124 |
+| hunks | 18,457 | 6,550 |
 
-`worse:` lists only harness artifacts. `window`, `DOMRect` and `XMLHttpRequest` are browser
-globals the Node-based harness does not know, now printed where a dropped
-`const X = window.X` used to be. `closure_0$2` is in a scope with a direct `eval()`, which
-eslint-scope leaves unresolved. `str26` was never bound in its module, and the harness
-counted it as covered by another module's top-level `let`.
+On the v98 bundles, per module: Expensify 9.5.14 54,238 → 37,578 (unparsed 3,559 both);
+Discord 350.8 180,348 → 108,974 (unparsed 1,725 → 1,726). I3 on Discord: `Undeclared`
+5,517 (K4.3) → 239, `DeclaresCapture` 1,707 → 28.
+
+The few `DeclaresCapture` left are readers of a slot whose owner no longer renders, which
+keep their local by design. On the v96 bundles, per module, `worse:` lists only browser
+globals the Node-based harness does not know (`window`, `DOMRect`, `XMLHttpRequest`, now
+printed where a dropped `const X = window.X` used to be). The v98 bundles add a short tail
+of the same kind as K4.4a's Discord names: reads that resolved to the module-level catch-all
+`let` by accident and are unbound now that the function owning that name declares it. Checked
+by hand: `context2` (+68, Expensify) is React's `readContextForConsumer` reading `context2`
+while its parameter is `context`, and similar name mismatches. The others are 1–16
+references each (`timeout`, `cN` counters, `guildMetadata`). The name mismatch is a naming
+defect (K4.6/K4.6b), not a declaration one.
+
+One more pre-existing gap the stamps cover now: an owner whose own reference lost its stamp
+(moment's `keys = Object.keys`, one of the census's drops) still has the name its readers
+give the slot, from `slot_names`, so it hoists the declaration they need.
+
+**Performance, measured while doing this.** Discord took about 17 minutes, 70 % of it in two
+passes over a few functions nested ~590 levels deep. The named-variable inliner ran
+`cleanup_noise`, which itself recurses into and copies every nested body, at every level of
+its own recursion, so cost grew with depth × size: F149797 (6,281 statements) took 117 s,
+twice (W13, and again at the end of W16b). Cleaned once at the entry, it takes 0.6 s with
+the same output: Discord 918 s → 443 s, Expensify 244 s → 206 s, byte-identical on all four
+bundles. `fold_slot_index_fills` also got a cut (it scanned forward from every literal, even
+one with nothing to fill): byte-identical, no measurable gain.
 
 ### K4.5 — resolvers by identity — behaviour, one commit each
 Replace each text-or-record resolution of a slot with the stamp, measuring each alone:

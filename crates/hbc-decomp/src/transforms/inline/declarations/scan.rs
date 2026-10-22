@@ -528,6 +528,15 @@ fn slot_uses(
             }
             self.walk_expression(e);
         }
+        // Creating a class creates its methods.
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Class { methods, .. } = s {
+                for m in methods {
+                    self.visit_expression(&m.value);
+                }
+            }
+            self.walk_statement(s);
+        }
     }
     let mut u = U {
         name,
