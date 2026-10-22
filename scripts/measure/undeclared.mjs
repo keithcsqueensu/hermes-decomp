@@ -1,6 +1,6 @@
 // Count identifier references that no scope declares, in decompiled output.
 //
-// usage: node undeclared.mjs <decompiled.js> [--dump <names.tsv>] [--show <name>]
+// usage: node undeclared.mjs <decompiled.js> [--dump <names.tsv>] [--show <name>] [--per-module]
 //
 // The output is split at the decompiler's `// === Module` / `// === Orphan`
 // markers and each part is parsed as an ES module (acorn) and scope-analysed
@@ -13,6 +13,9 @@
 // --dump writes `name<TAB>count` for every undeclared name, sorted, so two runs
 // can be compared by name (compare.sh); a total can fall while a new name
 // appears. --show prints the line of each undeclared reference to <name>.
+// --per-module ignores declarations from other modules: a reference counts as
+// declared only if its own module binds it. Two outputs that differ in which
+// module happens to declare a name at top level then compare honestly.
 import fs from 'node:fs';
 import * as acorn from 'acorn';
 import * as eslintScope from 'eslint-scope';
@@ -59,7 +62,8 @@ const known = new Set(
 // A top-level declaration anywhere in the file covers a reference in another
 // part: the decompiler hoists some declarations out of the module they serve.
 const topDecl = new Set();
-for (const m of src.matchAll(/^(?:export )?(?:async )?(?:function\*? |class |const |let |var )([A-Za-z_$][\w$]*)/gm)) {
+const perModule = args.includes('--per-module');
+if (!perModule) for (const m of src.matchAll(/^(?:export )?(?:async )?(?:function\*? |class |const |let |var )([A-Za-z_$][\w$]*)/gm)) {
   topDecl.add(m[1]);
 }
 

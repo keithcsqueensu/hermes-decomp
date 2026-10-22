@@ -3,6 +3,9 @@
 # changed identifiers became, and which names became undeclared.
 #
 # usage: bash scripts/measure/compare.sh <base.js> <new.js> [top-N]
+#        PER_MODULE=1 counts a name declared only by its own module (see
+#        undeclared.mjs --per-module); use it when the two outputs differ in
+#        which module declares a name at top level.
 #
 # Needs node with this directory's packages installed (`npm ci` here once) and
 # python. Writes <new>.diff and <base|new>.undeclared.tsv beside the inputs.
@@ -23,7 +26,7 @@ top=${3:-25}
 git diff --no-index -U1 "$base" "$new" > "$new.diff"
 echo "hunks: $(grep -c '^@@' "$new.diff")"
 for f in "$base" "$new"; do
-  echo "$(basename "$f"): $(node --max-old-space-size=8192 "$here/undeclared.mjs" "$f" --dump "$f.undeclared.tsv")"
+  echo "$(basename "$f"): $(node --max-old-space-size=8192 "$here/undeclared.mjs" "$f" --dump "$f.undeclared.tsv" ${PER_MODULE:+--per-module})"
 done
 echo -n "worse: "
 join -t $'\t' -a2 -e0 -o 0,1.2,2.2 \
