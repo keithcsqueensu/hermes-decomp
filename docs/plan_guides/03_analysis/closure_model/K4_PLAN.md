@@ -206,6 +206,7 @@ take: there is no second name to disagree with. Split by the I3 class each remov
   declarations of destructuring targets the body does assign (`let closure_3; … [tmp4,
   closure_3] = …`). The checker counts a bare `let` as unused only when no reference in the
   body, and none below that resolves to this function's slot or is unstamped, reads it.
+  **✅ Shipped**, see below.
 
 *Expected:* I3 to zero. *Acceptance:* the behaviour gates.
 
@@ -368,6 +369,77 @@ twice (W13, and again at the end of W16b). Cleaned once at the entry, it takes 0
 the same output: Discord 918 s → 443 s, Expensify 244 s → 206 s, byte-identical on all four
 bundles. `fold_slot_index_fills` also got a cut (it scanned forward from every literal, even
 one with nothing to fill): byte-identical, no measurable gain.
+
+**K4.4c ✅ shipped.** Nearly all of the 217 came from one place. A function hoists `let x;`
+for each of its own slots that no statement of its body writes, and it took the names from
+two lists: what the context calls each slot, and, since K4.4b, every name any body gives
+one (`slot_names_of`). Both lists hold names nothing reads as this function's variable any
+more. The context keeps a name a later pass renamed in the IR, and `slot_names` keeps a
+name a body used before its own late renamer changed it. Examples: the global function's
+`let React; let React2; … let React23;`, and `initializeClassErrorUpdate`'s `let value2;`
+beside the `value` its closures actually read. `PipelineContext::retain_read_slots` now
+keeps an own-slot name only when the body references it, or a function below it does,
+either stamped with one of this function's slots (block scopes included) or unstamped.
+A reference below stamped with an ancestor's slot belongs to that ancestor, so it keeps
+nothing alive, as long as the ancestor binds the name (`owner_binds`); this `let` would
+only hide that binding. "Below" means the context's children plus the closures the IR
+creates.
+
+A first version followed the checker exactly and dropped a declaration whenever every read
+below was stamped with another scope's slot. On v98 that left reads unbound: Discord +118
+undeclared references, Expensify +23. Three shapes were involved:
+- **Clones.** d3's four `link` factories share one child body, cloned after the context was
+  built (F79629), so it is in no function's child list. The clone keeps the stamps of the
+  factory it was cloned from, a sibling's slot (`45329:1`). The dead `let linkSource2;` in
+  each other factory was its only binding.
+- **I1 reads.** A read under a name the slot's owner never binds has a dead local as its
+  only binding too.
+- **Browser-global spellings.** ESM codegen declares no module slot spelled like a browser
+  global (`is_builtin_global`), whatever `owner_binds` says. Discord's `TakeActionButtons`
+  had a dead `let location;`, and the `{ location }` its children build read a module slot
+  that is never declared. A read under such a name always keeps the declaration.
+
+Dropping such a `let` turns an `undefined` into a ReferenceError, which matters for a read
+like `if (flag)`. Those declarations stay until K4.6 gives each slot one name. The checker
+still counts them as `Unused`, which is correct.
+
+**[measured]** at codegen, K4.4b → K4.4c:
+
+| | Equinox | CoachRx |
+|---|---|---|
+| I3 `Unused` | 215 → 7 | 246 → 3 |
+| I2 `Shadowed` | 168 → 151 | 137 → 126 |
+| I1, other I2, other I3 | unchanged | unchanged |
+| undeclared references, per module | 7,404 → 7,404 | 7,844 → 7,844 |
+| hunks | 163 | 145 |
+
+Every changed line is a deleted bare `let x;` (218 on Equinox, 229 on CoachRx), and no
+`worse:` names. The `Shadowed` drop is the same lines seen from below: an intermediate
+scope's dead `let x;` was hiding an ancestor's `x` from a child that reads it.
+On v98, the diff is likewise only deleted bare `let`s: Expensify 534, with `Unused` 569 → 95,
+`Shadowed` 402 → 398, and undeclared references unchanged at 37,578; Discord 2,169, with `Unused`
+2,042 → 134, `Shadowed` 1,804 → 1,529, and undeclared references 108,974 → 108,976. Discord's two
+are `logger` and `voiceChannelId`, each read with a method call (`logger.error(…)`,
+`voiceChannelId.getVoiceChannelId()`) that was already broken: it threw a TypeError on
+`undefined` before and throws a ReferenceError now. `logger` is read inside a generator body
+in `NativeNotificationsManager`'s constructor, where the dead `let` was. Why the walk
+misses that read was not traced. The `Unused` left on v98 is mostly the declarations kept
+on purpose (above).
+
+What is left of `Unused` on the v96 bundles, besides those kept on purpose:
+- `DeclareGlobalVar` in the global function (`__DEV__`, `__METRO_GLOBAL_PREFIX__`,
+  `_sentryDebugIdIdentifier`). The IR turns each global the Metro prelude declares into a
+  `var`, rendered as `let` inside `function global()`, so it binds a local. Those three are
+  unread because the prelude stores through `globalThis.x`. `process` and `stack` in the
+  same list *are* read, and the local shadows the real global (`globalThis.process =
+  process || {}` reads the undefined local). That is a correctness bug older than K4,
+  limited to the prelude, and needs its own fix: global declarations should not render as
+  locals.
+- `_pumpToNode`'s `c0` (Equinox): an async wrapper that took its generator's body. Its
+  closures do read and write `c0`, so the declaration is right; most likely they are
+  stamped with the generator's slot, which the checker does not count as the wrapper's own
+  (K4.4b's `created_functions` note). F12123's `c1` is a counter of the same kind, not
+  checked by hand.
 
 ### K4.5 — resolvers by identity — behaviour, one commit each
 Replace each text-or-record resolution of a slot with the stamp, measuring each alone:

@@ -293,6 +293,7 @@ impl PipelineContext {
         let mut own_slots = self.own_env_slot_names(func_id);
         let slot_names = self.slot_names_of(func_id);
         own_slots.extend(slot_names.iter().cloned());
+        self.retain_read_slots(func_id, stmts, &mut own_slots);
         // The names the body uses for its own slots: by stamp, and by the name
         // the other bodies give the slot when this body's own reference lost
         // its stamp (moment's `keys = Object.keys`, read by `hooks.locales()`).
@@ -424,6 +425,45 @@ impl PipelineContext {
         transforms::insert_declarations_with_extra_writes(stmts, params, &extra);
     }
 
+    // Keep the own-slot names something reads as this function's variable:
+    // the body itself, or a function below it, by a reference stamped with
+    // one of this function's slots or unstamped. Any other name is one the
+    // context or another body once gave the slot, and declaring it binds
+    // nothing anyone uses (the global function's `let React10;`, a stale
+    // `let value2;` beside the `value` its closures read). A reference below
+    // stamped with an ancestor's slot is the ancestor's variable when the
+    // ancestor binds the name (`owner_binds`), and this declaration would
+    // only hide it. Any other stamped read keeps it: a body cloned from a
+    // sibling keeps the sibling's stamps (d3's `link` factories share one
+    // child, whose `linkSource2` names a slot of the last factory), and a
+    // read under a name the owner never binds (I1) has this declaration as
+    // its only binding, dead as it may be. Dropping it would turn an
+    // `undefined` into a ReferenceError. K4.6 names it.
+    fn retain_read_slots(&self, func_id: u32, stmts: &[Statement], names: &mut HashSet<String>) {
+        let Some(ctx) = self.closure_ctx.as_ref() else {
+            return;
+        };
+        let ancestors: HashSet<u32> = ctx.ancestors_of(func_id).into_iter().collect();
+        retain_read_slots(
+            func_id,
+            stmts,
+            names,
+            &self.all_ir,
+            &self.child_functions,
+            |slot, name| match slot {
+                None => true,
+                // ESM codegen declares no module slot spelled like a browser
+                // global (`location`), whatever `owner_binds` says.
+                Some(_) if crate::ir::expr::display::is_builtin_global(name) => true,
+                Some(s) => {
+                    let owner = ctx.scope_function(s.owner);
+                    owner == func_id
+                        || !(ancestors.contains(&owner) && self.owner_binds(ctx, s, name))
+                }
+            },
+        );
+    }
+
     // For each closure `stmts` create, the slots of `func_id` among `names`
     // that it or a function below it reads, by stamp.
     fn own_slots_read_below(
@@ -432,35 +472,11 @@ impl PipelineContext {
         stmts: &[Statement],
         names: &HashSet<String>,
     ) -> HashMap<u32, HashSet<String>> {
-        use crate::ir::{Expression, Visitor};
         let mut out = HashMap::new();
         if names.is_empty() {
             return out;
         }
-        struct Ids(Vec<u32>);
-        impl<'a> Visitor<'a> for Ids {
-            fn visit_expression(&mut self, e: &'a Expression) {
-                if let Expression::Function { id, .. } = e {
-                    self.0.push(id.0);
-                }
-                self.walk_expression(e);
-            }
-            // A class's methods are closures too, but the walker does not
-            // visit them (moment's `hooks.locales()` reads the `keys` slot).
-            fn visit_statement(&mut self, s: &'a Statement) {
-                if let Statement::Class { methods, .. } = s {
-                    for m in methods {
-                        self.visit_expression(&m.value);
-                    }
-                }
-                self.walk_statement(s);
-            }
-        }
-        let mut ids = Ids(Vec::new());
-        for s in stmts {
-            ids.visit_statement(s);
-        }
-        for id in ids.0 {
+        for id in closures_created(stmts) {
             let mut read = HashSet::new();
             let mut stack = vec![id];
             let mut seen = HashSet::new();
@@ -794,6 +810,83 @@ impl PipelineContext {
     }
 }
 
+// The ids of the closures `stmts` create, nested ones included. A class's
+// methods are closures too, but the walker does not visit them (moment's
+// `hooks.locales()` reads the `keys` slot).
+fn closures_created(stmts: &[Statement]) -> Vec<u32> {
+    use crate::ir::{Expression, Visitor};
+    struct Ids(Vec<u32>);
+    impl<'a> Visitor<'a> for Ids {
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if let Expression::Function { id, .. } = e {
+                self.0.push(id.0);
+            }
+            self.walk_expression(e);
+        }
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Class { methods, .. } = s {
+                for m in methods {
+                    self.visit_expression(&m.value);
+                }
+            }
+            self.walk_statement(s);
+        }
+    }
+    let mut ids = Ids(Vec::new());
+    for s in stmts {
+        ids.visit_statement(s);
+    }
+    ids.0
+}
+
+// `PipelineContext::retain_read_slots`, over the IR it is given: `children`
+// lists each function's nested functions, and `needs_it` says whether a
+// reference below, by its stamp and name, needs this function's declaration.
+fn retain_read_slots(
+    func_id: u32,
+    stmts: &[Statement],
+    names: &mut HashSet<String>,
+    all_ir: &BTreeMap<u32, Vec<Statement>>,
+    children: &BTreeMap<u32, Vec<u32>>,
+    needs_it: impl Fn(Option<crate::ir::SlotRef>, &str) -> bool,
+) {
+    use crate::analysis::closure::stamps::var_refs;
+    if names.is_empty() {
+        return;
+    }
+    let here: HashSet<&str> = var_refs(stmts).into_iter().map(|(n, _)| n).collect();
+    let mut unread: HashSet<String> = names
+        .iter()
+        .map(|n| crate::util::sanitize_identifier(n))
+        .filter(|n| !here.contains(n.as_str()))
+        .collect();
+    // The functions below: the context's children, and the closures the IR
+    // creates, which include bodies cloned after the context was built.
+    let mut stack: Vec<u32> = children.get(&func_id).cloned().unwrap_or_default();
+    stack.extend(closures_created(stmts));
+    let mut seen = HashSet::new();
+    while let Some(f) = stack.pop() {
+        if unread.is_empty() {
+            break;
+        }
+        if !seen.insert(f) {
+            continue;
+        }
+        if let Some(body) = all_ir.get(&f) {
+            for (name, slot) in var_refs(body) {
+                if needs_it(slot, name) {
+                    unread.remove(name);
+                }
+            }
+            stack.extend(closures_created(body));
+        }
+        if let Some(c) = children.get(&f) {
+            stack.extend(c.iter().copied());
+        }
+    }
+    names.retain(|n| !unread.contains(&crate::util::sanitize_identifier(n)));
+}
+
 fn fill_ancestor_env_slots(
     id: u32,
     parent_of: &BTreeMap<u32, u32>,
@@ -984,5 +1077,74 @@ fn target_uses_this(target: &crate::ir::AssignTarget) -> bool {
         AssignTarget::Member { object, .. } => expr_uses_this(object),
         AssignTarget::Index { object, key } => expr_uses_this(object) || expr_uses_this(key),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod retain_read_slots_tests {
+    use super::retain_read_slots;
+    use crate::ir::{AssignTarget, Binding, Expression, SlotRef, Statement, Value, Var};
+    use std::collections::{BTreeMap, HashSet};
+
+    fn var(name: &str, slot: Option<SlotRef>) -> Expression {
+        Expression::Value(Value::Binding(Binding::Variable(Var {
+            name: name.into(),
+            slot,
+        })))
+    }
+
+    fn read(name: &str, slot: Option<SlotRef>) -> Statement {
+        Statement::Return(Some(var(name, slot)))
+    }
+
+    fn write(name: &str, slot: Option<SlotRef>) -> Statement {
+        Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable(Var {
+                name: name.into(),
+                slot,
+            })),
+            value: Expression::constant(crate::ir::Constant::Null),
+        }
+    }
+
+    fn names(ns: &[&str]) -> HashSet<String> {
+        ns.iter().map(|n| n.to_string()).collect()
+    }
+
+    // F1 owns slot 0, which its child F2 reads as `value`; F3, nested in F2,
+    // reads F0's slot under the name `value2`; nobody reads `stale`.
+    #[test]
+    fn keeps_only_names_read_as_this_function_slot() {
+        let own = |slot| Some(SlotRef { owner: 1, slot });
+        let other = Some(SlotRef { owner: 0, slot: 0 });
+        let all_ir = BTreeMap::from([
+            (2, vec![read("value", own(0))]),
+            (3, vec![read("value2", other), write("loose", None)]),
+        ]);
+        let children = BTreeMap::from([(1, vec![2]), (2, vec![3])]);
+        let mut ns = names(&["value", "value2", "stale", "loose", "here"]);
+        let needs_it = |slot: Option<SlotRef>, _: &str| slot.is_none_or(|s| s.owner == 1);
+        retain_read_slots(
+            1,
+            &[read("here", None)],
+            &mut ns,
+            &all_ir,
+            &children,
+            needs_it,
+        );
+        assert_eq!(ns, names(&["value", "loose", "here"]));
+    }
+
+    // A read stamped with a slot whose owner does not bind the name keeps
+    // the declaration: it is the only binding the read has.
+    #[test]
+    fn an_unbound_foreign_read_keeps_it() {
+        let all_ir = BTreeMap::from([(2, vec![read("x", Some(SlotRef { owner: 0, slot: 3 }))])]);
+        let children = BTreeMap::from([(1, vec![2])]);
+        let mut ns = names(&["x"]);
+        retain_read_slots(1, &[], &mut ns, &all_ir, &children, |_, _| true);
+        assert_eq!(ns, names(&["x"]));
+        retain_read_slots(1, &[], &mut ns, &all_ir, &children, |_, _| false);
+        assert!(ns.is_empty());
     }
 }
