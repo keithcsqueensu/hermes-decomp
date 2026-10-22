@@ -571,6 +571,35 @@ for its own commit, after `rename_slot` (K4.6) makes owner and readers move toge
 
   The rest are 1–8 references each, not all read.
 
+**K4.5.3 and K4.5.4 — blocked on a stamping bug (open).** Both were written and measured,
+and on v98 both ran into the same fault: a stamp can name the wrong owner.
+`ClosureContext::ancestor_at` walks the function tree one hop per level. That is right
+only while every function on the way was created with its creator's own environment. A
+function created with an outer one (`env_offsets`) has its own levels shifted to match;
+its descendants do not.
+
+Discord's async functions are the common case. A wrapper with no environment of its own
+(`F43753`) creates its generator body (`F96550`) on its parent's environment, the
+module's. A closure inside the body reads the module's slot at level 2, which is three
+function hops away. The walk takes two and lands on the wrapper, which has no slots. The
+stamp, made with that walk at W6, says `(43753, 0)` and calls the slot `guildId` where the
+code calls `require(dependencyMap[8])`.
+
+The fix is a walk by environment: undo the reader's own shift, and take
+`1 + given(f)` function hops per level, where `given(f) = env_offset(f) −
+env_offset(parent)`. It is written and unit-tested, and byte-identical on both v96
+bundles. On v98 it changes far more than a resolver step should:
+- Expensify: 8,142 lines, undeclared −54;
+- Discord: 58,875 lines, 16,133 of them placeholders renumbering, undeclared −495, I1
+  9,318 → 10,014, and 16 more module chunks that no longer parse.
+
+It is its own stage (K4.2b: stamps walk environments), to be measured on its own. K4.5.3
+(inherit takes the stamped slot) and K4.5.4 (`capture_sync` reads both names off the
+stamps) follow it, because until then a v98 stamp under an environment-less function is
+not to be trusted. The first measurement of K4.5.3 showed exactly that: the stamp sent
+nested `require` reads to the wrapper, and 677 lines of recovered imports went back to
+`closure_2_0(dependencyMap[8])`.
+
 ### K4.6 — `rename_slot` — behaviour
 One operation, `rename_slot(all_ir, ctx, SlotRef, new_name)`: renames every `Var` carrying the
 `SlotRef`, in every body, and the context's name with it, refusing when `new_name` is already
