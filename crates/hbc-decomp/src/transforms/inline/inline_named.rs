@@ -159,13 +159,23 @@ pub fn inline_named_variables_keeping(
         .map(|(name, _)| name.clone())
         .collect();
 
-    inline_named_with_candidates(
+    if inline_candidates.is_empty() && dead_candidates.is_empty() && multi_use_candidates.is_empty()
+    {
+        return stmts;
+    }
+    let result = inline_named_with_candidates(
         stmts,
         &inline_candidates,
         &multi_use_candidates,
         &dead_candidates,
         &BTreeMap::new(),
-    )
+    );
+    // Phase 4: Clean up noise, once: it recurses into every nested body
+    // itself. Run at each level of the recursion above, it re-cleaned (and
+    // deep-copied) each block once per enclosing block, quadratic in nesting
+    // depth: Discord's deepest state machines (590 levels) took two minutes
+    // each, and this pass most of the bundle's run time.
+    cleanup_noise(result)
 }
 
 // Process statements using PRE-COMPUTED (whole-function) candidate sets, and
@@ -309,9 +319,6 @@ fn inline_named_with_candidates(
             &visible,
         );
     }
-
-    // Phase 4: Clean up noise
-    result = cleanup_noise(result);
 
     result
 }
