@@ -284,7 +284,7 @@ impl Step<'_> {
             | "StoreNPToEnvironmentL" => {
                 let through = Self::env_of(state, reg(inst, 0));
                 let slot = imm(inst, 1).unwrap_or(0);
-                if let Some(f) = facts.as_deref_mut() {
+                if let Some(f) = facts {
                     f.accesses.push((inst.offset, through.clone(), slot, true));
                     if let Some(v) = reg(inst, 2).and_then(|r| state.get(&r)) {
                         if !matches!(v, Env::InSlot(..) | Env::Unknown) {
@@ -452,8 +452,8 @@ pub fn analyze(
             }
         }
     }
-    for b in 0..blocks.len() {
-        if let Some(mut state) = input[b].clone() {
+    for (b, entry) in input.into_iter().enumerate() {
+        if let Some(mut state) = entry {
             run(b, &mut state, Some(&mut facts));
         }
     }

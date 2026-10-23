@@ -106,6 +106,8 @@ paper/
 *.hbc
 # Tracked crash-regression fixtures, a few hundred bytes each (tests/e2e_corpus.rs).
 !/crates/hbc-decomp-cli/tests/fixtures/*.hbc
+# The environment-model fixtures (tests/env_model.rs), a few KB each.
+!/crates/hbc-decomp/tests/fixtures/env/*.hbc
 *.bundle
 *.hasm
 *.apk
