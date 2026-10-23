@@ -268,6 +268,56 @@ Measured like a K4 stage:
 Exit: K4.5.3 and K4.5.4 unblock. Their first measurement went wrong only because stamps were
 wrong under S1.
 
+**Status: landed (first cut), 2026-10-23.**
+
+How the switch works:
+- Every load and store the graph resolves gets the level that reaches its scope (`EnvPlan`,
+  by instruction offset). The IR keeps its `level` encoding, so nothing downstream changed
+  shape.
+- The parent chain follows the graph: `scope_parents` for functions and `block_parents` for
+  block environments, consulted by `add_child` and `block_scope`. So `slot_owner`, stamps
+  and `resolve_baked` read the graph's scopes.
+- A function whose levels change is built again with its plan and is not shifted.
+- Where the graph does not resolve, the level model stays as the fallback.
+- A block scope's creator is kept apart from its parent (`block_function`). A block built
+  on an outer environment has that outer scope as its parent, and `scope_function`
+  assumed the parent was the creator: that alone cost 1,522 accesses before it was found.
+
+The walkers that read `parent_function` were left as they are. They now walk scopes, and
+the ones that walk to the module factory reach it the same way.
+
+Measured against main at 330e329:
+
+| | Equinox | CoachRx | Expensify | Discord |
+|---|---|---|---|---|
+| output | byte-identical | byte-identical | 70,106 lines | 206,588 lines |
+| levels changed / functions planned | 0 / 0 | 0 / 0 | 20,095 / 4,927 | 69,976 / 16,652 |
+| planned levels that reach their scope | | | all | all but 8 |
+| undeclared references | = | = | 72,902 → 70,229 | 123,882 → 106,283 |
+| undeclared placeholders | = | = | 8,192 → 5,091 | 35,302 → 17,992 |
+| I1 | = | = | 4,674 → 4,543 | 9,342 → 9,690 |
+| I2 | = | = | 5,264 → 5,450 | 12,039 → 12,063 |
+| I3 | = | = | 187 → 257 | 371 → 417 |
+
+E1: `async_closures.v98` (S1) passes, with no K4.2b code; `feat/k4-2b` can be dropped.
+
+**Follow-ups,** the regressions in I1, I2 and I3:
+- **TwoSlots** grows (Expensify 758 → 1,042, Discord 1,002 → 1,458). Part of it is sibling
+  block scopes of one function getting the same name for their slot 0. Hermes inlines an
+  object-literal factory and gives every copy its own `CreateFunctionEnvironment`:
+  Expensify's F72596 has 32. Each copy is in its own JS block, which I2 does not see, so
+  some of the growth is the metric. Names are allocated per owner, though, and siblings
+  are not deconflicted.
+- **I3 Undeclared** grows (52 → 115, 230 → 277). For example, `closure_2_26` reads slot 26
+  of the module factory F2473 from a closure that function F72596 shares across 32 scopes.
+  The graph leaves that closure's creation `TooMany`, so its level stays on the level
+  model. The level model reaches F2473 through the block's new parent, but the baked
+  placeholder never takes F2473's name for the slot.
+- **Shared functions with more than 16 creation scopes** are `TooMany`. All 32 of F72596's
+  copies have the same parent, so walking up from them would agree.
+  `ScopeGraph::up_all` could collapse a set whose parents agree instead of giving up on its
+  size.
+
 ## 5. Order with K4
 
 1. Land **K4.2b** (`feat/k4-2b`: level remap plus block parents) once its measurement is

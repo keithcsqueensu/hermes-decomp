@@ -435,7 +435,12 @@ pub fn build_closure_context_from_file(
     verify_env_plans(&ctx, &expected, &mut census);
     ctx.scope_graph_stats = census;
     if let Ok(path) = std::env::var("HD_ENV_DUMP") {
-        dump_env_facts(&path, &ctx, &scope_graph, env.iter().map(|(f, e)| (*f, &e.facts)));
+        dump_env_facts(
+            &path,
+            &ctx,
+            &scope_graph,
+            env.iter().map(|(f, e)| (*f, &e.facts)),
+        );
     }
 
     // Propagate async flag from outer wrappers to inner generators
