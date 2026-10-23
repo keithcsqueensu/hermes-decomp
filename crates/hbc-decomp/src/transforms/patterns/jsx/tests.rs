@@ -445,9 +445,38 @@ fn a_variable_tag_is_sanitised_like_its_binding() {
         jsx(Expression::member(var("react-native"), "View")),
         "react_native.View"
     );
-    assert_eq!(jsx(var("react-native")), "react_native");
     assert_eq!(
         jsx(Expression::constant(Constant::String("my-element".into()))),
         "my-element"
     );
+}
+
+// A lowercase variable tag would be an intrinsic element, the string: the
+// call stays a call. A keyed Fragment names itself; `<>` takes no attributes.
+#[test]
+fn a_lowercase_variable_stays_a_call_and_a_keyed_fragment_keeps_its_name() {
+    let var = |n: &str| Expression::Value(Value::Binding(Binding::Variable(n.into())));
+    let convert = |args: Vec<Expression>| {
+        let mut e = Expression::call(Expression::member(var("jsxRuntime"), "jsx"), args);
+        JSXReconstructor::new().visit_expression(&mut e);
+        e
+    };
+    let props = || Expression::Object { properties: vec![] };
+    let call = convert(vec![var("closure_0"), props()]);
+    assert!(matches!(call, Expression::Call { .. }), "{call:?}");
+    let call = convert(vec![var("react-native"), props()]);
+    assert!(matches!(call, Expression::Call { .. }), "{call:?}");
+    match convert(vec![var("_Fragment"), props(), var("k")]) {
+        Expression::JSXElement {
+            tag, attributes, ..
+        } => {
+            assert_eq!(tag, "_Fragment");
+            assert_eq!(attributes[0].0, "key");
+        }
+        other => panic!("expected JSX, got {other:?}"),
+    }
+    match convert(vec![var("_Fragment"), props()]) {
+        Expression::JSXElement { tag, .. } => assert_eq!(tag, ""),
+        other => panic!("expected JSX, got {other:?}"),
+    }
 }

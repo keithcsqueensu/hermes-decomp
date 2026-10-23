@@ -3,12 +3,19 @@
 // usage: node undeclared.mjs <decompiled.js> [--dump <names.tsv>] [--show <name>] [--per-module]
 //
 // The output is split at the decompiler's `// === Module` / `// === Orphan`
-// markers and each part is parsed as an ES module (acorn) and scope-analysed
-// (eslint-scope). A reference left in a module's global scope that is not a
+// markers and each part is parsed as an ES module with JSX (acorn, acorn-jsx)
+// and scope-analysed (eslint-scope). A reference left in a module's global scope that is not a
 // global of the JS runtime, nor a name some top-level statement of the file
 // declares, is counted. Parts that do not parse are skipped and reported:
 // compare two outputs only when `unparsedChunks` agrees, or the counts cover
 // different code.
+//
+// A JSX tag is a reference too, which eslint-scope does not see: `<Foo/>` and
+// the root of `<a.b/>` are resolved here against the enclosing scopes. A
+// lowercase tag is an intrinsic element (a string), not a reference, so a
+// lowercase tag that names a binding or a placeholder (`<closure_0/>`,
+// `<require/>`) is the decompiler printing a component as a string; those
+// are counted as `lowercaseTags`.
 //
 // --dump writes `name<TAB>count` for every undeclared name, sorted, so two runs
 // can be compared by name (compare.sh); a total can fall while a new name
@@ -18,7 +25,11 @@
 // module happens to declare a name at top level then compare honestly.
 import fs from 'node:fs';
 import * as acorn from 'acorn';
+import jsx from 'acorn-jsx';
 import * as eslintScope from 'eslint-scope';
+import estraverse from 'estraverse';
+
+const Parser = acorn.Parser.extend(jsx());
 
 const args = process.argv.slice(2);
 const file = args[0];
@@ -70,10 +81,16 @@ if (!perModule) for (const m of src.matchAll(/^(?:export )?(?:async )?(?:functio
 const byName = new Map();
 let unparsed = 0;
 let unparsedLines = 0;
+let lowercaseTags = 0;
+const isPlaceholder = (n) => /^closure_\d/.test(n) || /^c\d+$/.test(n);
+const count = (n, line) => {
+  byName.set(n, (byName.get(n) || 0) + 1);
+  if (n === show) console.log('at', line);
+};
 chunks.forEach((text, i) => {
   let ast;
   try {
-    ast = acorn.parse(text, {
+    ast = Parser.parse(text, {
       ecmaVersion: 'latest', sourceType: 'module', ranges: true, locations: true,
       allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true,
     });
@@ -82,20 +99,48 @@ chunks.forEach((text, i) => {
     unparsedLines += text.split('\n').length;
     return;
   }
-  const scope = eslintScope.analyze(ast, { ecmaVersion: 2022, sourceType: 'module' });
-  for (const ref of scope.globalScope.through) {
+  const manager = eslintScope.analyze(ast, {
+    ecmaVersion: 2022, sourceType: 'module', fallback: 'iteration',
+  });
+  const lineOf = (node) => starts[i] + node.loc.start.line - 1;
+  for (const ref of manager.globalScope.through) {
     const n = ref.identifier.name;
     if (known.has(n) || topDecl.has(n)) continue;
-    byName.set(n, (byName.get(n) || 0) + 1);
-    if (n === show) console.log('at', starts[i] + ref.identifier.loc.start.line - 1);
+    count(n, lineOf(ref.identifier));
   }
+  // JSX tags, resolved through the scopes enclosing them.
+  const stack = [];
+  const bound = (n) => stack.some((s) => s.set.has(n));
+  estraverse.traverse(ast, {
+    fallback: 'iteration',
+    enter(node) {
+      const s = manager.acquire(node, true);
+      if (s) stack.push(s);
+      node.__scoped = !!s;
+      if (node.type !== 'JSXOpeningElement') return;
+      let name = node.name;
+      while (name.type === 'JSXMemberExpression') name = name.object;
+      if (name.type !== 'JSXIdentifier') return;
+      const n = name.name;
+      const lowercase = node.name.type === 'JSXIdentifier' && /^[a-z]/.test(n);
+      if (lowercase) {
+        if (isPlaceholder(n) || bound(n)) lowercaseTags++;
+        return;
+      }
+      if (bound(n) || known.has(n) || topDecl.has(n)) return;
+      count(n, lineOf(name));
+    },
+    leave(node) {
+      if (node.__scoped) stack.pop();
+    },
+  });
 });
 
 let undeclared = 0;
 let placeholder = 0;
 for (const [n, c] of byName) {
   undeclared += c;
-  if (/^closure_\d/.test(n) || /^c\d+$/.test(n)) placeholder += c;
+  if (isPlaceholder(n)) placeholder += c;
 }
 if (dump) {
   const rows = [...byName].map(([n, c]) => `${n}\t${c}`).sort();
@@ -103,5 +148,5 @@ if (dump) {
 }
 console.log(JSON.stringify({
   undeclared, placeholderUndeclared: placeholder, distinct: byName.size,
-  unparsedChunks: unparsed, unparsedLines,
+  unparsedChunks: unparsed, unparsedLines, lowercaseTags,
 }));

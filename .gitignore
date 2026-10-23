@@ -80,6 +80,7 @@ THIRD_PARTY_NOTICES.md
 !/scripts/measure/*.mjs
 !/scripts/measure/*.py
 !/scripts/measure/*.sh
+!/scripts/measure/*.awk
 !/scripts/measure/package.json
 !/scripts/measure/package-lock.json
 # IDE / AI tooling

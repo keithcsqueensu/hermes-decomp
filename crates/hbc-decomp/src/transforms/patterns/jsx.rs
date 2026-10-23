@@ -80,8 +80,15 @@ fn build_jsx_element(callee: &Expression, arguments: &[Expression]) -> Option<Ex
     // `import react_native`, and `<react-native.View>` was not even JSX.
     let tag_name = match &arguments[0] {
         Expression::Value(Value::Constant(Constant::String(s))) => s.clone(),
+        // A lowercase tag is an intrinsic element, the string, not the
+        // variable: `<closure_0 />` rendered a `closure_0` host element where
+        // the bytecode passed a component. Such a name stays a call.
         Expression::Value(Value::Binding(Binding::Variable(v))) => {
-            crate::util::sanitize_identifier(&v.name)
+            let name = crate::util::sanitize_identifier(&v.name);
+            if name.starts_with(|c: char| c.is_ascii_lowercase()) {
+                return None;
+            }
+            name
         }
         Expression::Member {
             object, property, ..
@@ -99,15 +106,10 @@ fn build_jsx_element(callee: &Expression, arguments: &[Expression]) -> Option<Ex
         _ => return None,
     };
 
-    let tag_name = if tag_name == "Fragment"
+    let is_fragment = tag_name == "Fragment"
         || tag_name == "_Fragment"
         || tag_name.ends_with(".Fragment")
-        || tag_name == "React.Fragment"
-    {
-        String::new()
-    } else {
-        tag_name
-    };
+        || tag_name == "React.Fragment";
 
     let is_modern = is_modern_factory(callee);
     let mut jsx_attributes = Vec::new();
@@ -152,6 +154,13 @@ fn build_jsx_element(callee: &Expression, arguments: &[Expression]) -> Option<Ex
         }
     }
 
+    // A Fragment prints as `<>...</>` only without attributes: a keyed one
+    // has to name itself (`< key={k}>` is not JSX).
+    let tag_name = if is_fragment && jsx_attributes.is_empty() {
+        String::new()
+    } else {
+        tag_name
+    };
     Some(Expression::JSXElement {
         tag: tag_name,
         attributes: jsx_attributes,
