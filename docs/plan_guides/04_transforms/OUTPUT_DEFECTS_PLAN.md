@@ -6,10 +6,10 @@
 > *Delegates* environment and slot identity to
 > `../03_analysis/closure_model/V98_ENV_PLAN.md` and `K4_PLAN.md`.
 
-Status: **planned, nothing landed.** Every root cause below comes from an investigation run on
-2026-10-23 against main at 330e329 (outputs `k4e3`). Each was reproduced on a fixture or a
-bundle output. Where a fix was tried, it was in a scratch copy of the crate, never in the
-repo. File:line references are as of that commit; check them again when implementing.
+Status: **D0 and D1 landed (2026-10-23); D2 and D3 planned.** Every root cause below comes
+from an investigation run on 2026-10-23 against main at 330e329 (outputs `k4e3`). Each was
+reproduced on a fixture or a bundle output. File:line references are as of that commit; check
+them again when implementing. Results and what D1 left behind are in §5.
 
 ---
 
@@ -232,3 +232,40 @@ Do D3 only after D1 and D2; it touches the IR type.
   1,728/334, Expensify 1,314/462). That is a folding pass to write, not a bug in an
   existing one.
 - `DeclareGlobalVar` prints `let out;` at script top level.
+
+## 5. D0 and D1 results
+
+**[measured]** Base: main at a16c09f (E4). New: D1 complete. `scripts/measure/undeclared.mjs
+--per-module`, which since D0 parses the orphan section one function at a time and prints the
+defect counters on a second line.
+
+| | Equinox | CoachRx | Expensify | Discord |
+|---|---|---|---|---|
+| unparsed modules | 49 → 8 | 76 → 4 | 17 → 7 | 5 → 4 |
+| unparsed lines | 49,053 → 5,386 | 28,775 → 1,375 | 169,051 → 67,182 | 95,869 → 729 |
+| undeclared, modules parsed in both | — | — | 70,311 → 52,742 | 106,283 → 94,107 |
+| placeholders, modules parsed in both | — | — | 5,112 → 5,112 | 17,992 → 17,992 |
+| `argN` undeclared (B2) | 1,164 → 1,165 | 512 → 511 | 2,926 → 740 | 2,717 → 246 |
+| `[...arguments].slice()` (B3) | 0 | 0 | 93 → 0 | 63 → 0 |
+| `${tmpN}` (B4) | 211 → 58 | 64 → 27 | 1,373 → 457 | 1,547 → 633 |
+| intrinsic JSX tags (B6) | 51 → 31 | 78 → 58 | 102 → 63 | 165 → 14 |
+
+- The only names that got worse on the shared modules are `document` (+8, +33: B6 makes
+  `document.createElement` a real reference) and a few `objN`.
+- The remaining intrinsic tags are `createElement("svg", props)` and the like: real elements.
+- Equinox's `argN` count is not B2: v96 lowers defaults in Babel. Not yet looked at.
+- E1 KNOWN lost 6 rows: async_closures.v96 and .v99, deep_nesting.v96, param_scopes.v96,
+  .v98 and .v99. deep_nesting.v99 now fails like its v98 twin.
+- B1 was wider than planned: v98's table was wrong too (`GetBuiltinClosure 1` is `eval`, which
+  printed as `Date.UTC`), and v97 had no table. upstream_pin now re-derives every table from
+  its checkout.
+- U1's fix is not where §2 put it. The yields reach the async function through the generator
+  wrapper collapse, so the conversion runs once over every async body after the transforms.
+
+**Left from D1:**
+- U7: `consoleHandler(arguments, …)` (Equinox, 2). The name does not come from IPA, which no
+  longer proposes it.
+- U8: `Symbol_x[Symbol.x@@]` (CoachRx, 1). A second shape, not the `@@x` name.
+- U5: the duplicate `export default` in 4294967295 is printed from the body, not from the
+  export list the guard filters (Expensify, 1).
+- U10 (2) and the `already declared` rows (6, 2, 5, 4) are D2.
