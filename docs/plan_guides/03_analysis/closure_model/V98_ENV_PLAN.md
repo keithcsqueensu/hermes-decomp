@@ -37,9 +37,10 @@ says how many cases are left. The census below says there are many.
 
 ## 2. Census
 
-**[measured]** `hermes-decomp disasm` of the whole bundle, opcodes by operand count. "Slot-held"
-is a register written by `LoadFromEnvironment` and then used as an environment operand. That
-count is a linear scan per function with no CFG, so it is approximate in both directions.
+**[measured]** `bash scripts/measure/env_census.sh <bundle>`: opcodes by operand count, from
+`hermes-decomp disasm`. "Slot-held" is a register written by `LoadFromEnvironment` and then used
+as an environment operand. That count is a linear scan per function with no CFG, so it is
+approximate in both directions; E2's pass gives the exact one (§4).
 
 | | Equinox 11.43.0 (v96) | Expensify 9.5.14 (v98) | Discord 350.8 (v98) |
 |---|---|---|---|
@@ -50,12 +51,13 @@ count is a linear scan per function with no CFG, so it is approximate in both di
 | `CreateEnvironment` (1 operand) | 20,661 | — | — |
 | `CreateFunctionEnvironment` | — | 20,359 | 31,841 |
 | `CreateEnvironment` (3 operands, S2) | — | 2,482 | 3,066 |
-| `CreateTopLevelEnvironment` | — | — | 6,173 |
-| `GetClosureEnvironment` | — | — | 295 |
+| `CreateTopLevelEnvironment` | — | 6,281 | 6,173 |
+| `GetClosureEnvironment` | — | 300 | 295 |
 | `CreateGenerator*` | 907 | 807 | 2,564 |
-| loads through a slot-held env (S3) | 0 | 3,421 | ~24,000 |
-| stores through a slot-held env | 0 | — | ~4,500 |
-| closures created with a slot-held env | 0 | 26 | 294 (222 functions) |
+| loads through a slot-held env (S3) | 0 | 5,390 | 24,020 |
+| stores through a slot-held env | 0 | 1,549 | 4,548 |
+| `GetEnvironment` from a slot-held env (S4) | 0 | 1,039 | 3,298 |
+| closures created with a slot-held env | 0 | 54 | 294 |
 
 None of S2–S4 occurs on v96. That is why v96 stays byte-identical through every fix so far.
 It is also why the v96 gates say nothing about v98 here.
@@ -89,6 +91,15 @@ by tracking environments as values instead of inferring them from levels:
 
 Exit: the §2 table and the unresolved count reproduce from scripts.
 
+**Status: done.**
+- `undeclared.mjs` parses JSX. The real syntax breaks it now sees: Equinox 50, CoachRx 77,
+  Expensify 18, Discord 5, against 1,653 / 1,114 / 3,559 / 1,726 "unparsed" modules before.
+- The JSX bug in §6 is fixed in the same step. A lowercase variable stays a call and a keyed
+  Fragment keeps its name. Lowercase tags fall from 163 / 78 / 298 / 1,004 to 0 / 0 / 3 / 3.
+- `scripts/measure/env_census.sh` reproduces §2. `RUST_LOG=slots=debug` prints the
+  slot-held access count (Expensify 9,598, Discord 36,693; 0 on v96) and E2's accesses by
+  kind.
+
 ### E1 — ground truth from source
 
 hermesc for v98 and v99 is on disk (`C:/src/hermes-v98/build/bin/Release/hermesc.exe`,
@@ -112,6 +123,19 @@ automatically instead of by hand. Check this first; it decides how cheap fixture
 
 Exit: each S1–S5 has a fixture that fails on `main` and passes on `feat/k4-2b` (S1, S2, S5)
 or is marked as expected-failing (S3, S4).
+
+**Status: done, with a different outcome from the exit's wording.** Seven fixtures, 19 runs.
+- The oracle is each version's own `hvm` output, not node's view of the source. v96 has no block
+  scoping and v98/v99 share a loop `let` across iterations, so the source's output is not
+  what the bytecode does.
+- One run passes: `async_closures` at v98, on `feat/k4-2b` only (S1). On main it is listed as
+  known.
+- The other 18 are listed in `KNOWN` with their causes. 6 are `env:` and 12 are `other:`,
+  which shows the oracle reaches far past this plan. The other causes include v99 async via
+  `CallBuiltin`, v98 class lowering, an inliner temporary, `await` precedence, and a dropped
+  default parameter.
+- S2 and S5 have no passing fixture yet. Where they occur at v98 (generator_states,
+  deep_nesting), the generator's state machine is printed raw before scope resolution matters.
 
 ### E2 — environments as values in the builder
 
@@ -139,6 +163,26 @@ downstream changes in this phase.
 
 Exit: on every fixture and bundle, the IR is byte-identical to `feat/k4-2b`, and the facts are
 dumped (`HD_ENV_DUMP`).
+
+**Status: done.** `ir::env_values` runs during the closure-context build. The output is
+byte-identical on all four bundles.
+- On the generator fixture, the facts carry the whole S3/S5 case in one function. The body
+  creates both closures with `closure1[1]`, and it parks `created@466(closure2)` into
+  `closure1[1]` and `closure2` into `closure1[2]` (unit test
+  `a_generator_body_parks_its_scope_and_creates_closures_with_it`).
+- The builder's block starts leave out some conditional fall-throughs (`JStrictEqualLong`),
+  so the pass splits after every jump itself.
+- **[measured]** Accesses by kind:
+
+| | own | closure | created | slot-held | up from a slot | unknown |
+|---|---|---|---|---|---|---|
+| Equinox (v96) | 76,214 | 178,490 | — | — | — | — |
+| CoachRx (v96) | 51,440 | 101,359 | — | — | — | — |
+| Expensify (v98) | 133,551 | 307,717 | 22,332 | 4,507 | 1,238 | 557 |
+| Discord (v98) | 168,866 | 481,600 | 16,794 | 17,643 | 4,643 | 3,977 |
+
+  The slot-held and up-from-a-slot accesses are what E3 has to resolve. The unknown ones come
+  from paths that disagree or from `GetClosureEnvironment`.
 
 ### E3 — whole-program scope graph
 
