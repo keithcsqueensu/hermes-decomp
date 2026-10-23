@@ -28,7 +28,6 @@ use hbc_decomp::{BytecodeFile, BytecodeFormat, DecompileOptionsV2};
 // outside it that the fixture happens to reach first.
 const KNOWN: &[(&str, u32, &str)] = &[
     ("async_closures", 96, "other: an inlined closure leaves its temporary `tmp` undeclared"),
-    ("async_closures", 98, "env: a closure in the generator body names the environment-less wrapper as an owner, a level short (S1; K4.2b)"),
     ("async_closures", 99, "other: v99 async functions (CallBuiltin spawnAsync) are not recovered"),
     ("async_forms", 98, "other: a class is declared both by `let Box` and by `class Box`"),
     ("async_forms", 99, "other: a class is declared both by `let Box` and by `class Box`"),

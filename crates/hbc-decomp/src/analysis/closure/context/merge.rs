@@ -176,6 +176,7 @@ impl ClosureContext {
         }
         self.block_scopes.clear();
         self.block_level.clear();
+        self.block_function.clear();
         let mut deferred: Vec<(u32, u32, u32, ClosureSlotValue)> = Vec::new();
         let mut keys: Vec<u32> = all_ir.keys().copied().collect();
         keys.sort();

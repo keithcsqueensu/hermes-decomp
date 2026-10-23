@@ -30,6 +30,12 @@ pub struct ClosureContext {
     // the creating function.
     #[serde(default)]
     pub block_level: BTreeMap<u32, u32>,
+    // synthetic id -> the function that built the block environment. Its
+    // parent is usually that function, but not always: a block built on an
+    // outer environment (V98_ENV_PLAN.md S2, a second
+    // `CreateFunctionEnvironment`) has that outer scope as its parent.
+    #[serde(default)]
+    pub block_function: BTreeMap<u32, u32>,
     // function -> (baked capture name -> (level, slot) it came from). A
     // capture whose ancestor slot had no name when it was baked prints as
     // `closure_N`, which says nothing about the level; the late inherit pass
@@ -59,6 +65,21 @@ pub struct ClosureContext {
     // level model (V98_ENV_PLAN.md E3).
     #[serde(default)]
     pub scope_graph_stats: BTreeMap<String, u32>,
+    // The scope graph's levels, per function whose IR they change
+    // (V98_ENV_PLAN.md E4); such a function is built with its plan and not
+    // shifted, so it has no `env_offsets` entry.
+    #[serde(default)]
+    pub env_plans: BTreeMap<u32, crate::ir::EnvPlan>,
+    // The scope the graph says a function was created with: (function, None)
+    // for a function's own environment, (function, Some(builder level)) for a
+    // block environment it built. Where present it is the parent, whatever
+    // the creating closure's environment register said.
+    #[serde(default)]
+    pub scope_parents: BTreeMap<u32, (u32, Option<u32>)>,
+    // The same for a block environment: (creating function, builder level) ->
+    // the scope it was built on.
+    #[serde(default)]
+    pub block_parents: BTreeMap<(u32, u32), (u32, Option<u32>)>,
 }
 
 // Synthetic ids count down from the top of the range; a bundle has far fewer
@@ -79,8 +100,31 @@ impl ClosureContext {
         let id = FIRST_BLOCK_SCOPE_ID - self.block_scopes.len() as u32;
         self.block_scopes.insert((parent, level), id);
         self.block_level.insert(id, level);
-        self.parent_function.insert(id, parent);
+        self.block_function.insert(id, parent);
+        // Inserted first, so a parent cycle among block scopes ends here.
+        let built_on = match self.block_parents.get(&(parent, level)).copied() {
+            Some(r) => self.scope_id(r),
+            None => parent,
+        };
+        self.parent_function
+            .insert(id, if built_on == id { parent } else { built_on });
         id
+    }
+
+    // The id a scope reference stands for: the function, or its block scope.
+    pub fn scope_id(&mut self, (function, level): (u32, Option<u32>)) -> u32 {
+        match level {
+            Some(level) => self.block_scope(function, level),
+            None => function,
+        }
+    }
+
+    // The reverse of `scope_id`.
+    pub fn scope_ref(&self, id: u32) -> (u32, Option<u32>) {
+        match self.block_level.get(&id) {
+            Some(&level) => (self.scope_function(id), Some(level)),
+            None => (id, None),
+        }
     }
 
     // The scope that owns slot writes `func` makes at `level`: `func` itself
@@ -111,11 +155,7 @@ impl ClosureContext {
     // The function whose body a scope id belongs to: the function itself, or
     // the function that built a block scope.
     pub fn scope_function(&self, id: u32) -> u32 {
-        if self.is_block_scope(id) {
-            self.parent_function.get(&id).copied().unwrap_or(id)
-        } else {
-            id
-        }
+        self.block_function.get(&id).copied().unwrap_or(id)
     }
 
     // Names of the functions declared directly in the body of `scope` (block
@@ -138,6 +178,13 @@ impl ClosureContext {
         // function is not its own parent; recording it as such made every
         // walk up the chain stop there and left the function without a module.
         if parent == child {
+            return;
+        }
+        if let Some(&r) = self.scope_parents.get(&child) {
+            let scope = self.scope_id(r);
+            if scope != child {
+                self.parent_function.insert(child, scope);
+            }
             return;
         }
         // Created with a block environment of `parent`: the block scope is the

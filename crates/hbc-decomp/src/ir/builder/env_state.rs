@@ -19,6 +19,34 @@ use std::collections::{BTreeMap, HashSet};
 pub const NESTED_ENV_LEVEL_BASE: u32 = 128;
 const MAX_LEVEL: u32 = 255;
 
+// The levels the whole-program scope graph gives a function's loads and stores
+// (V98_ENV_PLAN.md E4), by instruction offset. An access it leaves out keeps
+// the builder's own level, moved out by `shift` as `ir::shift_env_levels`
+// would: a function built with a plan is not shifted afterwards.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EnvPlan {
+    pub levels: BTreeMap<u32, u32>,
+    pub shift: u32,
+}
+
+impl EnvPlan {
+    // The level an access the builder gave `raw` ends up with without a plan.
+    pub fn shifted(shift: u32, raw: u32) -> u32 {
+        if (1..NESTED_ENV_LEVEL_BASE).contains(&raw) {
+            raw + shift
+        } else {
+            raw
+        }
+    }
+
+    fn level(&self, at: u32, raw: u32) -> u32 {
+        self.levels
+            .get(&at)
+            .copied()
+            .unwrap_or_else(|| Self::shifted(self.shift, raw))
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct EnvRegMap {
     /// register → environment nesting level (0 = current function)
@@ -38,6 +66,14 @@ pub struct EnvRegMap {
     /// loads and stores that went through an environment loaded out of a slot,
     /// which the model identifies by slot number alone (V98_ENV_PLAN.md S3)
     pub slot_held_accesses: u32,
+    /// offset of the instruction being lowered
+    pub at: u32,
+    /// the scope graph's levels for this function, when it has any
+    pub plan: Option<EnvPlan>,
+    /// (offset, level) of every environment claimed past the function's own
+    pub sites: Vec<(u32, u32)>,
+    /// (offset, level) of every load and store, as the builder alone sees it
+    pub accesses: Vec<(u32, u32)>,
 }
 
 impl EnvRegMap {
@@ -96,6 +132,7 @@ impl EnvRegMap {
         let level = (NESTED_ENV_LEVEL_BASE + self.extra_env_count).min(MAX_LEVEL);
         self.set_level(reg, level);
         self.created_envs.insert(reg);
+        self.sites.push((self.at, level));
         level
     }
 
@@ -110,6 +147,7 @@ impl EnvRegMap {
         let level = (NESTED_ENV_LEVEL_BASE + self.extra_env_count).min(MAX_LEVEL);
         self.set_level(reg, level);
         self.created_envs.insert(reg);
+        self.sites.push((self.at, level));
         level
     }
 
@@ -145,7 +183,12 @@ impl EnvRegMap {
         {
             self.slot_held_accesses += 1;
         }
-        self.env_level_of(reg)
+        let raw = self.env_level_of(reg);
+        self.accesses.push((self.at, raw));
+        match &self.plan {
+            Some(plan) => plan.level(self.at, raw),
+            None => raw,
+        }
     }
 
     pub fn env_level_of(&self, reg: u32) -> u32 {

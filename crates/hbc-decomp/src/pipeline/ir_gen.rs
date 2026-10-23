@@ -34,6 +34,9 @@ pub fn generate_ir(
         absolute_offsets: options.assembly_mode,
     };
     let mut builder = IRBuilder::new(file, format, builder_options);
+    // The scope graph's levels, as the closure context built this function
+    // with them; such a function has no shift.
+    builder.env_plan = closure_ctx.and_then(|c| c.env_plans.get(&function_id).cloned());
     let mut cfg = builder.build_function(function_id)?;
     // The same level shift the closure context applied when it was built, so a
     // level means the same scope here as there.
@@ -276,6 +279,84 @@ pub fn generate_ir(
     Ok(statements)
 }
 
+// One function's IR as the closure context reads it, with what the builder
+// recorded on the way.
+struct FunctionIr {
+    id: u32,
+    name: Option<String>,
+    statements: Vec<Statement>,
+    created_in_block: Vec<(u32, u32)>,
+    created_with_env: Vec<(u32, u32)>,
+    slot_held_accesses: u32,
+    env: FunctionEnv,
+}
+
+// What the environment-value pass and the builder say about one function's
+// environments, by instruction offset.
+#[derive(Default)]
+struct FunctionEnv {
+    facts: crate::ir::env_values::EnvFacts,
+    // (offset, builder level) of each environment claimed past its own.
+    sites: Vec<(u32, u32)>,
+    // (offset, builder level) of each load and store, before any shift.
+    access_levels: Vec<(u32, u32)>,
+}
+
+fn build_for_context(
+    file: &BytecodeFile,
+    format: &BytecodeFormat,
+    function_id: u32,
+    plan: Option<crate::ir::EnvPlan>,
+) -> Option<FunctionIr> {
+    let builder_options = IRBuilderOptions {
+        resolve_strings: true,
+        include_offsets: false,
+        absolute_offsets: false,
+    };
+    let header = &file.function_headers[function_id as usize];
+    let name = file
+        .string_at(header.function_name())
+        .filter(|e| !e.value.is_empty() && is_valid_identifier(&e.value))
+        .map(|e| e.value.clone());
+
+    let mut builder = IRBuilder::new(file, format, builder_options);
+    builder.collect_env_facts = plan.is_none();
+    builder.env_plan = plan;
+    let mut cfg = builder.build_function(function_id).ok()?;
+    propagate(&mut cfg, &PropagationConfig::default());
+
+    let analysis = StructureAnalysis::analyze(&cfg);
+    let statements = analysis.root.to_statements(&cfg);
+
+    let debug_names = if let Some(debug_info) = &file.debug_info {
+        // Via `function_scopes`, not via the location stream's
+        // `scopeAddress`: that field is 0 on real output, so this used to
+        // resolve to the empty scope even once the streams were readable.
+        debug_info.variable_map_for_function(function_id)
+    } else {
+        BTreeMap::new()
+    };
+    let statements = if !debug_names.is_empty() {
+        rename_registers(statements, &debug_names)
+    } else {
+        statements
+    };
+
+    Some(FunctionIr {
+        id: function_id,
+        name,
+        statements,
+        created_in_block: std::mem::take(&mut builder.created_in_block),
+        created_with_env: std::mem::take(&mut builder.created_with_env),
+        slot_held_accesses: builder.slot_held_accesses,
+        env: FunctionEnv {
+            facts: std::mem::take(&mut builder.env_facts),
+            sites: std::mem::take(&mut builder.env_sites),
+            access_levels: std::mem::take(&mut builder.env_access_levels),
+        },
+    })
+}
+
 // Build a closure context by analyzing all functions.
 // This enables cross-function closure resolution.
 pub fn build_closure_context_from_file(
@@ -284,122 +365,77 @@ pub fn build_closure_context_from_file(
 ) -> Result<ClosureContext> {
     use rayon::prelude::*;
 
-    let builder_options = IRBuilderOptions {
-        resolve_strings: true,
-        include_offsets: false,
-        absolute_offsets: false,
-    };
-
     // Parallel: compute per-function data (name + analyzed statements).
     // rayon preserves input order in the output Vec.
-    type FunctionIr = (
-        u32,
-        Option<String>,
-        Vec<Statement>,
-        Vec<(u32, u32)>,
-        Vec<(u32, u32)>,
-        u32,
-        crate::ir::env_values::EnvFacts,
-    );
-    let results: Vec<Option<FunctionIr>> = (0..file.function_headers.len())
+    let mut results: Vec<Option<FunctionIr>> = (0..file.function_headers.len() as u32)
         .into_par_iter()
-        .map(|i| {
-            let function_id = i as u32;
-            let header = &file.function_headers[i];
-
-            let func_name = file
-                .string_at(header.function_name())
-                .filter(|e| !e.value.is_empty() && is_valid_identifier(&e.value))
-                .map(|e| e.value.clone());
-
-            let mut builder = IRBuilder::new(file, format, builder_options.clone());
-            builder.collect_env_facts = true;
-            let Ok(mut cfg) = builder.build_function(function_id) else {
-                return None;
-            };
-            let env_facts = std::mem::take(&mut builder.env_facts);
-            let created_in_block = std::mem::take(&mut builder.created_in_block);
-            let created_with_env = std::mem::take(&mut builder.created_with_env);
-            let slot_held_accesses = builder.slot_held_accesses;
-            propagate(&mut cfg, &PropagationConfig::default());
-
-            let analysis = StructureAnalysis::analyze(&cfg);
-            let statements = analysis.root.to_statements(&cfg);
-
-            let debug_names = if let Some(debug_info) = &file.debug_info {
-                // Via `function_scopes`, not via the location stream's
-                // `scopeAddress`: that field is 0 on real output, so this used to
-                // resolve to the empty scope even once the streams were readable.
-                debug_info.variable_map_for_function(function_id)
-            } else {
-                BTreeMap::new()
-            };
-
-            let statements = if !debug_names.is_empty() {
-                rename_registers(statements, &debug_names)
-            } else {
-                statements
-            };
-
-            Some((
-                function_id,
-                func_name,
-                statements,
-                created_in_block,
-                created_with_env,
-                slot_held_accesses,
-                env_facts,
-            ))
-        })
+        .map(|f| build_for_context(file, format, f, None))
         .collect();
 
     // Sequential: build ClosureContext from computed results (order is preserved).
     // Creation scopes first, so every parent link the walk records sees them.
     let mut ctx = ClosureContext::new();
     let mut created = Vec::new();
-    let mut results = results;
-    let env_facts: Vec<(u32, crate::ir::env_values::EnvFacts)> = results
+    let env: Vec<(u32, FunctionEnv)> = results
         .iter_mut()
         .flatten()
-        .map(|r| (r.0, std::mem::take(&mut r.6)))
+        .map(|r| (r.id, std::mem::take(&mut r.env)))
         .collect();
     for item in results.iter().flatten() {
-        for &(child, level) in &item.3 {
-            ctx.set_creation_scope(child, item.0, level);
+        for &(child, level) in &item.created_in_block {
+            ctx.set_creation_scope(child, item.id, level);
         }
-        created.extend(item.4.iter().map(|&(child, level)| (item.0, child, level)));
-        ctx.slot_held_accesses += item.5;
+        created.extend(
+            item.created_with_env
+                .iter()
+                .map(|&(child, level)| (item.id, child, level)),
+        );
+        ctx.slot_held_accesses += item.slot_held_accesses;
     }
-    for (_, facts) in &env_facts {
-        for (_, through, _, _) in &facts.accesses {
+    for (_, e) in &env {
+        for (_, through, _, _) in &e.facts.accesses {
             *ctx.env_access_kinds
                 .entry(through.kind().to_string())
                 .or_default() += 1;
         }
     }
     let scope_graph = crate::analysis::closure::scope_graph::ScopeGraph::build(
-        env_facts.iter().map(|(f, x)| (*f, x)),
+        env.iter().map(|(f, e)| (*f, &e.facts)),
     );
     // Each function's levels count from the environment it was created with;
     // shift them so level L is L hops up the parent chain before anything
     // keys a slot by level.
     ctx.set_env_offsets(&created);
-    for item in results.into_iter().flatten() {
-        let (function_id, func_name, mut statements, _, _, _, _) = item;
-        if let Some(name) = func_name {
-            ctx.add_function_name(function_id, name);
+    // Then the scope graph's word wherever it has one (V98_ENV_PLAN.md E4):
+    // the parents it resolves, and the levels of the accesses whose scope it
+    // places differently. A function whose levels change is built again with
+    // them, and that build is final.
+    let (mut census, expected) = plan_env_levels(&mut ctx, &scope_graph, &env);
+    let rebuilt: Vec<Option<FunctionIr>> = ctx
+        .env_plans
+        .iter()
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|(&f, plan)| build_for_context(file, format, f, Some(plan.clone())))
+        .collect();
+    for item in rebuilt.into_iter().flatten() {
+        let id = item.id as usize;
+        if let Some(Some(slot)) = results.get_mut(id) {
+            slot.statements = item.statements;
         }
-        crate::ir::shift_env_levels(&mut statements, ctx.env_offset(function_id));
-        ctx.analyze_function(function_id, &statements);
     }
-    ctx.scope_graph_stats = scope_graph_census(&ctx, &scope_graph, &env_facts);
+    for item in results.into_iter().flatten() {
+        if let Some(name) = item.name {
+            ctx.add_function_name(item.id, name);
+        }
+        let mut statements = item.statements;
+        crate::ir::shift_env_levels(&mut statements, ctx.env_offset(item.id));
+        ctx.analyze_function(item.id, &statements);
+    }
+    verify_env_plans(&ctx, &expected, &mut census);
+    ctx.scope_graph_stats = census;
     if let Ok(path) = std::env::var("HD_ENV_DUMP") {
-        dump_env_facts(
-            &path,
-            &ctx,
-            &scope_graph,
-            env_facts.iter().map(|(f, x)| (*f, x)),
-        );
+        dump_env_facts(&path, &ctx, &scope_graph, env.iter().map(|(f, e)| (*f, &e.facts)));
     }
 
     // Propagate async flag from outer wrappers to inner generators
@@ -498,27 +534,16 @@ fn dump_env_facts<'a>(
         for (child, env) in &facts.closures {
             let _ = writeln!(out, "{f}	closure	{child}	{env}	{}", scope(f, env));
         }
+        let plan = ctx.env_plans.get(&f);
         for (off, through, slot, store) in &facts.accesses {
             let op = if *store { "store" } else { "load" };
-            // Where the level model disagrees, what it says instead.
-            let level_model = match through {
-                crate::ir::env_values::Env::Closure(n) => {
-                    let cur = ctx.ancestor_at(f, n + ctx.env_offset(f));
-                    let same = matches!(
-                        (graph.resolve(f, through), cur),
-                        (Some(crate::analysis::closure::scope_graph::Scope::Fn(g)), Some(c)) if g == c
-                    );
-                    match cur {
-                        Some(c) if !same => format!("	level model: F{c}"),
-                        None => "	level model: ?".to_string(),
-                        _ => String::new(),
-                    }
-                }
-                _ => String::new(),
-            };
+            // Where the graph moved the access, the level it moved it to.
+            let planned = plan
+                .and_then(|p| p.levels.get(off))
+                .map_or(String::new(), |l| format!("	level {l}"));
             let _ = writeln!(
                 out,
-                "{f}	{op}	@{off}	{through}[{slot}]	{}{level_model}",
+                "{f}	{op}	@{off}	{through}[{slot}]	{}{planned}",
                 scope(f, through)
             );
         }
@@ -528,56 +553,143 @@ fn dump_env_facts<'a>(
     }
 }
 
-// What the scope graph says each load and store reaches, set against the level
-// model the IR is built with (V98_ENV_PLAN.md E3): a closure-level access
-// either names the same function both ways, another function, or a scope a
-// function created past its own, which the level model has no owner for.
-fn scope_graph_census(
-    ctx: &ClosureContext,
+// A scope as the closure context names it: (function, None) for a function's
+// own environment, (function, Some(builder level)) for a block environment it
+// built.
+type ScopeRef = (u32, Option<u32>);
+
+// Where the scope graph's word goes into the closure context (V98_ENV_PLAN.md
+// E4): the parents it resolves, for functions and block environments, and the
+// level of every load and store whose scope it places somewhere the builder's
+// level does not reach. Returns the census, and the scope each planned access
+// should reach once the parents are in (`verify_env_plans`).
+fn plan_env_levels(
+    ctx: &mut ClosureContext,
     graph: &crate::analysis::closure::scope_graph::ScopeGraph,
-    facts: &[(u32, crate::ir::env_values::EnvFacts)],
-) -> BTreeMap<String, u32> {
+    env: &[(u32, FunctionEnv)],
+) -> (BTreeMap<String, u32>, BTreeMap<(u32, u32), ScopeRef>) {
     use crate::analysis::closure::scope_graph::Scope;
-    use crate::ir::env_values::Env;
+    use std::collections::HashMap;
+    let site_level: HashMap<(u32, u32), u32> = env
+        .iter()
+        .flat_map(|(f, e)| e.sites.iter().map(move |&(site, l)| ((*f, site), l)))
+        .collect();
+    let to_ref = |s: Scope| -> Option<ScopeRef> {
+        match s {
+            Scope::Fn(g) => Some((g, None)),
+            Scope::Created(g, site) => site_level.get(&(g, site)).map(|&l| (g, Some(l))),
+        }
+    };
     let mut census: BTreeMap<String, u32> = BTreeMap::new();
-    for (f, facts) in facts {
-        for (_, through, _, _) in &facts.accesses {
-            let resolved = graph.resolve(*f, through);
-            let class: String = match (through, resolved) {
-                (Env::Closure(n), Some(Scope::Fn(g))) => {
-                    if ctx.ancestor_at(*f, n + ctx.env_offset(*f)) == Some(g) {
-                        "closure: same function".into()
-                    } else {
-                        "closure: another function".into()
-                    }
-                }
-                // The level model gives a block environment a synthetic scope
-                // of the function that built it; the same function is the
-                // same answer under another name.
-                (Env::Closure(n), Some(Scope::Created(h, _))) => {
-                    match ctx.ancestor_at(*f, n + ctx.env_offset(*f)) {
-                        Some(cur) if ctx.is_block_scope(cur) && ctx.scope_function(cur) == h => {
-                            "closure: created scope, a block of the same function".into()
-                        }
-                        _ => "closure: created scope, elsewhere".into(),
-                    }
-                }
-                (Env::Closure(n), None) => {
-                    format!("closure unresolved: {}", graph.why_unresolved(*f, *n))
-                }
-                (Env::Own, _) => "own".into(),
-                (Env::Created { .. }, _) => "created".into(),
-                (Env::InSlot(..), Some(_)) => "slot-held: resolved".into(),
-                (Env::InSlot(..), None) => "slot-held: unresolved".into(),
-                (Env::Up(..), Some(_)) => "up from a slot: resolved".into(),
-                (Env::Up(..), None) => "up from a slot: unresolved".into(),
-                (Env::Unknown, _) => "unknown".into(),
-            };
-            *census.entry(class).or_default() += 1;
+    let mut count = |k: &str| *census.entry(k.to_string()).or_default() += 1;
+
+    for f in graph.functions_created() {
+        if let Some(r) = graph.creation(f).and_then(to_ref) {
+            if r != (f, None) {
+                ctx.scope_parents.insert(f, r);
+                count("parents: functions");
+            }
         }
     }
+    for (&(g, site), &level) in &site_level {
+        if let Some(r) = graph.parent(Scope::Created(g, site)).and_then(to_ref) {
+            if r != (g, Some(level)) {
+                ctx.block_parents.insert((g, level), r);
+                count("parents: blocks");
+            }
+        }
+    }
+
+    // The level that reaches `s` from `f`: its own scopes directly, anything
+    // else as the hops up its chain -- the chain of parents installed above,
+    // which is the one `slot_owner` will walk, not the graph's own: a level
+    // every creator of a shared function reaches the same way is one answer
+    // to the graph and none to a single parent link.
+    let level_for = |f: u32, s: Scope| -> Option<u32> {
+        match s {
+            Scope::Fn(g) if g == f => return Some(0),
+            Scope::Created(g, site) if g == f => return site_level.get(&(f, site)).copied(),
+            _ => {}
+        }
+        let want = to_ref(s)?;
+        let mut cur: ScopeRef = (f, None);
+        for k in 1..=64u32 {
+            cur = match cur {
+                (g, None) => *ctx.scope_parents.get(&g)?,
+                (g, Some(level)) => match ctx.block_parents.get(&(g, level)) {
+                    Some(&r) => r,
+                    None => return None,
+                },
+            };
+            if cur == want {
+                return Some(k);
+            }
+        }
+        None
+    };
+    let mut expected = BTreeMap::new();
+    for (f, e) in env {
+        let raw: HashMap<u32, u32> = e.access_levels.iter().copied().collect();
+        let shift = ctx.env_offset(*f);
+        let mut levels = BTreeMap::new();
+        for (off, through, _, _) in &e.facts.accesses {
+            let Some(&raw_level) = raw.get(off) else {
+                count("access: the builder made none");
+                continue;
+            };
+            let old = crate::ir::EnvPlan::shifted(shift, raw_level);
+            let Some(s) = graph.resolve(*f, through) else {
+                count(&format!("access: unresolved, {}", through.kind()));
+                continue;
+            };
+            match (level_for(*f, s), to_ref(s)) {
+                (Some(l), Some(r)) if l != old => {
+                    levels.insert(*off, l);
+                    expected.insert((*f, *off), r);
+                    count("access: level changed");
+                }
+                (Some(_), Some(_)) => count("access: level kept"),
+                _ => count("access: resolved, not on the chain"),
+            }
+        }
+        if !levels.is_empty() {
+            ctx.env_plans
+                .insert(*f, crate::ir::EnvPlan { levels, shift });
+        }
+    }
+    let planned: Vec<u32> = ctx.env_plans.keys().copied().collect();
+    for f in &planned {
+        ctx.env_offsets.remove(f);
+    }
+    census.insert("functions planned".to_string(), planned.len() as u32);
     let (creation, parked) = graph.conflicts();
     census.insert("conflicts: functions".to_string(), creation as u32);
     census.insert("conflicts: slots".to_string(), parked as u32);
-    census
+    (census, expected)
+}
+
+// Whether each planned level, read the way everything downstream reads it
+// (`slot_owner` over the parent chain), reaches the scope the graph gave it.
+fn verify_env_plans(
+    ctx: &ClosureContext,
+    expected: &BTreeMap<(u32, u32), ScopeRef>,
+    census: &mut BTreeMap<String, u32>,
+) {
+    for (&(f, off), &want) in expected {
+        let Some(&level) = ctx.env_plans.get(&f).and_then(|p| p.levels.get(&off)) else {
+            continue;
+        };
+        let class = match ctx.slot_owner(f, level) {
+            Some(id) if ctx.scope_ref(id) == want => "verify: reaches its scope",
+            Some(id) => {
+                log::trace!(target: "slots", "env plan: F{f} @{off} level {level} reaches {:?}, not {want:?}", ctx.scope_ref(id));
+                "verify: reaches another scope"
+            }
+            None => {
+                log::trace!(target: "slots", "env plan: F{f} @{off} level {level} reaches nothing, not {want:?}");
+                "verify: reaches nothing"
+            }
+        };
+        *census.entry(class.to_string()).or_default() += 1;
+    }
 }

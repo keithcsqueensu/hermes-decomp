@@ -83,7 +83,9 @@ impl ClosureContext {
                             // block, not the function, is its parent.
                             let scope = self.block_scope(current_fn, *level);
                             if let ClosureSlotValue::Function { id, .. } = &val {
-                                self.parent_function.insert(*id, scope);
+                                if !self.scope_parents.contains_key(id) {
+                                    self.parent_function.insert(*id, scope);
+                                }
                             }
                             trace_store(scope, *slot, &val);
                             self.function_closures

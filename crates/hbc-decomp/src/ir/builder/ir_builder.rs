@@ -38,6 +38,13 @@ pub struct IRBuilder<'a> {
     // (`env_values`) and leave its facts in `env_facts`.
     pub collect_env_facts: bool,
     pub env_facts: super::env_values::EnvFacts,
+    // The scope graph's levels for the next function built (V98_ENV_PLAN.md
+    // E4); its IR is then final and must not be shifted.
+    pub env_plan: Option<super::env_state::EnvPlan>,
+    // What the last built function claimed and accessed, by offset, with the
+    // builder's own levels (`EnvRegMap::sites`, `EnvRegMap::accesses`).
+    pub env_sites: Vec<(u32, u32)>,
+    pub env_access_levels: Vec<(u32, u32)>,
 }
 
 impl<'a> IRBuilder<'a> {
@@ -55,12 +62,17 @@ impl<'a> IRBuilder<'a> {
             slot_held_accesses: 0,
             collect_env_facts: false,
             env_facts: Default::default(),
+            env_plan: None,
+            env_sites: Vec::new(),
+            env_access_levels: Vec::new(),
         }
     }
 
     pub fn build_function(&mut self, function_id: u32) -> Result<CFG> {
         self.created_in_block.clear();
         self.created_with_env.clear();
+        self.env_sites.clear();
+        self.env_access_levels.clear();
         let instructions = self
             .file
             .decode_function_instructions(self.format, function_id)?;
@@ -189,6 +201,7 @@ impl<'a> IRBuilder<'a> {
         let mut current_stmts: Vec<Statement> = Vec::new();
         // Flow-insensitive last-write map: env register → nesting level.
         let mut env_map = EnvRegMap::new();
+        env_map.plan = self.env_plan.clone();
 
         for inst in instructions {
             if let Some(&block_id) = offset_to_block.get(&inst.offset) {
@@ -212,6 +225,7 @@ impl<'a> IRBuilder<'a> {
                 }
             }
 
+            env_map.at = inst.offset;
             let result = dispatch_instruction(
                 inst,
                 self.file,
@@ -320,6 +334,8 @@ impl<'a> IRBuilder<'a> {
             }
         }
         self.slot_held_accesses = env_map.slot_held_accesses;
+        self.env_sites = std::mem::take(&mut env_map.sites);
+        self.env_access_levels = std::mem::take(&mut env_map.accesses);
 
         if !current_stmts.is_empty()
             || matches!(

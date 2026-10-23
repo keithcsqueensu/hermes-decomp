@@ -33,7 +33,8 @@ use super::DecompileOptionsV2;
 // 6: `ClosureContext.env_offsets`.
 // 7: `Binding::Variable` holds a `Var { name, slot }`, not a bare `String`.
 // 8: so does `Statement::Let`.
-pub const CACHE_VERSION: u32 = 8;
+// 9: `ClosureContext.env_plans`, `scope_parents`, `block_parents`, `block_function`.
+pub const CACHE_VERSION: u32 = 9;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.

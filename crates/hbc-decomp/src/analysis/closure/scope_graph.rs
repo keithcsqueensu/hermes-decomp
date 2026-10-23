@@ -172,6 +172,11 @@ impl ScopeGraph {
         self.up_all(BTreeSet::from([scope]), n)
     }
 
+    // The one scope `scope` is built on, when there is one.
+    pub fn parent(&self, scope: Scope) -> Option<Scope> {
+        self.up(scope, 1)
+    }
+
     // Function `f`'s closure level `n` (1: the scope it was created with).
     pub fn chain(&self, f: u32, n: u32) -> Option<Scope> {
         if n == 0 {
