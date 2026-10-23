@@ -173,7 +173,8 @@ impl Codegen {
             let param = sanitize_loop_var(raw_param, "err");
             out.push_str(&format!("{indent}}} catch ({param}) {{\n"));
             self.indent_level += 1;
-            let catch_str = self.generate_statements(catch_body);
+            let catch_body = undeclare_catch_param(catch_body, raw_param);
+            let catch_str = self.generate_statements(&catch_body);
             if param != raw_param {
                 out.push_str(&replace_whole_word(&catch_str, raw_param, &param));
             } else {
@@ -192,4 +193,24 @@ impl Codegen {
         out.push_str(&format!("{indent}}}\n"));
         out
     }
+}
+
+// The catch parameter's register is often reused for another value in the same
+// body, and the declaration pass then declares it again at the head of the catch
+// body: `catch (sum) { let sum; ... }` does not parse. The parameter already is
+// that binding, so `let P;` goes and `let P = v` becomes `P = v`.
+fn undeclare_catch_param(body: &[Statement], param: &str) -> Vec<Statement> {
+    use crate::ir::{AssignTarget, Binding, Constant, Expression, Value};
+    body.iter()
+        .filter_map(|stmt| match stmt {
+            Statement::Let { name, value, .. } if name.as_str() == param => match value {
+                Expression::Value(Value::Constant(Constant::Undefined)) => None,
+                _ => Some(Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Variable(name.clone().into())),
+                    value: value.clone(),
+                }),
+            },
+            other => Some(other.clone()),
+        })
+        .collect()
 }

@@ -234,7 +234,7 @@ fn format_call(callee: &Expression, arguments: &[Expression], extra_suffix: &str
 // and the deepest expression in a real 62k-function bundle is 79.
 pub fn format_expr(expr: &Expression) -> String {
     let Some(_guard) = crate::ir::depth::DepthGuard::enter() else {
-        return crate::ir::depth::TOO_DEEP.to_string();
+        return crate::ir::depth::TOO_DEEP_EXPR.to_string();
     };
     match expr {
         Expression::Value(v) => format!("{v}"),

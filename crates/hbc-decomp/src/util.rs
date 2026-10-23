@@ -64,7 +64,8 @@ pub fn sanitize_identifier(name: &str) -> String {
         return match symbol_name {
             "iterator" => "iterable".to_string(),
             "asyncIterator" => "asyncIterable".to_string(),
-            other => format!("Symbol_{other}"),
+            // `@@transducer/step` keeps its `/` otherwise.
+            other => sanitize_identifier(&format!("Symbol_{other}")),
         };
     }
 

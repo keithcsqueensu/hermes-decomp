@@ -26,7 +26,7 @@ impl Codegen {
         use crate::ir::{Constant, Expression, Value};
 
         let Some(_guard) = crate::ir::depth::DepthGuard::enter() else {
-            return crate::ir::depth::TOO_DEEP.to_string();
+            return crate::ir::depth::TOO_DEEP_EXPR.to_string();
         };
 
         match expr {

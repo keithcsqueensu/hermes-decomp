@@ -400,6 +400,27 @@ impl Codegen {
         {
             exports.retain(|e| e.trim() != "export default exports.default;");
         }
+        // Any other second default still takes the module down. A module only
+        // has one; a later declaration keeps its binding without the export,
+        // and a later bare expression goes. (The pseudo-module 4294967295, which
+        // collects functions no module claims, is where several turn up.)
+        let mut defaults = 0;
+        exports.retain_mut(|e| {
+            let Some(rest) = e.strip_prefix("export default ") else {
+                return true;
+            };
+            defaults += 1;
+            if defaults == 1 {
+                return true;
+            }
+            let declares = ["function", "async function", "class "]
+                .iter()
+                .any(|kw| rest.starts_with(kw));
+            if declares {
+                *e = rest.to_string();
+            }
+            declares
+        });
 
         // `function name(){…}` + `export const name = …` → `export function name`
         dedupe_function_export_collisions(&mut body_stmts, &mut exports);

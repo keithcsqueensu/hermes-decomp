@@ -343,6 +343,17 @@ pub fn run_ipa(
         );
     }
 
+    // A call site that passes `arguments` along proposes it as the callee's
+    // parameter name, but a module is strict and cannot bind `arguments` or
+    // `eval`: `function f(arguments)` does not parse.
+    for names in analysis.param_names.values_mut() {
+        for name in names.iter_mut() {
+            if matches!(name.as_deref(), Some("arguments" | "eval")) {
+                *name = None;
+            }
+        }
+    }
+
     analysis
 }
 

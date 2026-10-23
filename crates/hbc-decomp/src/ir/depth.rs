@@ -44,10 +44,15 @@ pub const MAX_RENDER_DEPTH: usize = 512;
 
 /// What a renderer emits in place of a subtree it refused to descend into.
 ///
-/// Deliberately a JS comment: it is syntactically inert wherever an expression or
-/// a statement was expected, and it is greppable. Silence here would be the same
-/// mistake as the rest of the read path's silent degradations.
+/// Deliberately a JS comment: it is syntactically inert where a statement was
+/// expected, and it is greppable. Silence here would be the same mistake as the
+/// rest of the read path's silent degradations.
 pub const TOO_DEEP: &str = "/* hbc-decomp: nesting exceeds MAX_RENDER_DEPTH */";
+
+/// The same, where an expression was expected. A bare comment there left an empty
+/// operand (`x = /* … */(/* … */)`), which does not parse; a parenthesised `void 0`
+/// does wherever an expression may stand, callee and member object included.
+pub const TOO_DEEP_EXPR: &str = "(void 0 /* hbc-decomp: nesting exceeds MAX_RENDER_DEPTH */)";
 
 thread_local! {
     static DEPTH: Cell<usize> = const { Cell::new(0) };
