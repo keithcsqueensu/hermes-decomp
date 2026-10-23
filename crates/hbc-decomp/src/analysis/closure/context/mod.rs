@@ -55,6 +55,10 @@ pub struct ClosureContext {
     // environment-value pass sees them (`ir::builder::env_values::Env::kind`).
     #[serde(default)]
     pub env_access_kinds: BTreeMap<String, u32>,
+    // Loads and stores by what the scope graph resolves them to, against the
+    // level model (V98_ENV_PLAN.md E3).
+    #[serde(default)]
+    pub scope_graph_stats: BTreeMap<String, u32>,
 }
 
 // Synthetic ids count down from the top of the range; a bundle has far fewer

@@ -357,21 +357,29 @@ pub fn build_closure_context_from_file(
     // Creation scopes first, so every parent link the walk records sees them.
     let mut ctx = ClosureContext::new();
     let mut created = Vec::new();
+    let mut results = results;
+    let env_facts: Vec<(u32, crate::ir::env_values::EnvFacts)> = results
+        .iter_mut()
+        .flatten()
+        .map(|r| (r.0, std::mem::take(&mut r.6)))
+        .collect();
     for item in results.iter().flatten() {
         for &(child, level) in &item.3 {
             ctx.set_creation_scope(child, item.0, level);
         }
         created.extend(item.4.iter().map(|&(child, level)| (item.0, child, level)));
         ctx.slot_held_accesses += item.5;
-        for (_, through, _, _) in &item.6.accesses {
+    }
+    for (_, facts) in &env_facts {
+        for (_, through, _, _) in &facts.accesses {
             *ctx.env_access_kinds
                 .entry(through.kind().to_string())
                 .or_default() += 1;
         }
     }
-    if let Ok(path) = std::env::var("HD_ENV_DUMP") {
-        dump_env_facts(&path, results.iter().flatten().map(|r| (r.0, &r.6)));
-    }
+    let scope_graph = crate::analysis::closure::scope_graph::ScopeGraph::build(
+        env_facts.iter().map(|(f, x)| (*f, x)),
+    );
     // Each function's levels count from the environment it was created with;
     // shift them so level L is L hops up the parent chain before anything
     // keys a slot by level.
@@ -383,6 +391,15 @@ pub fn build_closure_context_from_file(
         }
         crate::ir::shift_env_levels(&mut statements, ctx.env_offset(function_id));
         ctx.analyze_function(function_id, &statements);
+    }
+    ctx.scope_graph_stats = scope_graph_census(&ctx, &scope_graph, &env_facts);
+    if let Ok(path) = std::env::var("HD_ENV_DUMP") {
+        dump_env_facts(
+            &path,
+            &ctx,
+            &scope_graph,
+            env_facts.iter().map(|(f, x)| (*f, x)),
+        );
     }
 
     // Propagate async flag from outer wrappers to inner generators
@@ -454,11 +471,21 @@ pub(crate) fn trace_supers(tag: &str, statements: &[crate::ir::Statement]) {
 // of every function, for reading a case by hand and for diffing two builds.
 fn dump_env_facts<'a>(
     path: &str,
+    ctx: &ClosureContext,
+    graph: &crate::analysis::closure::scope_graph::ScopeGraph,
     facts: impl Iterator<Item = (u32, &'a crate::ir::env_values::EnvFacts)>,
 ) {
     use std::fmt::Write as _;
     let mut out = String::new();
+    let scope = |f: u32, env: &crate::ir::env_values::Env| {
+        graph
+            .resolve(f, env)
+            .map_or("?".to_string(), |s| s.to_string())
+    };
     for (f, facts) in facts {
+        if let Some(s) = graph.creation(f) {
+            let _ = writeln!(out, "{f}	created-with	{s}");
+        }
         for (site, parent) in &facts.created {
             let parent = parent
                 .as_ref()
@@ -469,14 +496,88 @@ fn dump_env_facts<'a>(
             let _ = writeln!(out, "{f}	park	{through}[{slot}]	{value}");
         }
         for (child, env) in &facts.closures {
-            let _ = writeln!(out, "{f}	closure	{child}	{env}");
+            let _ = writeln!(out, "{f}	closure	{child}	{env}	{}", scope(f, env));
         }
         for (off, through, slot, store) in &facts.accesses {
             let op = if *store { "store" } else { "load" };
-            let _ = writeln!(out, "{f}	{op}	@{off}	{through}[{slot}]");
+            // Where the level model disagrees, what it says instead.
+            let level_model = match through {
+                crate::ir::env_values::Env::Closure(n) => {
+                    let cur = ctx.ancestor_at(f, n + ctx.env_offset(f));
+                    let same = matches!(
+                        (graph.resolve(f, through), cur),
+                        (Some(crate::analysis::closure::scope_graph::Scope::Fn(g)), Some(c)) if g == c
+                    );
+                    match cur {
+                        Some(c) if !same => format!("	level model: F{c}"),
+                        None => "	level model: ?".to_string(),
+                        _ => String::new(),
+                    }
+                }
+                _ => String::new(),
+            };
+            let _ = writeln!(
+                out,
+                "{f}	{op}	@{off}	{through}[{slot}]	{}{level_model}",
+                scope(f, through)
+            );
         }
     }
     if let Err(e) = std::fs::write(path, out) {
         log::warn!("cannot write {path}: {e}");
     }
+}
+
+// What the scope graph says each load and store reaches, set against the level
+// model the IR is built with (V98_ENV_PLAN.md E3): a closure-level access
+// either names the same function both ways, another function, or a scope a
+// function created past its own, which the level model has no owner for.
+fn scope_graph_census(
+    ctx: &ClosureContext,
+    graph: &crate::analysis::closure::scope_graph::ScopeGraph,
+    facts: &[(u32, crate::ir::env_values::EnvFacts)],
+) -> BTreeMap<String, u32> {
+    use crate::analysis::closure::scope_graph::Scope;
+    use crate::ir::env_values::Env;
+    let mut census: BTreeMap<String, u32> = BTreeMap::new();
+    for (f, facts) in facts {
+        for (_, through, _, _) in &facts.accesses {
+            let resolved = graph.resolve(*f, through);
+            let class: String = match (through, resolved) {
+                (Env::Closure(n), Some(Scope::Fn(g))) => {
+                    if ctx.ancestor_at(*f, n + ctx.env_offset(*f)) == Some(g) {
+                        "closure: same function".into()
+                    } else {
+                        "closure: another function".into()
+                    }
+                }
+                // The level model gives a block environment a synthetic scope
+                // of the function that built it; the same function is the
+                // same answer under another name.
+                (Env::Closure(n), Some(Scope::Created(h, _))) => {
+                    match ctx.ancestor_at(*f, n + ctx.env_offset(*f)) {
+                        Some(cur) if ctx.is_block_scope(cur) && ctx.scope_function(cur) == h => {
+                            "closure: created scope, a block of the same function".into()
+                        }
+                        _ => "closure: created scope, elsewhere".into(),
+                    }
+                }
+                (Env::Closure(n), None) => {
+                    format!("closure unresolved: {}", graph.why_unresolved(*f, *n))
+                }
+                (Env::Own, _) => "own".into(),
+                (Env::Created { .. }, _) => "created".into(),
+                (Env::InSlot(..), Some(_)) => "slot-held: resolved".into(),
+                (Env::InSlot(..), None) => "slot-held: unresolved".into(),
+                (Env::Up(..), Some(_)) => "up from a slot: resolved".into(),
+                (Env::Up(..), None) => "up from a slot: unresolved".into(),
+                (Env::Unknown, _) => "unknown".into(),
+            };
+            *census.entry(class).or_default() += 1;
+        }
+    }
+    let (creation, parked) = graph.conflicts();
+    census.insert("conflicts: functions".to_string(), creation as u32);
+    census.insert("conflicts: slots".to_string(), parked as u32);
+    census
 }

@@ -1,6 +1,7 @@
 pub mod context;
 pub mod identity;
 pub mod info;
+pub mod scope_graph;
 pub mod stamps;
 
 #[cfg(test)]

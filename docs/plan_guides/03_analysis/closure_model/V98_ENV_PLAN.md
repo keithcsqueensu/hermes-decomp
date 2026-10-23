@@ -176,10 +176,15 @@ byte-identical on all four bundles.
 
 | | own | closure | created | slot-held | up from a slot | unknown |
 |---|---|---|---|---|---|---|
-| Equinox (v96) | 76,214 | 178,490 | — | — | — | — |
-| CoachRx (v96) | 51,440 | 101,359 | — | — | — | — |
-| Expensify (v98) | 133,551 | 307,717 | 22,332 | 4,507 | 1,238 | 557 |
-| Discord (v98) | 168,866 | 481,600 | 16,794 | 17,643 | 4,643 | 3,977 |
+| Equinox (v96) | 76,572 | 184,962 | — | — | — | — |
+| CoachRx (v96) | 51,508 | 104,556 | — | — | — | — |
+| Expensify (v98) | 133,902 | 333,674 | 25,071 | 6,954 | 1,877 | 606 |
+| Discord (v98) | 169,129 | 535,710 | 24,454 | 28,601 | 6,784 | 3,981 |
+
+  *Correction.* The counts first merged here came from a release binary built before the pass
+  split blocks after every jump; the fix was verified only under `cargo test`. That binary
+  missed whole blocks, the generator states among them. The output identity is unaffected,
+  since the pass never touches the IR. The table now has the counts from the E3 run.
 
   The slot-held and up-from-a-slot accesses are what E3 has to resolve. The unknown ones come
   from paths that disagree or from `GetClosureEnvironment`.
@@ -202,6 +207,50 @@ levels 1, 2, …, and `env_hops` / `ancestor_at` read it.
 
 Exit: E1's fixtures all pass, including S3 and S4, and the unresolved count is reported per
 bundle.
+
+**Status: done, with the fixture exit moved to E4.** `analysis::closure::scope_graph` builds
+the graph from E2's facts while the closure context is built (4.8 s on Expensify, 7.3 s on
+Discord). It runs to a fixpoint and does not change the output. Two things the plan did not
+foresee:
+- **One compiled function, several creators.** Hermes shares a function between creators:
+  981 functions on Expensify and 1,326 on Discord are created with more than one scope. A
+  function's creation is therefore a set, and a level resolves when every creator reaches the
+  same scope there. On Expensify that halves the unresolved closure accesses (4,429 → 2,657).
+- **Cycles.** A created scope's parent is resolved through its creator's chain, which can lead
+  back to it, so `resolve` has a depth bound. The first set-valued version overflowed the
+  stack on Expensify.
+
+Slot conflicts are 0 on every bundle: no slot is ever parked with two scopes.
+
+**[measured]** Every load and store, by what the graph resolves it to, set against the level
+model the IR uses today (`RUST_LOG=slots=debug`, "scope graph"):
+
+| | Equinox | CoachRx | Expensify | Discord |
+|---|---|---|---|---|
+| closure, same function both ways | 184,962 | 104,550 | 271,547 | 497,071 |
+| closure, **another function** | 0 | 6 | 5,128 | 13,531 |
+| closure, a created scope = the level model's block scope | — | — | 47,981 | 18,818 |
+| closure, a created scope elsewhere | — | — | 2,018 | 810 |
+| closure, unresolved | 0 | 0 | 2,657 | 2,935 |
+| slot-held, resolved / unresolved | — | — | 6,936 / 18 | 28,562 / 39 |
+| up from a slot, resolved / unresolved | — | — | 1,833 / 44 | 6,714 / 70 |
+| unknown (paths disagree, `GetClosureEnvironment`) | 0 | 0 | 606 | 3,981 |
+
+The unresolved closure accesses are mostly creators that reach different scopes (Expensify
+2,274, Discord 2,480). The rest are functions no fact creates (149 / 189), functions with more
+than 16 creation scopes (89 / 98), and created scopes whose parent is unresolved (145 / 168).
+
+**Disagreements, checked by hand.** `HD_ENV_DUMP` marks each access where the level model
+names a different function ("level model: F…").
+- `tests/fixtures/env/async_closures` (v98): the 2 disagreements are the S1 reads. `later`
+  reads `outerOnly`, slot 1 of `outer`. The graph says `outer`; the level model says the
+  generator body.
+- Discord: the largest group is the `sendMessage` family from §1. For example, 157373 reads
+  raw level 4 slot 49. The graph says the module; the level model stops at the sibling of
+  `sendMessage` (F41678). The bytecode trace in K4.2b showed that path ends at the module.
+
+So far every disagreement read by hand is the graph being right. That is what E4 switches
+to.
 
 ### E4 — switch over and measure
 

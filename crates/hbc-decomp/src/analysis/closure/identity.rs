@@ -430,6 +430,7 @@ pub fn log_violations(stage: &str, v: &Violations, ctx: &ClosureContext) {
         ctx.slot_held_accesses
     );
     log::debug!(target: TARGET, "env accesses by kind: {:?}", ctx.env_access_kinds);
+    log::debug!(target: TARGET, "scope graph: {:?}", ctx.scope_graph_stats);
     if let Ok(path) = std::env::var("HD_SLOTS_DUMP") {
         let path = format!("{path}.{}.tsv", stage.replace(' ', "_"));
         if let Err(e) = std::fs::write(&path, v.to_tsv(ctx)) {
