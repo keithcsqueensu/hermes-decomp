@@ -206,7 +206,7 @@ fn undeclare_catch_param(body: &[Statement], param: &str) -> Vec<Statement> {
             Statement::Let { name, value, .. } if name.as_str() == param => match value {
                 Expression::Value(Value::Constant(Constant::Undefined)) => None,
                 _ => Some(Statement::Assign {
-                    target: AssignTarget::Binding(Binding::Variable(name.clone().into())),
+                    target: AssignTarget::Binding(Binding::Variable(name.clone())),
                     value: value.clone(),
                 }),
             },
