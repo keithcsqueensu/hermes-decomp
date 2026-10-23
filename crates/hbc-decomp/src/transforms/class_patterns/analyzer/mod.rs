@@ -29,6 +29,13 @@ pub struct ClassAnalyzer<'a> {
     pub(super) proto_aliases: BTreeMap<String, String>,
 }
 
+fn constructor_reads_like_a_class(body: Option<&[Statement]>) -> bool {
+    body.unwrap_or_default().iter().any(|s| {
+        let text = s.to_string();
+        text.contains("classCallCheck") || text.contains("new.target") || text.contains("this")
+    })
+}
+
 impl<'a> ClassAnalyzer<'a> {
     pub fn new(
         file: &'a crate::BytecodeFile,
@@ -75,6 +82,7 @@ impl<'a> ClassAnalyzer<'a> {
         // and a module with two bindings of one name does not parse. Fold the
         // register-keyed builder into the named one first.
         self.merge_same_named_builders();
+        self.drop_unproven_classes(&candidates);
 
         // Pass 3: Generate output, replacing consumed statements with classes.
         // Each class is emitted at its earliest consumed index so that multiple
@@ -124,6 +132,34 @@ impl<'a> ClassAnalyzer<'a> {
         }
 
         result
+    }
+
+    // A capitalised `X = function(){}` is only a guess at a class. Promoted with
+    // nothing else behind it, a function component or factory became a class
+    // that needs `new` (`Y2(arg)` then throws), and its slot's own declaration
+    // was left beside the new `class Y2`. Keep a class only on evidence: methods,
+    // a superclass, a `prototype` use, or a constructor that reads like one
+    // (`_classCallCheck`, `new.target`, any `this`). Otherwise its statements stay.
+    fn drop_unproven_classes(&mut self, candidates: &HashSet<String>) {
+        let unproven: Vec<String> = self
+            .classes
+            .iter()
+            .filter(|(key, b)| {
+                b.methods.is_empty()
+                    && b.super_class.is_none()
+                    && !candidates.contains(key.as_str())
+                    && !candidates.contains(&b.name)
+                    && !constructor_reads_like_a_class(b.constructor_body.as_deref())
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in unproven {
+            log::debug!(target: "classes", "not a class, no evidence: {key}");
+            self.classes.remove(&key);
+            for idx in self.class_indices.remove(&key).unwrap_or_default() {
+                self.consumed.remove(&idx);
+            }
+        }
     }
 
     fn merge_same_named_builders(&mut self) {
