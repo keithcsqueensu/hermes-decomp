@@ -404,6 +404,29 @@ fn insert_decls_in_block(
         decls.append(stmts);
         *stmts = decls;
     }
+    // A class kept in an environment slot starts with an `undefined` store to
+    // that slot, which became `let Box` beside `class Box`: two declarations of
+    // one name. The class declaration is the binding. The `undefined` store goes
+    // (before the class it would also hit the TDZ), and any other store to the
+    // name stays an assignment.
+    let classes: HashSet<String> = stmts
+        .iter()
+        .filter_map(|s| match s {
+            Statement::Class { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    if !classes.is_empty() {
+        stmts.retain(|s| {
+            !matches!(
+                s,
+                Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Variable(n)),
+                    value: Expression::Value(crate::ir::Value::Constant(crate::ir::Constant::Undefined)),
+                } if classes.contains(n.as_str())
+            )
+        });
+    }
     for stmt in stmts.iter_mut() {
         match stmt {
             Statement::Assign {
@@ -417,6 +440,7 @@ fn insert_decls_in_block(
                     && !skip.declared.contains(name.as_str())
                     && !free_closures.contains(name.as_str())
                     && !skip.outer_names.contains(name.as_str())
+                    && !classes.contains(name.as_str())
                     && !is_self_assignment_var(name, value)
                 {
                     skip.declared.insert(name.name.clone());
