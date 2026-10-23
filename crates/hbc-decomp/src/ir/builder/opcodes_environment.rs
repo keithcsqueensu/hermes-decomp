@@ -93,7 +93,7 @@ pub fn handle_load_from_environment(
     let dst = get_reg(&inst.operands, 0)?;
     let env_reg = get_reg(&inst.operands, 1)?;
     let slot = inst.operands.get(2)?.value.as_u32()?;
-    let level = env_map.env_level_of(env_reg);
+    let level = env_map.access_level_of(env_reg);
     // Remember where this value came from: if it is used as an environment
     // later, that is what identifies it.
     env_map.set_source_slot(dst, level, slot);
@@ -114,7 +114,7 @@ pub fn handle_store_to_environment(
 ) -> Option<FlowResult> {
     let env_reg = get_reg(&inst.operands, 0)?;
     let slot = inst.operands.get(1)?.value.as_u32()?;
-    let level = env_map.env_level_of(env_reg);
+    let level = env_map.access_level_of(env_reg);
 
     // Capturing a freshly created environment into parent slot `slot`: give it the
     // identity of that slot, so its own slot accesses use the level a load from

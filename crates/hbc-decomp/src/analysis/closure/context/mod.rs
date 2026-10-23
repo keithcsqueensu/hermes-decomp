@@ -46,6 +46,15 @@ pub struct ClosureContext {
     // the parent chain; kept so a function built later is shifted the same way.
     #[serde(default)]
     pub env_offsets: BTreeMap<u32, u32>,
+    // Loads and stores, over the whole bundle, that went through an
+    // environment loaded out of a slot: identified by slot number alone, so
+    // not resolved to a scope (V98_ENV_PLAN.md S3). 0 on v96.
+    #[serde(default)]
+    pub slot_held_accesses: u32,
+    // Loads and stores by the kind of environment they go through, as the
+    // environment-value pass sees them (`ir::builder::env_values::Env::kind`).
+    #[serde(default)]
+    pub env_access_kinds: BTreeMap<String, u32>,
 }
 
 // Synthetic ids count down from the top of the range; a bundle has far fewer

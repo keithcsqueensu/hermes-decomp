@@ -422,12 +422,14 @@ pub fn log_violations(stage: &str, v: &Violations, ctx: &ClosureContext) {
     }
     log::debug!(
         target: TARGET,
-        "identity {stage}: I1 {}  I2 {} {i2:?}  I3 {} {i3:?}  aliases {}",
+        "identity {stage}: I1 {}  I2 {} {i2:?}  I3 {} {i3:?}  aliases {}  slot-held env accesses {}",
         v.i1.len(),
         v.i2.len(),
         v.i3.len(),
-        v.aliases
+        v.aliases,
+        ctx.slot_held_accesses
     );
+    log::debug!(target: TARGET, "env accesses by kind: {:?}", ctx.env_access_kinds);
     if let Ok(path) = std::env::var("HD_SLOTS_DUMP") {
         let path = format!("{path}.{}.tsv", stage.replace(' ', "_"));
         if let Err(e) = std::fs::write(&path, v.to_tsv(ctx)) {

@@ -31,6 +31,13 @@ pub struct IRBuilder<'a> {
     // for one N levels out. A closure reads its environments counting from the
     // one it was given, so its own levels are offset by this (shift_env_levels).
     pub created_with_env: Vec<(u32, u32)>,
+    // Loads and stores the last built function made through an environment
+    // loaded out of a slot (`EnvRegMap::slot_held_accesses`).
+    pub slot_held_accesses: u32,
+    // Set to have `build_function` also run the environment-value pass
+    // (`env_values`) and leave its facts in `env_facts`.
+    pub collect_env_facts: bool,
+    pub env_facts: super::env_values::EnvFacts,
 }
 
 impl<'a> IRBuilder<'a> {
@@ -45,6 +52,9 @@ impl<'a> IRBuilder<'a> {
             options,
             created_in_block: Vec::new(),
             created_with_env: Vec::new(),
+            slot_held_accesses: 0,
+            collect_env_facts: false,
+            env_facts: Default::default(),
         }
     }
 
@@ -74,6 +84,17 @@ impl<'a> IRBuilder<'a> {
             .get(function_id as usize)
             .map(|h| h.frame_size())
             .unwrap_or(0);
+        self.env_facts = if self.collect_env_facts {
+            super::env_values::analyze(
+                &instructions,
+                self.format,
+                self.file,
+                handlers,
+                func_bytecode_offset,
+            )
+        } else {
+            Default::default()
+        };
         let mut cfg = self.build_from_instructions(
             &instructions,
             handlers,
@@ -298,6 +319,7 @@ impl<'a> IRBuilder<'a> {
                 }
             }
         }
+        self.slot_held_accesses = env_map.slot_held_accesses;
 
         if !current_stmts.is_empty()
             || matches!(
@@ -459,7 +481,7 @@ fn is_iterator_cleanup_handler(
 // the environment it is created with. `CreateClosure`, `CreateAsyncClosure`,
 // `CreateGeneratorClosure` and `CreateGenerator` are (dst, env, function);
 // the class opcodes are (dst, home, env, …, function).
-fn created_function_and_env(
+pub(super) fn created_function_and_env(
     format: &BytecodeFormat,
     inst: &crate::file::Instruction,
 ) -> Option<(u32, u32)> {

@@ -298,6 +298,8 @@ pub fn build_closure_context_from_file(
         Vec<Statement>,
         Vec<(u32, u32)>,
         Vec<(u32, u32)>,
+        u32,
+        crate::ir::env_values::EnvFacts,
     );
     let results: Vec<Option<FunctionIr>> = (0..file.function_headers.len())
         .into_par_iter()
@@ -311,11 +313,14 @@ pub fn build_closure_context_from_file(
                 .map(|e| e.value.clone());
 
             let mut builder = IRBuilder::new(file, format, builder_options.clone());
+            builder.collect_env_facts = true;
             let Ok(mut cfg) = builder.build_function(function_id) else {
                 return None;
             };
+            let env_facts = std::mem::take(&mut builder.env_facts);
             let created_in_block = std::mem::take(&mut builder.created_in_block);
             let created_with_env = std::mem::take(&mut builder.created_with_env);
+            let slot_held_accesses = builder.slot_held_accesses;
             propagate(&mut cfg, &PropagationConfig::default());
 
             let analysis = StructureAnalysis::analyze(&cfg);
@@ -342,6 +347,8 @@ pub fn build_closure_context_from_file(
                 statements,
                 created_in_block,
                 created_with_env,
+                slot_held_accesses,
+                env_facts,
             ))
         })
         .collect();
@@ -355,13 +362,22 @@ pub fn build_closure_context_from_file(
             ctx.set_creation_scope(child, item.0, level);
         }
         created.extend(item.4.iter().map(|&(child, level)| (item.0, child, level)));
+        ctx.slot_held_accesses += item.5;
+        for (_, through, _, _) in &item.6.accesses {
+            *ctx.env_access_kinds
+                .entry(through.kind().to_string())
+                .or_default() += 1;
+        }
+    }
+    if let Ok(path) = std::env::var("HD_ENV_DUMP") {
+        dump_env_facts(&path, results.iter().flatten().map(|r| (r.0, &r.6)));
     }
     // Each function's levels count from the environment it was created with;
     // shift them so level L is L hops up the parent chain before anything
     // keys a slot by level.
     ctx.set_env_offsets(&created);
     for item in results.into_iter().flatten() {
-        let (function_id, func_name, mut statements, _, _) = item;
+        let (function_id, func_name, mut statements, _, _, _, _) = item;
         if let Some(name) = func_name {
             ctx.add_function_name(function_id, name);
         }
@@ -431,5 +447,36 @@ pub(crate) fn trace_supers(tag: &str, statements: &[crate::ir::Statement]) {
                 }
             }
         }
+    }
+}
+
+// One line per fact (`HD_ENV_DUMP=<path>`): the environment-value pass's view
+// of every function, for reading a case by hand and for diffing two builds.
+fn dump_env_facts<'a>(
+    path: &str,
+    facts: impl Iterator<Item = (u32, &'a crate::ir::env_values::EnvFacts)>,
+) {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for (f, facts) in facts {
+        for (site, parent) in &facts.created {
+            let parent = parent
+                .as_ref()
+                .map_or("root".to_string(), |p| p.to_string());
+            let _ = writeln!(out, "{f}	create	@{site}	{parent}");
+        }
+        for (through, slot, value) in &facts.parked {
+            let _ = writeln!(out, "{f}	park	{through}[{slot}]	{value}");
+        }
+        for (child, env) in &facts.closures {
+            let _ = writeln!(out, "{f}	closure	{child}	{env}");
+        }
+        for (off, through, slot, store) in &facts.accesses {
+            let op = if *store { "store" } else { "load" };
+            let _ = writeln!(out, "{f}	{op}	@{off}	{through}[{slot}]");
+        }
+    }
+    if let Err(e) = std::fs::write(path, out) {
+        log::warn!("cannot write {path}: {e}");
     }
 }

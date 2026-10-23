@@ -35,117 +35,10 @@ pub fn find_block_starts_with_handlers(
             targets.insert(next_offset);
         }
 
-        // Jump instructions - their targets are block starts
-        if def.is_jump {
-            for operand in &inst.operands {
-                if matches!(operand.ty, OperandType::Addr8 | OperandType::Addr32) {
-                    if let Some(rel) = operand.value.as_i32() {
-                        let target = (inst.offset as i32).wrapping_add(rel);
-                        if target >= 0 {
-                            targets.insert(target as u32);
-                        }
-                    }
-                }
-            }
-            // Conditional jumps also have a fall-through to next instruction
-            if is_conditional_jump(name) {
-                targets.insert(inst.offset.wrapping_add(inst.length));
-            }
-        }
-
-        // Handle SwitchImm/UIntSwitchImm specially (same operand layout)
-        if name == "SwitchImm" || name == "UIntSwitchImm" {
-            // Operands: Reg8 val, UInt32 jmpTableIdx, Addr32 defaultAddr, UInt32 minVal, UInt32 maxVal
-            if let (Some(jmp_table_op), Some(default_op), Some(min_op), Some(max_op)) = (
-                inst.operands.get(1),
-                inst.operands.get(2),
-                inst.operands.get(3),
-                inst.operands.get(4),
-            ) {
-                if let (Some(jmp_table_idx), Some(default_offset), Some(min_val), Some(max_val)) = (
-                    jmp_table_op.value.as_u32(),
-                    default_op.value.as_i32(),
-                    min_op.value.as_u32(),
-                    max_op.value.as_u32(),
-                ) {
-                    // Default target
-                    let default_target = (inst.offset as i32).wrapping_add(default_offset) as u32;
-                    targets.insert(default_target);
-
-                    // Read jump table: jmpTableIdx is a byte offset from the SwitchImm instruction
-                    // Jump table is 4-byte aligned relative to the function start
-                    // (`align4(ipLocalOffset + jmpTableIdx)`); without the round-up
-                    // the table is read a few bytes early and yields garbage targets.
-                    let table_start_global = ((inst.offset as usize)
-                        .saturating_add(jmp_table_idx as usize)
-                        .saturating_add(func_bytecode_offset as usize)
-                        + 3)
-                        & !3;
-                    // Guard against maxVal < minVal (would underflow) in malformed bytecode.
-                    let count = max_val
-                        .checked_sub(min_val)
-                        .map_or(0, |span| span as usize + 1);
-
-                    if count > 0
-                        && table_start_global.saturating_add(count.saturating_mul(4))
-                            <= file.instructions.len()
-                    {
-                        use crate::io::ByteReader;
-                        let mut reader = ByteReader::new(&file.instructions[table_start_global..]);
-                        for _ in 0..count {
-                            if let Ok(rel_offset) = reader.read_i32() {
-                                let target = (inst.offset as i32).wrapping_add(rel_offset) as u32;
-                                targets.insert(target);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Handle StringSwitchImm (string-switch variant, see handle_string_switch_imm).
-        // Operands: Reg8 val, UInt32 <unused>, UInt32 jmpTableOffset, Addr32 defaultAddr, UInt32 numCases.
-        // The table holds numCases 8-byte entries: (u32 string id, i32 offset).
-        if name == "StringSwitchImm" {
-            if let (Some(jmp_table_op), Some(default_op), Some(num_cases_op)) = (
-                inst.operands.get(2),
-                inst.operands.get(3),
-                inst.operands.get(4),
-            ) {
-                if let (Some(jmp_table_idx), Some(default_offset), Some(num_cases)) = (
-                    jmp_table_op.value.as_u32(),
-                    default_op.value.as_i32(),
-                    num_cases_op.value.as_u32(),
-                ) {
-                    let default_target = (inst.offset as i32).wrapping_add(default_offset) as u32;
-                    targets.insert(default_target);
-
-                    // Jump table is 4-byte aligned relative to the function start
-                    // (`align4(ipLocalOffset + jmpTableOffset)`); without the round-up
-                    // the table is read a few bytes early and yields garbage targets.
-                    let table_start_global = ((inst.offset as usize)
-                        .saturating_add(jmp_table_idx as usize)
-                        .saturating_add(func_bytecode_offset as usize)
-                        + 3)
-                        & !3;
-                    let count = num_cases as usize;
-
-                    if table_start_global + count * 8 <= file.instructions.len() {
-                        use crate::io::ByteReader;
-                        let mut reader = ByteReader::new(&file.instructions[table_start_global..]);
-                        for _ in 0..count {
-                            // Skip the u32 string id, keep the i32 offset.
-                            if reader.read_u32().is_err() {
-                                break;
-                            }
-                            if let Ok(rel_offset) = reader.read_i32() {
-                                let target = (inst.offset as i32).wrapping_add(rel_offset) as u32;
-                                targets.insert(target);
-                            }
-                        }
-                    }
-                }
-            }
+        targets.extend(explicit_targets(inst, format, file, func_bytecode_offset));
+        // Conditional jumps also have a fall-through to next instruction
+        if def.is_jump && is_conditional_jump(name) {
+            targets.insert(inst.offset.wrapping_add(inst.length));
         }
     }
 
@@ -167,6 +60,130 @@ pub fn find_block_starts_with_handlers(
     targets.retain(|t| inst_offsets.contains(t));
 
     targets
+}
+
+// The offsets an instruction can transfer control to, besides falling through
+// to the next one: a jump's target, a switch's default and table entries.
+pub fn explicit_targets(
+    inst: &Instruction,
+    format: &BytecodeFormat,
+    file: &BytecodeFile,
+    func_bytecode_offset: u32,
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    let Some(def) = format.definitions.get(inst.opcode as usize) else {
+        return out;
+    };
+    let name = def.name.as_str();
+    // Jump instructions - their targets are block starts
+    if def.is_jump {
+        for operand in &inst.operands {
+            if matches!(operand.ty, OperandType::Addr8 | OperandType::Addr32) {
+                if let Some(rel) = operand.value.as_i32() {
+                    let target = (inst.offset as i32).wrapping_add(rel);
+                    if target >= 0 {
+                        out.push(target as u32);
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle SwitchImm/UIntSwitchImm specially (same operand layout)
+    if name == "SwitchImm" || name == "UIntSwitchImm" {
+        // Operands: Reg8 val, UInt32 jmpTableIdx, Addr32 defaultAddr, UInt32 minVal, UInt32 maxVal
+        if let (Some(jmp_table_op), Some(default_op), Some(min_op), Some(max_op)) = (
+            inst.operands.get(1),
+            inst.operands.get(2),
+            inst.operands.get(3),
+            inst.operands.get(4),
+        ) {
+            if let (Some(jmp_table_idx), Some(default_offset), Some(min_val), Some(max_val)) = (
+                jmp_table_op.value.as_u32(),
+                default_op.value.as_i32(),
+                min_op.value.as_u32(),
+                max_op.value.as_u32(),
+            ) {
+                // Default target
+                let default_target = (inst.offset as i32).wrapping_add(default_offset) as u32;
+                out.push(default_target);
+
+                // Read jump table: jmpTableIdx is a byte offset from the SwitchImm instruction
+                // Jump table is 4-byte aligned relative to the function start
+                // (`align4(ipLocalOffset + jmpTableIdx)`); without the round-up
+                // the table is read a few bytes early and yields garbage targets.
+                let table_start_global = ((inst.offset as usize)
+                    .saturating_add(jmp_table_idx as usize)
+                    .saturating_add(func_bytecode_offset as usize)
+                    + 3)
+                    & !3;
+                // Guard against maxVal < minVal (would underflow) in malformed bytecode.
+                let count = max_val
+                    .checked_sub(min_val)
+                    .map_or(0, |span| span as usize + 1);
+
+                if count > 0
+                    && table_start_global.saturating_add(count.saturating_mul(4))
+                        <= file.instructions.len()
+                {
+                    use crate::io::ByteReader;
+                    let mut reader = ByteReader::new(&file.instructions[table_start_global..]);
+                    for _ in 0..count {
+                        if let Ok(rel_offset) = reader.read_i32() {
+                            let target = (inst.offset as i32).wrapping_add(rel_offset) as u32;
+                            out.push(target);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle StringSwitchImm (string-switch variant, see handle_string_switch_imm).
+    // Operands: Reg8 val, UInt32 <unused>, UInt32 jmpTableOffset, Addr32 defaultAddr, UInt32 numCases.
+    // The table holds numCases 8-byte entries: (u32 string id, i32 offset).
+    if name == "StringSwitchImm" {
+        if let (Some(jmp_table_op), Some(default_op), Some(num_cases_op)) = (
+            inst.operands.get(2),
+            inst.operands.get(3),
+            inst.operands.get(4),
+        ) {
+            if let (Some(jmp_table_idx), Some(default_offset), Some(num_cases)) = (
+                jmp_table_op.value.as_u32(),
+                default_op.value.as_i32(),
+                num_cases_op.value.as_u32(),
+            ) {
+                let default_target = (inst.offset as i32).wrapping_add(default_offset) as u32;
+                out.push(default_target);
+
+                // Jump table is 4-byte aligned relative to the function start
+                // (`align4(ipLocalOffset + jmpTableOffset)`); without the round-up
+                // the table is read a few bytes early and yields garbage targets.
+                let table_start_global = ((inst.offset as usize)
+                    .saturating_add(jmp_table_idx as usize)
+                    .saturating_add(func_bytecode_offset as usize)
+                    + 3)
+                    & !3;
+                let count = num_cases as usize;
+
+                if table_start_global + count * 8 <= file.instructions.len() {
+                    use crate::io::ByteReader;
+                    let mut reader = ByteReader::new(&file.instructions[table_start_global..]);
+                    for _ in 0..count {
+                        // Skip the u32 string id, keep the i32 offset.
+                        if reader.read_u32().is_err() {
+                            break;
+                        }
+                        if let Ok(rel_offset) = reader.read_i32() {
+                            let target = (inst.offset as i32).wrapping_add(rel_offset) as u32;
+                            out.push(target);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 // Check if an instruction is a conditional jump.

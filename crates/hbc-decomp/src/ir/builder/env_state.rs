@@ -35,6 +35,9 @@ pub struct EnvRegMap {
     /// How many separate environments this function has built past its own, used
     /// to give each one a distinct level so their slots stay apart.
     extra_env_count: u32,
+    /// loads and stores that went through an environment loaded out of a slot,
+    /// which the model identifies by slot number alone (V98_ENV_PLAN.md S3)
+    pub slot_held_accesses: u32,
 }
 
 impl EnvRegMap {
@@ -135,6 +138,16 @@ impl EnvRegMap {
     /// slots share a name with the current environment's slots, so a login token
     /// written to the inner slot 1 was read back under the name of the outer slot
     /// 1 and the output claimed `setJwt(password)`.
+    /// `env_level_of` for a load or store through `reg`, counting one that
+    /// goes through a slot-held environment.
+    pub fn access_level_of(&mut self, reg: u32) -> u32 {
+        if matches!(self.reg_source_slot.get(&reg), Some(&(level, _)) if level < NESTED_ENV_LEVEL_BASE)
+        {
+            self.slot_held_accesses += 1;
+        }
+        self.env_level_of(reg)
+    }
+
     pub fn env_level_of(&self, reg: u32) -> u32 {
         if let Some(&(level, slot)) = self.reg_source_slot.get(&reg) {
             if level < NESTED_ENV_LEVEL_BASE {

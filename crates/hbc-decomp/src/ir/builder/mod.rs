@@ -1,5 +1,6 @@
 mod dispatch;
 mod env_state;
+pub mod env_values;
 pub(crate) mod generator_cfg;
 mod ir_builder;
 mod jump_analysis;
