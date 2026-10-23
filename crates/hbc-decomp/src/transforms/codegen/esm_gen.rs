@@ -436,6 +436,7 @@ impl Codegen {
         // cannot simply be promoted: the export takes a private binding and is
         // published under the name it always had.
         dedupe_const_export_collisions(&imports, &mut body_stmts, &mut exports);
+        dedupe_exported_function_collisions(&imports, &mut body_stmts, &mut exports);
 
         // A hoisted `let X;` in front of a `class X` or `function X` redeclares it,
         // which a parser rejects and takes the whole module down with it. The hoist
@@ -1351,10 +1352,28 @@ fn top_level_bound_names<'a>(
 
 #[cfg(test)]
 mod const_export_tests {
-    use super::dedupe_const_export_collisions;
+    use super::{dedupe_const_export_collisions, dedupe_exported_function_collisions};
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|x| (*x).to_string()).collect()
+    }
+
+    #[test]
+    fn an_exported_function_colliding_with_a_local_takes_a_private_name() {
+        let mut body = v(&[
+            "const createHash = native.createHash;\n",
+            "export function createHash(a) {\n  return new Hash(a);\n}\n",
+            "export default function reverse(x) {\n}\n",
+            "let reverse = 1;\n",
+        ]);
+        let mut exports = Vec::new();
+        dedupe_exported_function_collisions(&[], &mut body, &mut exports);
+        assert_eq!(body[0], "const createHash = native.createHash;\n");
+        assert_eq!(
+            body[1],
+            "function createHash_export(a) {\n  return new Hash(a);\n}\nexport { createHash_export as createHash };"
+        );
+        assert_eq!(body[2], "export default function reverse_export(x) {\n}\n");
     }
 
     #[test]
@@ -1943,6 +1962,72 @@ fn dedupe_const_export_collisions(
         *exp = format!("export {{ {alias} as {name} }};");
     }
     body_stmts.extend(extra);
+}
+
+// An exported function declaration and another top-level binding of the same
+// name: `const createHash = NativeQuickCrypto.createHash` beside `export function
+// createHash`. Both are real bindings (the local is what the module's own code
+// calls), so neither can be demoted to text. The exported function takes a
+// private name and is published under the one it always had; a default export's
+// name is local only, so it is just renamed.
+fn dedupe_exported_function_collisions(
+    imports: &[String],
+    body_stmts: &mut [String],
+    exports: &mut [String],
+) {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static PAT: OnceLock<regex::Regex> = OnceLock::new();
+    let pat = PAT.get_or_init(|| {
+        regex::Regex::new(
+            r"^export\s+(default\s+)?((?:async\s+)?function\s*\*?\s*)([A-Za-z_$][\w$]*)",
+        )
+        .expect("static pattern")
+    });
+
+    let mut count: HashMap<String, usize> = HashMap::new();
+    for name in top_level_bound_names(imports, &[], &[]) {
+        *count.entry(name.to_string()).or_default() += 1;
+    }
+    for chunk in body_stmts.iter().chain(exports.iter()) {
+        let one = std::slice::from_ref(chunk);
+        for name in top_level_bound_names(&[], one, &[]) {
+            *count.entry(name.to_string()).or_default() += 1;
+        }
+    }
+    if !count.values().any(|&c| c > 1) {
+        return;
+    }
+
+    for chunk in body_stmts.iter_mut().chain(exports.iter_mut()) {
+        let Some(c) = pat.captures(chunk) else {
+            continue;
+        };
+        let name = c[3].to_string();
+        if count.get(&name).copied().unwrap_or(0) < 2 {
+            continue;
+        }
+        let is_default = c.get(1).is_some();
+        let keyword = c[2].to_string();
+        let end = c.get(0).map_or(0, |m| m.end());
+        let mut alias = format!("{name}_export");
+        let mut n = 2u32;
+        while count.contains_key(&alias) {
+            alias = format!("{name}_export{n}");
+            n += 1;
+        }
+        count.insert(alias.clone(), 1);
+        *count.get_mut(&name).expect("counted") -= 1;
+        let rest = chunk[end..].to_string();
+        *chunk = if is_default {
+            format!("export default {keyword}{alias}{rest}")
+        } else {
+            format!(
+                "{keyword}{alias}{rest}\nexport {{ {alias} as {name} }};",
+                rest = rest.trim_end_matches('\n')
+            )
+        };
+    }
 }
 
 #[cfg(test)]
