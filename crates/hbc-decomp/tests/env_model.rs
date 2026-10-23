@@ -36,7 +36,6 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("class_scopes", 99, "other: v98 class lowering (private fields, static block) is not recovered; the class is read before it is declared"),
     ("deep_nesting", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
     ("deep_nesting", 99, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
-    ("generator_states", 96, "other: an unstructured jump is printed as a bare label (`B1`)"),
     ("generator_states", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as `tmp3` before it is declared"),
     ("generator_states", 99, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as `tmp3` before it is declared"),
 ];

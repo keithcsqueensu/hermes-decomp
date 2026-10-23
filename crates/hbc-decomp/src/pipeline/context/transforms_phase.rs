@@ -343,6 +343,15 @@ impl PipelineContext {
                 }
             }
         }
+        // A factory that returns a generator *function* (`function make() {
+        // return gen; }` with `function* gen`) has the same shape as a wrapper
+        // that returns a generator object, but its inner is itself a wrapper.
+        // Collapsing both moved `gen`'s wrapper body into `make` and then
+        // removed `gen`, so the state machine was lost. Only the innermost link
+        // of a chain is a real wrapper.
+        let wrappers: std::collections::HashSet<u32> =
+            replacements.iter().map(|(fid, _, _)| *fid).collect();
+        replacements.retain(|(_, inner, _)| !wrappers.contains(inner));
         // Parameter captures held back from each collapsed wrapper, re-attached
         // once the state machine has been lifted.
         let mut wrapper_captures: BTreeMap<u32, Vec<Statement>> = BTreeMap::new();
