@@ -27,7 +27,6 @@ use hbc_decomp::{BytecodeFile, BytecodeFormat, DecompileOptionsV2};
 // `env:` marks a cause in the environment model (V98_ENV_PLAN.md), `other:` one
 // outside it that the fixture happens to reach first.
 const KNOWN: &[(&str, u32, &str)] = &[
-    ("async_closures", 96, "other: an inlined closure leaves its temporary `tmp` undeclared"),
     ("async_forms", 98, "other: a class is declared both by `let Box` and by `class Box`"),
     ("async_forms", 99, "other: a class is declared both by `let Box` and by `class Box`"),
     ("block_scopes", 96, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),

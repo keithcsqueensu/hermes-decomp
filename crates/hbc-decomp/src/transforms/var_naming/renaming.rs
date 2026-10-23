@@ -1,5 +1,5 @@
 use super::state::VariableNamer;
-use crate::ir::{AssignTarget, Binding, Expression, PropertyKey, Statement, Value};
+use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, Statement, Value};
 
 pub fn rename_stmt(namer: &VariableNamer, stmt: Statement) -> Statement {
     match stmt {
@@ -127,127 +127,48 @@ pub fn rename_stmt(namer: &VariableNamer, stmt: Statement) -> Statement {
     }
 }
 
-fn rename_target(namer: &VariableNamer, target: AssignTarget) -> AssignTarget {
-    match target {
-        AssignTarget::Binding(Binding::Register(r)) => {
-            let key = format!("r{r}");
-            if let Some(name) = namer.inferred_names.get(&key) {
-                AssignTarget::Binding(Binding::Variable(name.clone().into()))
-            } else {
-                AssignTarget::Binding(Binding::Register(r))
-            }
+fn rename_target(namer: &VariableNamer, mut target: AssignTarget) -> AssignTarget {
+    Renamer(namer).visit_assign_target(&mut target);
+    target
+}
+
+// Rename every register and variable an expression reads or writes. Built on
+// MutVisitor, which reaches every expression variant: the hand written match it
+// replaces had no arm for template literals or JSX, so a definition was renamed
+// while its use inside `${}` kept the old name.
+fn rename_expr(namer: &VariableNamer, mut expr: Expression) -> Expression {
+    Renamer(namer).visit_expression(&mut expr);
+    expr
+}
+
+struct Renamer<'a>(&'a VariableNamer);
+
+impl Renamer<'_> {
+    fn rename(&self, binding: &mut Binding) {
+        let key = match binding {
+            Binding::Register(r) => format!("r{r}"),
+            Binding::Variable(v) => v.to_string(),
+            _ => return,
+        };
+        if let Some(name) = self.0.inferred_names.get(&key) {
+            *binding = Binding::Variable(name.clone().into());
         }
-        AssignTarget::Binding(Binding::Variable(v)) => {
-            if let Some(name) = namer.inferred_names.get(v.as_str()) {
-                AssignTarget::Binding(Binding::Variable(name.clone().into()))
-            } else {
-                AssignTarget::Binding(Binding::Variable(v))
-            }
-        }
-        AssignTarget::Member { object, property } => AssignTarget::Member {
-            object: rename_expr(namer, object),
-            property,
-        },
-        AssignTarget::Index { object, key } => AssignTarget::Index {
-            object: rename_expr(namer, object),
-            key: rename_expr(namer, key),
-        },
-        other => other,
     }
 }
 
-fn rename_expr(namer: &VariableNamer, expr: Expression) -> Expression {
-    match expr {
-        Expression::Value(Value::Binding(Binding::Register(r))) => {
-            let key = format!("r{r}");
-            if let Some(name) = namer.inferred_names.get(&key) {
-                Expression::Value(Value::Binding(Binding::Variable(name.clone().into())))
-            } else {
-                Expression::Value(Value::Binding(Binding::Register(r)))
-            }
+impl MutVisitor for Renamer<'_> {
+    fn visit_expression(&mut self, expr: &mut Expression) {
+        match expr {
+            Expression::Value(Value::Binding(b)) => self.rename(b),
+            _ => self.walk_expression(expr),
         }
-        Expression::Value(Value::Binding(Binding::Variable(v))) => {
-            if let Some(name) = namer.inferred_names.get(v.as_str()) {
-                Expression::Value(Value::Binding(Binding::Variable(name.clone().into())))
-            } else {
-                Expression::Value(Value::Binding(Binding::Variable(v)))
-            }
+    }
+
+    fn visit_assign_target(&mut self, target: &mut AssignTarget) {
+        match target {
+            AssignTarget::Binding(b) => self.rename(b),
+            _ => self.walk_assign_target(target),
         }
-        Expression::Binary { op, left, right } => Expression::Binary {
-            op,
-            left: Box::new(rename_expr(namer, *left)),
-            right: Box::new(rename_expr(namer, *right)),
-        },
-        Expression::Unary { op, operand } => Expression::Unary {
-            op,
-            operand: Box::new(rename_expr(namer, *operand)),
-        },
-        Expression::Call { callee, arguments } => Expression::Call {
-            callee: Box::new(rename_expr(namer, *callee)),
-            arguments: arguments
-                .into_iter()
-                .map(|a| rename_expr(namer, a))
-                .collect(),
-        },
-        Expression::New { callee, arguments } => Expression::New {
-            callee: Box::new(rename_expr(namer, *callee)),
-            arguments: arguments
-                .into_iter()
-                .map(|a| rename_expr(namer, a))
-                .collect(),
-        },
-        Expression::Member {
-            object,
-            property,
-            optional,
-        } => Expression::Member {
-            object: Box::new(rename_expr(namer, *object)),
-            property: match property {
-                PropertyKey::Computed(e) => PropertyKey::Computed(Box::new(rename_expr(namer, *e))),
-                other => other,
-            },
-            optional,
-        },
-        Expression::Array { elements } => Expression::Array {
-            elements: elements
-                .into_iter()
-                .map(|e| e.map(|ex| rename_expr(namer, ex)))
-                .collect(),
-        },
-        Expression::Object { properties } => Expression::Object {
-            properties: properties
-                .into_iter()
-                .map(|p| crate::ir::ObjectProperty {
-                    key: match p.key {
-                        PropertyKey::Computed(e) => {
-                            PropertyKey::Computed(Box::new(rename_expr(namer, *e)))
-                        }
-                        other => other,
-                    },
-                    value: rename_expr(namer, p.value),
-                })
-                .collect(),
-        },
-        Expression::Conditional {
-            condition,
-            then_expr,
-            else_expr,
-        } => Expression::Conditional {
-            condition: Box::new(rename_expr(namer, *condition)),
-            then_expr: Box::new(rename_expr(namer, *then_expr)),
-            else_expr: Box::new(rename_expr(namer, *else_expr)),
-        },
-        Expression::Assignment { target, value } => Expression::Assignment {
-            target: Box::new(rename_target(namer, *target)),
-            value: Box::new(rename_expr(namer, *value)),
-        },
-        Expression::Spread(inner) => Expression::Spread(Box::new(rename_expr(namer, *inner))),
-        Expression::Await(inner) => Expression::Await(Box::new(rename_expr(namer, *inner))),
-        Expression::Yield { value, delegate } => Expression::Yield {
-            value: Box::new(rename_expr(namer, *value)),
-            delegate,
-        },
-        other => other,
     }
 }
 
