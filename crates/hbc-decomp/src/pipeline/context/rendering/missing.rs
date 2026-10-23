@@ -56,10 +56,9 @@ impl PipelineContext {
         let Ok(format) = BytecodeFormat::for_version(file.header.version) else {
             return BTreeMap::new();
         };
-        let options = DecompileOptionsV2 {
-            resolve_strings: true,
-            ..DecompileOptionsV2::default()
-        };
+        // The pipeline's own options. `default()` turns structure recovery off,
+        // so a body filled in here printed as `goto B1` and bare labels.
+        let options = DecompileOptionsV2::optimized();
         let mut inline = have.clone();
         let mut out = BTreeMap::new();
         // Inner functions are missing too. Each pass renders against what the
