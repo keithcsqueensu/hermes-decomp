@@ -436,3 +436,48 @@ mod nested_write_import_tests {
         );
     }
 }
+
+#[test]
+fn jsx_attribute_strings_print_without_escapes() {
+    let element = |value: &str| Expression::JSXElement {
+        tag: "View".to_string(),
+        attributes: vec![(
+            "label".to_string(),
+            Expression::constant(Constant::String(value.to_string())),
+        )],
+        children: vec![],
+    };
+    let codegen = Codegen::new(CodegenOptions::new());
+    assert_eq!(
+        codegen.generate_expr(&element("plain")),
+        "<View label=\"plain\" />"
+    );
+    assert_eq!(
+        codegen.generate_expr(&element("a\"b\nc")),
+        r#"<View label={"a\"b\nc"} />"#
+    );
+}
+
+#[test]
+fn loose_callees_and_member_objects_keep_their_parentheses() {
+    let var = |n: &str| {
+        Expression::Value(crate::ir::Value::Binding(crate::ir::Binding::Variable(
+            n.into(),
+        )))
+    };
+    let codegen = Codegen::new(CodegenOptions::new());
+    let awaited = Expression::Await(Box::new(Expression::call(var("f"), vec![var("x")])));
+    assert_eq!(
+        codegen.generate_expr(&Expression::call(awaited.clone(), vec![])),
+        "(await f(x))()"
+    );
+    assert_eq!(
+        codegen.generate_expr(&Expression::member(awaited, "y")),
+        "(await f(x)).y"
+    );
+    let made = Expression::New {
+        callee: Box::new(Expression::call(Expression::member(var("a"), "b"), vec![])),
+        arguments: vec![],
+    };
+    assert_eq!(codegen.generate_expr(&made), "new (a.b())()");
+}

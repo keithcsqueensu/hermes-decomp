@@ -996,7 +996,11 @@ fn builtin_tables_known_indices() {
     for version in [98, 99] {
         assert_eq!(at(version, 0), "Symbol", "v{version}");
         assert_eq!(at(version, 1), "eval", "v{version}");
-        assert_eq!(at(version, 44), "HermesBuiltin.throwTypeError", "v{version}");
+        assert_eq!(
+            at(version, 44),
+            "HermesBuiltin.throwTypeError",
+            "v{version}"
+        );
         assert_eq!(at(version, 47), "HermesBuiltin.copyRestArgs", "v{version}");
     }
     assert_eq!(at(98, 57), "HermesBuiltin.spawnAsync");
@@ -1018,7 +1022,10 @@ fn builtin_tables_match_upstream() {
         };
         let upstream = parse_builtins_def(&root);
         let ours = hbc_decomp::opcode::builtins_for_version(version);
-        assert!(!upstream.is_empty(), "v{version}: no builtins parsed from Builtins.def");
+        assert!(
+            !upstream.is_empty(),
+            "v{version}: no builtins parsed from Builtins.def"
+        );
         assert_eq!(
             ours, upstream,
             "v{version}: the builtin table (or the one it falls back to) disagrees with \

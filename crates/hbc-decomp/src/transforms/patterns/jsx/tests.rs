@@ -480,3 +480,20 @@ fn a_lowercase_variable_stays_a_call_and_a_keyed_fragment_keeps_its_name() {
         other => panic!("expected JSX, got {other:?}"),
     }
 }
+
+#[test]
+fn document_create_element_stays_a_call() {
+    let document = Expression::member(Expression::Value(Value::Global), "document");
+    for args in [
+        vec![Expression::constant(Constant::String("style".into()))],
+        vec![
+            Expression::constant(Constant::String("div".into())),
+            Expression::constant(Constant::Null),
+        ],
+    ] {
+        let mut expr =
+            Expression::call(Expression::member(document.clone(), "createElement"), args);
+        JSXReconstructor::new().visit_expression(&mut expr);
+        assert!(matches!(expr, Expression::Call { .. }), "lowered: {expr}");
+    }
+}

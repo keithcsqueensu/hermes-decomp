@@ -497,9 +497,9 @@ impl Codegen {
                     if key == "..." {
                         // Spread props: `{...obj}`.
                         attrs.push(format!("{{...{}}}", self.generate_expr(val)));
-                    } else if let Expression::Value(Value::Constant(Constant::String(s))) = val {
+                    } else if let Some(s) = jsx_plain_attribute(val) {
                         // String value → `name="..."` (idiomatic JSX, not `={"..."}`).
-                        attrs.push(format!("{key}={s:?}"));
+                        attrs.push(format!("{key}=\"{s}\""));
                     } else if matches!(
                         val,
                         Expression::Value(Value::Constant(Constant::Bool(true)))
@@ -633,4 +633,20 @@ fn call_in_member_chain(expr: &crate::ir::Expression) -> bool {
         crate::ir::Expression::Member { object, .. } => call_in_member_chain(object),
         _ => false,
     }
+}
+
+// The text of a string attribute that can be printed as `name="text"`. A JSX
+// attribute string has no escape sequences, only HTML entities: `{:?}` printed
+// `"a\"b"`, which ends the string at the backslash. Text holding a quote, a
+// backslash, an `&` or a control character goes through the JS string printer
+// as `name={"..."}` instead.
+fn jsx_plain_attribute(val: &crate::ir::Expression) -> Option<&str> {
+    use crate::ir::{Constant, Expression, Value};
+    let Expression::Value(Value::Constant(Constant::String(s))) = val else {
+        return None;
+    };
+    let plain = !s
+        .chars()
+        .any(|c| matches!(c, '"' | '\\' | '&') || c.is_control());
+    plain.then_some(s.as_str())
 }
