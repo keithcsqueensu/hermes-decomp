@@ -176,7 +176,7 @@ impl PipelineContext {
                         .map(|(i, n)| n.clone().unwrap_or_else(|| format!("arg{i}")))
                         .collect()
                 } else {
-                    get_function_params(file, fid)
+                    get_function_params(file, fid, &all_ir[&fid])
                 };
                 hoist_params.insert(fid, names);
             }

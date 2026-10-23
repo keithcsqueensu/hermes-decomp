@@ -85,7 +85,7 @@ impl PipelineContext {
                 ) else {
                     continue;
                 };
-                let params = get_function_params(file, id);
+                let params = get_function_params(file, id, &stmts);
                 let rendered = self.render_one_body(file, id, &params, &stmts, &map);
                 if rendered.len() > MAX_FILLED_BODY_CHARS || hole_only(&rendered) {
                     continue;

@@ -537,7 +537,7 @@ impl PipelineContext {
                         )
                     } else {
                         crate::pipeline::make_params_distinct(
-                            get_function_params(file, func_id)
+                            get_function_params(file, func_id, stmts)
                                 .into_iter()
                                 .map(|p| crate::util::sanitize_identifier(&p)),
                         )

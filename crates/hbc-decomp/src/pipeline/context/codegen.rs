@@ -171,18 +171,15 @@ impl PipelineContext {
 
     // The parameter names a top-level function renders with.
     fn codegen_params(&self, file: &BytecodeFile, function_id: u32) -> Vec<String> {
+        let body = self
+            .all_ir
+            .get(&function_id)
+            .map(|s| s.as_slice())
+            .unwrap_or(&[]);
         if let Some(names) = self.global_analysis.param_names.get(&function_id) {
-            crate::pipeline::params_from_names(
-                file,
-                function_id,
-                names,
-                self.all_ir
-                    .get(&function_id)
-                    .map(|s| s.as_slice())
-                    .unwrap_or(&[]),
-            )
+            crate::pipeline::params_from_names(file, function_id, names, body)
         } else {
-            get_function_params(file, function_id)
+            get_function_params(file, function_id, body)
         }
     }
 

@@ -101,7 +101,7 @@ pub fn decompile_function_v2_with_context(
     let mut statements = generate_ir(file, format, function_id, options, closure_ctx, true)?;
 
     let function_name = get_function_name(file, function_id);
-    let params = get_function_params(file, function_id);
+    let params = get_function_params(file, function_id, &statements);
 
     // The whole program pipeline runs several post generation stages that the
     // single function path skipped, so its output kept the receiver duplicated in
@@ -277,10 +277,12 @@ pub(crate) fn user_param_count(file: &BytecodeFile, function_id: u32) -> usize {
 //
 // The header arity is a lower bound, not an exact count: Hermes does not count a
 // default or rest parameter in it (`function greet(name = "anon")` reports zero
-// declared arguments and reads the value in the body instead). So a recovered
-// name past that bound is kept when the body actually reads that parameter, and
-// dropped when it does not, which is the callback role case (`.map` proposes
-// `item, index` even for a one argument callback).
+// declared arguments and reads the value in the body instead). So the signature
+// runs to the highest parameter the body reads, named or not: stopping at the
+// last recovered name, or at the first unread position, left the body reading an
+// `arg2` the signature never declared. A recovered name past every read is
+// dropped, which is the callback role case (`.map` proposes `item, index` even
+// for a one argument callback).
 pub(crate) fn params_from_names(
     file: &BytecodeFile,
     function_id: u32,
@@ -288,10 +290,7 @@ pub(crate) fn params_from_names(
     body: &[crate::ir::Statement],
 ) -> Vec<String> {
     let declared = user_param_count(file, function_id);
-    let mut count = declared;
-    while count < names.len() && body_uses_param(body, count as u32) {
-        count += 1;
-    }
+    let count = declared.max(highest_param_read(body).map_or(0, |i| i as usize + 1));
     make_params_distinct((0..count).map(|idx| {
         names
             .get(idx)
@@ -328,33 +327,32 @@ pub(crate) fn make_params_distinct(names: impl Iterator<Item = String>) -> Vec<S
 
 // Whether the body reads `Parameter(idx)`. Must run on the IR before parameter
 // renaming, which rewrites those nodes into named variables.
-fn body_uses_param(body: &[crate::ir::Statement], idx: u32) -> bool {
+fn highest_param_read(body: &[crate::ir::Statement]) -> Option<u32> {
     use crate::ir::{Expression, Value, Visitor};
-    struct V {
-        idx: u32,
-        found: bool,
-    }
+    struct V(Option<u32>);
     impl<'a> Visitor<'a> for V {
         fn visit_expression(&mut self, e: &'a Expression) {
             if let Expression::Value(Value::Parameter(i)) = e {
-                if *i == self.idx {
-                    self.found = true;
-                }
+                self.0 = self.0.max(Some(*i));
             }
             self.walk_expression(e);
         }
     }
-    let mut v = V { idx, found: false };
+    let mut v = V(None);
     for s in body {
         v.visit_statement(s);
     }
-    v.found
+    v.0
 }
 
-fn get_function_params(file: &BytecodeFile, function_id: u32) -> Vec<String> {
-    (0..user_param_count(file, function_id))
-        .map(|i| format!("arg{i}"))
-        .collect()
+// `argN` for every parameter: the declared arity, extended to what the body
+// reads (see `params_from_names`).
+fn get_function_params(
+    file: &BytecodeFile,
+    function_id: u32,
+    body: &[crate::ir::Statement],
+) -> Vec<String> {
+    params_from_names(file, function_id, &[], body)
 }
 
 fn build_function_name_index(file: &BytecodeFile) -> crate::analysis::FunctionNameIndex {
