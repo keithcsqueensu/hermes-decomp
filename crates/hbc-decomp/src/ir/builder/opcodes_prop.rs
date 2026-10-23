@@ -344,12 +344,14 @@ pub fn handle_put_own_private_by_sym(inst: &Instruction) -> Option<Statement> {
     })
 }
 
-// AddOwnPrivateBySym rObj, rSym, rValue: the same store, for the declaration that
-// first installs the field on the instance. Operand order differs from the Put form.
+// AddOwnPrivateBySym rObj, rValue, rSym: the same store, for the declaration that
+// first installs the field on the instance. BytecodeList.def documents it as
+// `Arg1[Arg2] = Arg3`, but the interpreter takes O2 as the value and O3 as the
+// symbol (v98/v99 Interpreter.cpp, `CASE(AddOwnPrivateBySym)`).
 pub fn handle_add_own_private_by_sym(inst: &Instruction) -> Option<Statement> {
     let obj = reg_expr(&inst.operands, 0)?;
-    let sym = reg_expr(&inst.operands, 1)?;
-    let value = reg_expr(&inst.operands, 2)?;
+    let value = reg_expr(&inst.operands, 1)?;
+    let sym = reg_expr(&inst.operands, 2)?;
 
     Some(Statement::Assign {
         target: AssignTarget::Index {
