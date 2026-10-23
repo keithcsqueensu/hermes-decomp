@@ -164,8 +164,13 @@ fn try_match_for_of(stmts: &[Statement]) -> Option<(usize, Vec<Statement>)> {
                 kept.push(stmt.clone());
                 idx += 1;
             }
-            // loop label / offset comments left by structure recovery
-            Statement::Comment(_) => idx += 1,
+            // Loop label and offset comments left by structure recovery. They
+            // stay: the `labelN:` marker is what puts the label on the `for`, and
+            // dropping it left `continue labelN` naming no label.
+            Statement::Comment(_) => {
+                kept.push(stmt.clone());
+                idx += 1;
+            }
             _ => break,
         }
     }
