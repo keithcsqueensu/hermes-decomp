@@ -346,9 +346,21 @@ pub fn run_ipa(
     // A call site that passes `arguments` along proposes it as the callee's
     // parameter name, but a module is strict and cannot bind `arguments` or
     // `eval`: `function f(arguments)` does not parse.
-    for names in analysis.param_names.values_mut() {
+    // Nor can a parameter share a name with a class or lexical binding at the top
+    // of its own body (`(…, URI) => { class URI {} }`): call sites pass the
+    // value the body is about to define, and name the parameter after it.
+    for (fid, names) in analysis.param_names.iter_mut() {
+        let declared = functions
+            .get(fid)
+            .map(|body| top_level_declarations(body))
+            .unwrap_or_default();
         for name in names.iter_mut() {
-            if matches!(name.as_deref(), Some("arguments" | "eval")) {
+            let bad = match name.as_deref() {
+                Some("arguments" | "eval") => true,
+                Some(n) => declared.contains(n),
+                None => false,
+            };
+            if bad {
                 *name = None;
             }
         }
@@ -381,4 +393,22 @@ fn param_is_referenced(stmts: &[Statement], idx: u32) -> bool {
         f.visit_statement(s);
     }
     f.found
+}
+
+// Names a function body binds at its top level that a parameter would collide
+// with: classes, `let`/`const`, and a function expression stored under its own
+// name (the form a class constructor takes before it becomes a class).
+fn top_level_declarations(body: &[Statement]) -> HashSet<String> {
+    use crate::ir::{AssignTarget, Binding, Expression};
+    body.iter()
+        .filter_map(|s| match s {
+            Statement::Class { name, .. } => Some(name.clone()),
+            Statement::Let { name, .. } => Some(name.name.clone()),
+            Statement::Assign {
+                target: AssignTarget::Binding(Binding::Variable(v)),
+                value: Expression::Function { name: Some(f), .. },
+            } if v.name == *f => Some(f.clone()),
+            _ => None,
+        })
+        .collect()
 }
