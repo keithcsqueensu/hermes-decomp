@@ -41,9 +41,6 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("generator_states", 96, "other: an unstructured jump is printed as a bare label (`B1`)"),
     ("generator_states", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as `tmp3` before it is declared"),
     ("generator_states", 99, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as `tmp3` before it is declared"),
-    ("param_scopes", 96, "other: a function whose third parameter has a default is printed with two parameters and reads `arg2`"),
-    ("param_scopes", 98, "other: a function whose third parameter has a default is printed with two parameters and reads `arg2`"),
-    ("param_scopes", 99, "other: a function whose third parameter has a default is printed with two parameters and reads `arg2`"),
 ];
 
 fn fixture_dir() -> PathBuf {

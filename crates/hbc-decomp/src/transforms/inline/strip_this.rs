@@ -46,6 +46,30 @@ fn is_object_create(callee: &Expression) -> bool {
     false
 }
 
+// `[...arguments].slice(N)`, which `spread_rest` builds from
+// `HermesBuiltin.copyRestArgs(N)` with no receiver argument: N is the rest
+// parameter's index, and stripping it as a receiver made every rest parameter
+// start at 0.
+fn is_rest_args_slice(callee: &Expression) -> bool {
+    let Expression::Member {
+        object, property, ..
+    } = callee
+    else {
+        return false;
+    };
+    if !matches!(property, PropertyKey::Ident(p) if p == "slice") {
+        return false;
+    }
+    let Expression::Array { elements } = object.as_ref() else {
+        return false;
+    };
+    matches!(
+        elements.as_slice(),
+        [Some(Expression::Spread(inner))]
+            if matches!(inner.as_ref(), Expression::Value(Value::Binding(crate::ir::Binding::Variable(v))) if v == "arguments")
+    )
+}
+
 fn mentions_hermes_internal(e: &Expression) -> bool {
     match e {
         Expression::Value(Value::Binding(crate::ir::Binding::Variable(v))) => v == "HermesInternal",
@@ -180,6 +204,9 @@ fn strip_this_in_expr(expr: &mut Expression) {
             // with two arguments (receiver + proto), so only the single-arg form
             // is the synthetic one whose argument must be preserved.
             if arguments.len() == 1 && is_object_create(callee) {
+                return;
+            }
+            if arguments.len() == 1 && is_rest_args_slice(callee) {
                 return;
             }
             // A reconstructed spread call (`f(...a)`) has a real first argument,
