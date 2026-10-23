@@ -34,7 +34,10 @@ impl MutVisitor for JSXReconstructor {
     fn visit_expression(&mut self, expr: &mut Expression) {
         self.walk_expression(expr);
         if let Expression::Call { callee, arguments } = expr {
-            if is_jsx_call(callee) && !arguments.is_empty() {
+            if is_jsx_call(callee)
+                && !arguments.is_empty()
+                && !is_dom_create_element(callee, arguments)
+            {
                 if let Some(jsx_node) = build_jsx_element(callee, arguments) {
                     *expr = jsx_node;
                 }
@@ -62,6 +65,31 @@ fn is_jsx_call(callee: &Expression) -> bool {
         jsx_factory_name(callee),
         Some("createElement" | "jsx" | "jsxs" | "jsxDEV" | "jsxsDEV" | "jsxDev" | "jsxsDev")
     )
+}
+
+// `document.createElement("div")` is the DOM, not React. Babel's classic runtime
+// always passes props, `null` at least, so a one-argument `createElement` is never
+// JSX, and neither is one called on a document (`document`, `_document`,
+// `this.ownerDocument`).
+fn is_dom_create_element(callee: &Expression, arguments: &[Expression]) -> bool {
+    if jsx_factory_name(callee) != Some("createElement") {
+        return false;
+    }
+    if arguments.len() < 2 {
+        return true;
+    }
+    let Expression::Member { object, .. } = callee else {
+        return false;
+    };
+    let receiver = match object.as_ref() {
+        Expression::Value(Value::Binding(Binding::Variable(v))) => v.name.as_str(),
+        Expression::Member {
+            property: PropertyKey::Ident(p) | PropertyKey::String(p),
+            ..
+        } => p.as_str(),
+        _ => return false,
+    };
+    receiver.to_ascii_lowercase().contains("document")
 }
 
 fn is_modern_factory(callee: &Expression) -> bool {
