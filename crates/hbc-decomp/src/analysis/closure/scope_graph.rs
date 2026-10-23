@@ -334,7 +334,7 @@ mod tests {
     // creator, its level 2 (their shared parent) does not.
     #[test]
     fn a_function_two_creators_share_resolves_where_they_agree() {
-        let facts = vec![
+        let facts = [
             (
                 1,
                 EnvFacts {
