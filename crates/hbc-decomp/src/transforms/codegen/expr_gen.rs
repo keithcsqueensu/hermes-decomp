@@ -191,17 +191,8 @@ impl Codegen {
                     Expression::Value(Value::Constant(Constant::Integer(_)))
                         | Expression::Value(Value::Constant(Constant::Number(_)))
                 );
-                // `(a && b).c` reads `b.c` without the parentheses.
-                let compound = matches!(
-                    object.as_ref(),
-                    Expression::Binary { .. }
-                        | Expression::Conditional { .. }
-                        | Expression::Assignment { .. }
-                        | Expression::Unary { .. }
-                );
                 let obj = if numeric
-                    || compound
-                    || matches!(object.as_ref(), Expression::Function { .. })
+                    || needs_parens_as_lhs(object)
                     || obj.starts_with("function")
                     || obj.starts_with("class ")
                     || obj.starts_with("async function")
@@ -253,12 +244,10 @@ impl Codegen {
                 }
 
                 let mut comment = String::new();
-                // function F(){}(args) is a SyntaxError; must be (function F(){})(args)
-                let callee_str = match callee.as_ref() {
-                    Expression::Function { .. } => {
-                        format!("({})", self.generate_expr(callee))
-                    }
-                    _ => self.generate_expr(callee),
+                let callee_str = if needs_parens_as_lhs(callee) {
+                    format!("({})", self.generate_expr(callee))
+                } else {
+                    self.generate_expr(callee)
                 };
 
                 if callee_str == "require" {
@@ -364,11 +353,16 @@ impl Codegen {
                 self.format_call(&callee_str, Some(callee.as_ref()), arguments, &comment)
             }
             Expression::New { callee, arguments } => {
-                format!(
-                    "new {}({})",
-                    self.generate_expr(callee),
-                    self.join_exprs(arguments)
-                )
+                // `new f()()` calls what `new f()` built, and `new a.b().c()` news
+                // `a.b`: a call anywhere in the callee's member chain would take
+                // the `new`'s arguments, so the callee needs parentheses.
+                let callee_str = self.generate_expr(callee);
+                let callee_str = if needs_parens_as_lhs(callee) || call_in_member_chain(callee) {
+                    format!("({callee_str})")
+                } else {
+                    callee_str
+                };
+                format!("new {callee_str}({})", self.join_exprs(arguments))
             }
             Expression::Array { elements } => {
                 let elems: Vec<String> = elements
@@ -613,4 +607,30 @@ fn escape_template_quasi(s: &str) -> String {
         }
     }
     out
+}
+
+// An expression that has to be parenthesised before `.x`, `(...)` or as a `new`
+// callee, because it binds more loosely than a member access or a call:
+// `(a && b).c`, `(a ? f : g)(x)`, `(await f(x))()`, `(function () {})()`.
+// Without them `await f(x)()` awaits the call's result instead of calling what
+// was awaited.
+fn needs_parens_as_lhs(expr: &crate::ir::Expression) -> bool {
+    matches!(
+        expr,
+        crate::ir::Expression::Binary { .. }
+            | crate::ir::Expression::Conditional { .. }
+            | crate::ir::Expression::Assignment { .. }
+            | crate::ir::Expression::Unary { .. }
+            | crate::ir::Expression::Await(_)
+            | crate::ir::Expression::Yield { .. }
+            | crate::ir::Expression::Function { .. }
+    )
+}
+
+fn call_in_member_chain(expr: &crate::ir::Expression) -> bool {
+    match expr {
+        crate::ir::Expression::Call { .. } => true,
+        crate::ir::Expression::Member { object, .. } => call_in_member_chain(object),
+        _ => false,
+    }
 }

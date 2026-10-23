@@ -34,7 +34,6 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("block_scopes", 99, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),
     ("class_scopes", 98, "other: v98 class lowering (private fields, static block) is not recovered; the class is read before it is declared"),
     ("class_scopes", 99, "other: v98 class lowering (private fields, static block) is not recovered; the class is read before it is declared"),
-    ("deep_nesting", 96, "other: `(await f(x))()` is printed as `await f(x)()`"),
     ("deep_nesting", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
     ("deep_nesting", 99, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
     ("generator_states", 96, "other: an unstructured jump is printed as a bare label (`B1`)"),
