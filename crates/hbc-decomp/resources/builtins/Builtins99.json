@@ -1,4 +1,6 @@
 [
+  "Symbol",
+  "eval",
   "Array.isArray",
   "Date.UTC",
   "Date.parse",
@@ -52,6 +54,7 @@
   "HermesBuiltin.exportAll",
   "HermesBuiltin.exponentiationOperator",
   "HermesBuiltin.initRegexNamedGroups",
+  "HermesBuiltin.setFunctionName",
   "HermesBuiltin.functionPrototypeApply",
   "HermesBuiltin.functionPrototypeCall",
   "HermesBuiltin.spawnAsync",

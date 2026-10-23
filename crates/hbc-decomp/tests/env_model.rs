@@ -28,7 +28,6 @@ use hbc_decomp::{BytecodeFile, BytecodeFormat, DecompileOptionsV2};
 // outside it that the fixture happens to reach first.
 const KNOWN: &[(&str, u32, &str)] = &[
     ("async_closures", 96, "other: an inlined closure leaves its temporary `tmp` undeclared"),
-    ("async_closures", 99, "other: v99 async functions (CallBuiltin spawnAsync) are not recovered"),
     ("async_forms", 98, "other: a class is declared both by `let Box` and by `class Box`"),
     ("async_forms", 99, "other: a class is declared both by `let Box` and by `class Box`"),
     ("block_scopes", 96, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),
@@ -38,13 +37,13 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("class_scopes", 99, "other: v98 class lowering (private fields, static block) is not recovered; the class is read before it is declared"),
     ("deep_nesting", 96, "other: `(await f(x))()` is printed as `await f(x)()`"),
     ("deep_nesting", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
-    ("deep_nesting", 99, "other: v99 async functions (CallBuiltin spawnAsync) are not recovered"),
+    ("deep_nesting", 99, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
     ("generator_states", 96, "other: an unstructured jump is printed as a bare label (`B1`)"),
     ("generator_states", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as `tmp3` before it is declared"),
     ("generator_states", 99, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as `tmp3` before it is declared"),
     ("param_scopes", 96, "other: a function whose third parameter has a default is printed with two parameters and reads `arg2`"),
     ("param_scopes", 98, "other: a function whose third parameter has a default is printed with two parameters and reads `arg2`"),
-    ("param_scopes", 99, "other: a HermesBuiltin call is printed as is"),
+    ("param_scopes", 99, "other: a function whose third parameter has a default is printed with two parameters and reads `arg2`"),
 ];
 
 fn fixture_dir() -> PathBuf {

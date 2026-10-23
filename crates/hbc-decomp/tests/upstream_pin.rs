@@ -949,3 +949,88 @@ fn debug_info_shapes_match_upstream() {
         );
     }
 }
+
+/// The `CallBuiltin`/`GetBuiltinClosure` index → name order `Builtins.def` declares,
+/// spelled the way `resources/builtins/Builtins<N>.json` spells it.
+///
+/// `Builtins.h` expands every `NORMAL_METHOD`, `BUILTIN_METHOD`, `PRIVATE_BUILTIN`
+/// and `JS_BUILTIN` to one enumerator. `MARK_FIRST_*` only names an existing one
+/// (`_firstPrivate = HermesBuiltin_x`), so it takes no index. A normal builtin is a
+/// method of `globalThis` and is spelled bare (`Symbol`), because the printer
+/// splits on the first dot.
+fn parse_builtins_def(root: &Path) -> Vec<String> {
+    let src = strip_comments(&read(root, "include/hermes/FrontEndDefs/Builtins.def"));
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let line = line.trim();
+        let Some((mac, rest)) = line.split_once('(') else {
+            continue;
+        };
+        let Some(args) = rest.strip_suffix(')') else {
+            continue;
+        };
+        let args: Vec<&str> = args.split(',').map(str::trim).collect();
+        match (mac, args.as_slice()) {
+            ("NORMAL_METHOD", ["globalThis", name]) => out.push(name.to_string()),
+            ("NORMAL_METHOD" | "BUILTIN_METHOD", [object, name]) => {
+                out.push(format!("{object}.{name}"))
+            }
+            ("PRIVATE_BUILTIN" | "JS_BUILTIN", [name]) => out.push(format!("HermesBuiltin.{name}")),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Indices read off compiled bytecode, so they hold without a checkout. v98 and
+/// v99 put the normal builtins `Symbol` and `eval` first: a direct `eval(x)` is
+/// compiled to compare the callee with `GetBuiltinClosure 1`.
+#[test]
+fn builtin_tables_known_indices() {
+    let at = |version: u32, index: usize| -> String {
+        hbc_decomp::opcode::builtins_for_version(version)
+            .get(index)
+            .cloned()
+            .unwrap_or_default()
+    };
+    for version in [98, 99] {
+        assert_eq!(at(version, 0), "Symbol", "v{version}");
+        assert_eq!(at(version, 1), "eval", "v{version}");
+        assert_eq!(at(version, 44), "HermesBuiltin.throwTypeError", "v{version}");
+        assert_eq!(at(version, 47), "HermesBuiltin.copyRestArgs", "v{version}");
+    }
+    assert_eq!(at(98, 57), "HermesBuiltin.spawnAsync");
+    assert_eq!(at(99, 55), "HermesBuiltin.setFunctionName");
+    assert_eq!(at(99, 58), "HermesBuiltin.spawnAsync");
+}
+
+#[test]
+fn builtin_tables_match_upstream() {
+    let mut checked = 0;
+    for version in CHECKOUT_VERSIONS {
+        let Some(root) = checkout_for(version) else {
+            common::skip_or_fail(
+                Oracle::Src,
+                Some(version),
+                &format!("no HERMES_SRC_V{version}"),
+            );
+            continue;
+        };
+        let upstream = parse_builtins_def(&root);
+        let ours = hbc_decomp::opcode::builtins_for_version(version);
+        assert!(!upstream.is_empty(), "v{version}: no builtins parsed from Builtins.def");
+        assert_eq!(
+            ours, upstream,
+            "v{version}: the builtin table (or the one it falls back to) disagrees with \
+             Builtins.def; regenerate resources/builtins/Builtins{version}.json from it"
+        );
+        checked += 1;
+    }
+    if checked == 0 {
+        common::skip_or_fail(
+            Oracle::Src,
+            None,
+            "no HERMES_SRC_V* checkouts configured; builtin tables unchecked",
+        );
+    }
+}
