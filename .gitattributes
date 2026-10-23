@@ -7,3 +7,5 @@
 # rewrites 20 header bytes purely because of line endings -- identical bytecode,
 # different recorded hash. Pin them.
 crates/hbc-decomp/tests/fixtures/*.js text eol=lf
+crates/hbc-decomp/tests/fixtures/env/*.js text eol=lf
+crates/hbc-decomp/tests/fixtures/env/*.expected text eol=lf
