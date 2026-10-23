@@ -452,8 +452,22 @@ impl PipelineContext {
         let async_ids = async_detection::detect_async_generator_wrappers(all_ir);
         for func_id in &async_ids {
             closure_ctx.mark_async(*func_id);
-            if let Some(body) = all_ir.remove(func_id) {
-                all_ir.insert(*func_id, convert_yields_to_awaits(body));
+        }
+        // Every async function renders as `async function`, never `async
+        // function*` (Hermes has no async generators; Babel lowers them), so a
+        // `yield` left in one does not parse. Bodies reach an async function by
+        // several routes: W14's detection, the wrapper unwrap, the generator
+        // wrapper collapse above, each converting only what it recognised. A
+        // v96 wrapper around a helper imported without a name
+        // (`_mod47.default(function*(){})`) slipped through all three.
+        let async_fids: Vec<u32> = all_ir
+            .keys()
+            .copied()
+            .filter(|&f| closure_ctx.is_async(f))
+            .collect();
+        for func_id in async_fids {
+            if let Some(body) = all_ir.remove(&func_id) {
+                all_ir.insert(func_id, convert_yields_to_awaits(body));
             }
         }
         async_detection::strip_redundant_async_helpers(all_ir, closure_ctx);
