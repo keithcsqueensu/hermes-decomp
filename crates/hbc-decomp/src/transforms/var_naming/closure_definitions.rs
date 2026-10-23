@@ -705,7 +705,8 @@ fn fill_param_name(
     name: &str,
 ) {
     let idx = idx as usize;
-    if idx >= crate::analysis::ipa::MAX_PARAM_SLOTS {
+    // A strict module cannot bind these (`function f(arguments)` does not parse).
+    if idx >= crate::analysis::ipa::MAX_PARAM_SLOTS || matches!(name, "arguments" | "eval") {
         return;
     }
     let entry = param_names.entry(func_id).or_default();

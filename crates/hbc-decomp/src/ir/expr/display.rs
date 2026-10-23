@@ -73,10 +73,34 @@ fn is_dot_property_name(name: &str) -> bool {
     crate::util::is_valid_identifier(name)
 }
 
+// Hermes names a well-known symbol property `@@iterator`. Only those are
+// symbols: `"@@nativeEmitterSubscription@@"` is a plain string key React Native
+// uses, and printed as `[Symbol.nativeEmitterSubscription@@]` it did not parse.
+fn well_known_symbol(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("@@")?;
+    matches!(
+        rest,
+        "asyncIterator"
+            | "hasInstance"
+            | "isConcatSpreadable"
+            | "iterator"
+            | "match"
+            | "matchAll"
+            | "replace"
+            | "search"
+            | "species"
+            | "split"
+            | "toPrimitive"
+            | "toStringTag"
+            | "unscopables"
+    )
+    .then_some(rest)
+}
+
 pub fn format_key(key: &PropertyKey) -> String {
     match key {
         PropertyKey::Ident(name) => {
-            if let Some(symbol_name) = name.strip_prefix("@@") {
+            if let Some(symbol_name) = well_known_symbol(name) {
                 format!("[Symbol.{symbol_name}]")
             } else if is_dot_property_name(name) {
                 name.clone()
@@ -85,7 +109,7 @@ pub fn format_key(key: &PropertyKey) -> String {
             }
         }
         PropertyKey::String(s) => {
-            if let Some(symbol_name) = s.strip_prefix("@@") {
+            if let Some(symbol_name) = well_known_symbol(s) {
                 format!("[Symbol.{symbol_name}]")
             } else {
                 format!("\"{}\"", escape_js_string(s))
@@ -106,7 +130,7 @@ pub fn format_member_access_with(
 ) -> String {
     match key {
         PropertyKey::Ident(name) => {
-            if let Some(symbol_name) = name.strip_prefix("@@") {
+            if let Some(symbol_name) = well_known_symbol(name) {
                 format!("{obj}{opt}[Symbol.{symbol_name}]")
             } else if is_dot_property_name(name) {
                 format!("{obj}{opt}.{name}")
@@ -115,7 +139,7 @@ pub fn format_member_access_with(
             }
         }
         PropertyKey::String(s) => {
-            if let Some(symbol_name) = s.strip_prefix("@@") {
+            if let Some(symbol_name) = well_known_symbol(s) {
                 format!("{obj}{opt}[Symbol.{symbol_name}]")
             } else {
                 format!("{obj}{opt}[\"{}\"]", escape_js_string(s))
