@@ -4,7 +4,7 @@
 > wrong JavaScript. *Delegates* the phase's *description* — the F/W stage catalogue, the pass
 > families, the `Codegen` `with_*` context — to `../../arch_guides/04_TRANSFORMS_CODEGEN.md`.
 
-Status: **no open defects; one watch item** (re-audited against HEAD 81c4e2a). No robustness
+Status: **open defects, planned in [`OUTPUT_DEFECTS_PLAN.md`](OUTPUT_DEFECTS_PLAN.md)** (2026-10-23: unparsed modules, JSX residue, the `other:` rows of the E1 fixtures). Before that: **no open defects; one watch item** (re-audited against HEAD 81c4e2a). No robustness
 finding from the read hardening pass landed on this stage, and no version-drift hazard of the
 write path's kind lives here. This register exists as the stage's vertebra on the spine; the
 notes below are the standing hazards to respect when adding a pass, plus one structural

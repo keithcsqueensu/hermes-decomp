@@ -8,7 +8,7 @@ Both folders now share one axis — the pipeline spine — so the mapping is 1:1
 | read | `../arch_guides/01_READ_LAYER.md` | [`01_read/RISKS.md`](01_read/RISKS.md) + `01_read/unmodeled_regions/` |
 | ir | `../arch_guides/02_IR.md` | [`02_ir/RISKS.md`](02_ir/RISKS.md) |
 | analysis | `../arch_guides/03_ANALYSIS.md` | [`03_analysis/RISKS.md`](03_analysis/RISKS.md) + `03_analysis/closure_model/` |
-| transforms | `../arch_guides/04_TRANSFORMS_CODEGEN.md` | [`04_transforms/RISKS.md`](04_transforms/RISKS.md) |
+| transforms | `../arch_guides/04_TRANSFORMS_CODEGEN.md` | [`04_transforms/RISKS.md`](04_transforms/RISKS.md) + `04_transforms/OUTPUT_DEFECTS_PLAN.md` |
 | pipeline | `../arch_guides/05_PIPELINE.md` | [`05_pipeline/RISKS.md`](05_pipeline/RISKS.md) |
 | write | `../arch_guides/06_WRITE_PATH.md` | [`06_write/RISKS.md`](06_write/RISKS.md) + `06_write/reference/`, `relocation/`, `string_packing/` |
 | frontends | `../arch_guides/07_FRONTENDS.md` | [`07_frontends/RISKS.md`](07_frontends/RISKS.md) |
@@ -35,7 +35,8 @@ plan_guides/
     closure_model/PLAN.md     the decompiler's closure / env-slot model
     closure_model/K4_PLAN.md  K4 staged: captures keep their identity to codegen
   04_transforms/
-    RISKS.md                  register (no open defects; one watch item + standing hazards)
+    RISKS.md                  register (open defects in OUTPUT_DEFECTS_PLAN; standing hazards)
+    OUTPUT_DEFECTS_PLAN.md    unparsed modules, JSX residue, E1 fixture failures outside env
   05_pipeline/
     RISKS.md                  F8, F13 — the cache; cascade vs. the cache, stage labels (both fixed)
   06_write/
