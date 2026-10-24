@@ -312,7 +312,17 @@ fn render_bundle(
 
         if let Some(funcs) = module_functions.get_mut(&mod_id) {
             funcs.sort();
-            for &func_id in funcs.iter() {
+            for (k, &func_id) in funcs.iter().enumerate() {
+                // Module id u32::MAX is no module: it collects factories (worklet
+                // factories, mostly) that no `__d` registered, each rendered as
+                // a module of its own. Under one header they read as one module
+                // declaring `export default` and `dependencyMap` dozens of times,
+                // so each gets its own.
+                if mod_id == u32::MAX && k > 0 {
+                    output.push_str(&format!(
+                        "\n// === Module {mod_id}: {name} (function {func_id}) ===\n"
+                    ));
+                }
                 if !output.is_empty() {
                     output.push('\n');
                 }
