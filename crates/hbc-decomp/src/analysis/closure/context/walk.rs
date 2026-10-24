@@ -350,13 +350,20 @@ impl ClosureContext {
                 for m in methods {
                     self.track_nested_functions(current_fn, &m.value);
                     if let Some(body) = &m.body {
+                        // A method is a function of its own: it sees the
+                        // enclosing names but its locals and registers are its
+                        // own. Sharing the maps let a method's `tmp15 =
+                        // closure_37` stand for the enclosing body's `tmp15`,
+                        // and a slot stored from it took the wrong slot's name.
+                        let mut method_regs = BTreeMap::new();
+                        let mut method_names = named_values.clone();
                         for s in body {
                             self.analyze_stmt_context(
                                 current_fn,
                                 s,
                                 info,
-                                reg_values,
-                                named_values,
+                                &mut method_regs,
+                                &mut method_names,
                                 deferred,
                             );
                         }
