@@ -6,10 +6,10 @@
 > *Delegates* environment and slot identity to
 > `../03_analysis/closure_model/V98_ENV_PLAN.md` and `K4_PLAN.md`.
 
-Status: **D0 and D1 landed (2026-10-23); D2 and D3 planned.** Every root cause below comes
+Status: **D0, D1 and D2 landed (2026-10-23); D3 planned.** Every root cause below comes
 from an investigation run on 2026-10-23 against main at 330e329 (outputs `k4e3`). Each was
 reproduced on a fixture or a bundle output. File:line references are as of that commit; check
-them again when implementing. Results and what D1 left behind are in §5.
+them again when implementing. Results are in §5 (D0, D1) and §6 (D2).
 
 ---
 
@@ -269,3 +269,35 @@ defect counters on a second line.
 - U5: the duplicate `export default` in 4294967295 is printed from the body, not from the
   export list the guard filters (Expensify, 1).
 - U10 (2) and the `already declared` rows (6, 2, 5, 4) are D2.
+
+## 6. D2 results
+
+**[measured]** Base: D1 complete (§5). New: D2 complete, plus the D1 leftovers.
+
+| | Equinox | CoachRx | Expensify | Discord |
+|---|---|---|---|---|
+| unparsed modules | 8 → 0 | 4 → 0 | 7 → 0 | 4 → 0 |
+| undeclared | 12,989 → 12,667 | 13,280 → 13,207 | 60,521 → 62,091 | 94,179 → 69,130 |
+| placeholders | 1,666 → 1,414 | 669 → 579 | 8,317 → 9,066 | 18,006 → 3,799 |
+| `class` declarations removed / added | 289 / 7 | 405 / 1 | 866 / 8 | 19,282 / 3 |
+
+- Expensify's totals rise only because 67,000 more lines parse (the 4294967295 pseudo-module
+  among them). On the modules that parsed before, undeclared falls 60,521 → 59,810.
+- **D2.2 (B7) is the big one.** A capitalised function became a class on its name alone. On
+  Discord that turned the React compiler's memoised callbacks and every `useStateFromStores`
+  selector into `class S { constructor() {…} }`, which throws when called. They are arrows
+  again, and the closures inside them resolve, which is most of Discord's placeholder drop.
+  The removed classes sampled were all function components, factories or callbacks. The added
+  ones are real classes that had been nested inside a wrongly promoted function.
+- Names that got worse are small against that (Discord 1,241 references, Expensify 915, the
+  bulk in newly parsed code). Expensify's `length` (+256) is a pre-existing bug, laid out
+  differently: lodash's `keysIn` loses `const length = obj.length` in D1's output too.
+- D2.1 changed where async_forms fails: it is now an environment cause (`closure_1$2`).
+- D2.4 renames the export, not the local, which §2 proposed: the local is what the module's own
+  code calls, so the export takes `X_export` and is published as `export { X_export as X }`.
+- D2.5 needed no label field: the for-of lift was dropping the `labelN:` marker, which codegen
+  already attaches.
+- U5 was not a duplicate-export bug. The pseudo-module 4294967295 printed every unclaimed
+  factory under one header. Each now gets its own; why they go unclaimed is still open.
+- E1 KNOWN is down to 11 rows: block_scopes ×3, class_scopes ×2 (D3), async_forms ×2,
+  deep_nesting.v98/.v99 and generator_states.v98/.v99. All but class_scopes are environment causes.
