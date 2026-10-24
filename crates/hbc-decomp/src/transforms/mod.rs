@@ -41,7 +41,6 @@ pub use generator::{
     reconstruct_generator_v98, simplify_state_machine, try_reconstruct_generator_v98,
 };
 pub use hoist_closures::hoist_repeated_closures;
-pub use inline::names_used_by_descendants;
 pub use inline::{
     cleanup_noise, eliminate_immutable_aliases, extra_writes_from_nested_bodies,
     fold_array_literals, fold_object_literals, inline_expressions, inline_named_variables,
@@ -49,6 +48,7 @@ pub use inline::{
     insert_declarations_with_outer, insert_declarations_with_slots, make_sanitized_names_distinct,
     rename_reserved_words, simplify_arguments_copy, strip_hermes_this,
 };
+pub use inline::{names_used_by_descendants, outer_names_used_by_descendants};
 pub use logic_simplify::simplify_logic_advanced;
 pub use module_hoist::hoist_module_loaders;
 pub use name_inference::infer_names;

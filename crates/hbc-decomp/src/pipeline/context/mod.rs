@@ -57,6 +57,9 @@ pub struct PipelineContext {
     // Names each function's nested functions read or write, computed once:
     // recomputing it per rendered module rescanned every function per module.
     pub(super) captured_by_descendants: BTreeMap<u32, std::collections::HashSet<String>>,
+    // The subset of those names that stand for an enclosing scope's variable
+    // (`outer_names_used_by_descendants`): what a declaration must not shadow.
+    pub(super) outer_used_by_descendants: BTreeMap<u32, std::collections::HashSet<String>>,
     // Recovered Reanimated worklet sources (function name → original source),
     // extracted from `__initData.code` string constants in the bundle.
     pub(super) worklet_sources: BTreeMap<String, String>,
@@ -203,6 +206,7 @@ impl PipelineContext {
             slot_names: BTreeMap::new(),
             created_functions: std::collections::HashSet::new(),
             captured_by_descendants: BTreeMap::new(),
+            outer_used_by_descendants: BTreeMap::new(),
             worklet_sources,
             cascade_names,
         };
@@ -212,6 +216,7 @@ impl PipelineContext {
         ctx.created_functions = ctx.precompute_created_functions();
         ctx.ancestor_env_slots = ctx.precompute_ancestor_env_slot_names();
         ctx.captured_by_descendants = ctx.compute_captured_by_descendants();
+        ctx.outer_used_by_descendants = ctx.compute_outer_used_by_descendants();
 
         let phase = super::progress::Phase::start("inline body rendering");
         let t = std::time::Instant::now();

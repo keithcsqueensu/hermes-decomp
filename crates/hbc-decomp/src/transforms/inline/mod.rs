@@ -10,7 +10,7 @@ mod reserved_words;
 mod strip_this;
 
 pub use arguments::simplify_arguments_copy;
-pub use captured::names_used_by_descendants;
+pub use captured::{names_used_by_descendants, outer_names_used_by_descendants};
 pub use cleanup::cleanup_noise;
 pub use declarations::{
     extra_writes_from_nested_bodies, insert_declarations, insert_declarations_with_extra_writes,

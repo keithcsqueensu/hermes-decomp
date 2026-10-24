@@ -223,6 +223,7 @@ impl PipelineContext {
             slot_names: BTreeMap::new(),
             created_functions: std::collections::HashSet::new(),
             captured_by_descendants: BTreeMap::new(),
+            outer_used_by_descendants: BTreeMap::new(),
             // A cached context was built without an artifact: `build_cached`
             // never reads or writes the cache when one is set.
             cascade_names: BTreeMap::new(),
@@ -233,6 +234,7 @@ impl PipelineContext {
         ctx.created_functions = ctx.precompute_created_functions();
         ctx.ancestor_env_slots = ctx.precompute_ancestor_env_slot_names();
         ctx.captured_by_descendants = ctx.compute_captured_by_descendants();
+        ctx.outer_used_by_descendants = ctx.compute_outer_used_by_descendants();
         ctx
     }
 
@@ -363,6 +365,7 @@ mod tests {
             slot_names: BTreeMap::new(),
             created_functions: std::collections::HashSet::new(),
             captured_by_descendants: BTreeMap::new(),
+            outer_used_by_descendants: BTreeMap::new(),
             // A cached context was built without an artifact: `build_cached`
             // never reads or writes the cache when one is set.
             cascade_names: BTreeMap::new(),

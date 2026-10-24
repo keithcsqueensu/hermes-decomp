@@ -282,7 +282,7 @@ impl PipelineContext {
                         .map(|(name, _)| name)
                         .collect();
                 if let (Some(ancestors), Some(below)) =
-                    (ancestors, self.captured_by_descendants.get(&func_id))
+                    (ancestors, self.outer_used_by_descendants.get(&func_id))
                 {
                     outer.extend(ancestors.intersection(below).cloned());
                 }
@@ -513,6 +513,22 @@ impl PipelineContext {
                 .map(|c| &c.parent_function)
                 .unwrap_or(&empty),
         )
+    }
+
+    // Names each function's nested functions use for an enclosing scope's
+    // variable (see `outer_names_used_by_descendants`).
+    pub(crate) fn compute_outer_used_by_descendants(&self) -> BTreeMap<u32, HashSet<String>> {
+        let empty = BTreeMap::new();
+        let parent_of = self
+            .closure_ctx
+            .as_ref()
+            .map(|c| &c.parent_function)
+            .unwrap_or(&empty);
+        transforms::outer_names_used_by_descendants(&self.all_ir, parent_of, |scope| {
+            self.closure_ctx
+                .as_ref()
+                .map_or(scope, |c| c.scope_function(scope))
+        })
     }
 
     fn prepare_render_bodies(
