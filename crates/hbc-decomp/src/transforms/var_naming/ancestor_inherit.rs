@@ -57,7 +57,7 @@ pub fn inherit_ancestor_closure_names(
             .get(&fid)
             .map(|stmts| written_names(stmts))
             .unwrap_or_default();
-        let mut candidates: Vec<(String, String)> = Vec::new();
+        let mut candidates: Vec<(String, String, u32, u32)> = Vec::new();
         let mut target_counts: HashMap<String, u32> = HashMap::new();
         for name in &closure_names {
             // A single-number name carries no level: the exact origin the
@@ -90,20 +90,43 @@ pub fn inherit_ancestor_closure_names(
             let ancestor_name = info.get_slot_name(slot);
             if is_inheritable(&ancestor_name) && ancestor_name != *name {
                 *target_counts.entry(ancestor_name.clone()).or_insert(0) += 1;
-                candidates.push((name.clone(), ancestor_name));
+                candidates.push((name.clone(), ancestor_name, ancestor, slot));
             }
         }
 
         let mut renames: BTreeMap<String, String> = BTreeMap::new();
-        for (old, target) in candidates {
+        let mut used: Option<HashSet<String>> = None;
+        for (old, target, ancestor, slot) in candidates {
             // Ambiguous: two different captures want the same name in this scope.
             if target_counts.get(&target).copied().unwrap_or(0) > 1 {
                 continue;
             }
-            // Collision: the name is already a live variable in this function
-            // (a real local, or another capture). Do not shadow it.
+            // Collision: the name is already a live variable in this function.
+            // Another capture keeps it. A plain local of this body gives it up
+            // and takes a fresh name when the owner really binds the slot under
+            // that name: nothing outside the body can name the local, whereas
+            // the capture left as its placeholder named a variable no one
+            // declares (`setState(closure_10)` beside the owner's `state`, once
+            // the body read `const state = self.state`). Where the owner binds
+            // the slot as something else, the slot's recorded name is only a
+            // hint (often this very local's), and the capture stays as it is.
             if all_names.contains(&target) {
-                continue;
+                let stmts = &all_ir[&fid];
+                if renames.contains_key(&target)
+                    || !is_plain_local(stmts, &target)
+                    || is_own_slot_name(closure_ctx, fid, &target)
+                    || !owner_binds(all_ir, closure_ctx, ancestor, slot, &target)
+                {
+                    continue;
+                }
+                let used = used.get_or_insert_with(|| {
+                    let mut u = written.clone();
+                    u.extend(all_names.iter().cloned());
+                    u.extend(target_counts.keys().cloned());
+                    u
+                });
+                let fresh = super::closure_definitions::make_unique_name(&target, used);
+                renames.insert(target.clone(), fresh);
             }
             renames.insert(old, target);
         }
@@ -173,6 +196,126 @@ fn is_inheritable(name: &str) -> bool {
 
 // Collect every referenced variable name (for collision detection) and the subset
 // that are `closure_*` captures (the rename candidates).
+// `name` is the name of one of `func`'s own environment slots (its function
+// scope's or a block scope's). The owner's own references to such a slot can
+// be unstamped, so it would pass for a plain local: superagent's `Request`
+// constructor lost the `let` of the `self` its callbacks read.
+fn is_own_slot_name(closure_ctx: &ClosureContext, func: u32, name: &str) -> bool {
+    closure_ctx
+        .function_closures
+        .iter()
+        .filter(|(&scope, _)| scope == func || closure_ctx.scope_function(scope) == func)
+        .any(|(_, info)| {
+            info.slots
+                .keys()
+                .filter(|k| *k >> 24 == 0)
+                .any(|&k| info.get_slot_name(k) == name)
+        })
+}
+
+// The owner's own body refers to slot `slot` of scope `scope` as `name`.
+fn owner_binds(
+    all_ir: &BTreeMap<u32, Vec<Statement>>,
+    closure_ctx: &ClosureContext,
+    scope: u32,
+    slot: u32,
+    name: &str,
+) -> bool {
+    struct B<'n> {
+        want: crate::ir::SlotRef,
+        name: &'n str,
+        found: bool,
+    }
+    impl B<'_> {
+        fn check(&mut self, v: &crate::ir::Var) {
+            self.found |= v.name == self.name && v.slot == Some(self.want);
+        }
+    }
+    impl<'a> Visitor<'a> for B<'_> {
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Let { name, .. } = s {
+                self.check(name);
+            }
+            self.walk_statement(s);
+        }
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if let Expression::Value(Value::Binding(crate::ir::Binding::Variable(v))) = e {
+                self.check(v);
+            }
+            self.walk_expression(e);
+        }
+        fn visit_assign_target(&mut self, t: &'a crate::ir::AssignTarget) {
+            if let crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(v)) = t {
+                self.check(v);
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let Some(stmts) = all_ir.get(&closure_ctx.scope_function(scope)) else {
+        return false;
+    };
+    let mut b = B {
+        want: crate::ir::SlotRef { owner: scope, slot },
+        name,
+        found: false,
+    };
+    for s in stmts {
+        b.visit_statement(s);
+        if b.found {
+            return true;
+        }
+    }
+    false
+}
+
+// `name` is a local of this body: assigned or declared here and never used for
+// an environment slot (parameters are still `Parameter` values at this stage),
+// so renaming it inside the body changes nothing outside it.
+fn is_plain_local(stmts: &[Statement], name: &str) -> bool {
+    struct P<'n> {
+        name: &'n str,
+        declared: bool,
+        slotted: bool,
+    }
+    impl<'a> Visitor<'a> for P<'_> {
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Let { name, .. } = s {
+                if name.name == self.name {
+                    self.declared = true;
+                    self.slotted |= name.slot.is_some();
+                }
+            }
+            self.walk_statement(s);
+        }
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if let Expression::Value(Value::Binding(crate::ir::Binding::Variable(n))) = e {
+                if n.name == self.name {
+                    self.slotted |= n.slot.is_some();
+                }
+            }
+            self.walk_expression(e);
+        }
+        fn visit_assign_target(&mut self, t: &'a crate::ir::AssignTarget) {
+            if let crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(n)) = t {
+                if n.name == self.name {
+                    self.declared = true;
+                    self.slotted |= n.slot.is_some();
+                }
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut p = P {
+        name,
+        declared: false,
+        slotted: false,
+    };
+    for s in stmts {
+        p.visit_statement(s);
+    }
+    p.declared && !p.slotted
+}
+
 fn collect_names(stmts: &[Statement], all: &mut HashSet<String>, closures: &mut HashSet<String>) {
     struct C<'a>(&'a mut HashSet<String>, &'a mut HashSet<String>);
     impl<'b> Visitor<'b> for C<'_> {
