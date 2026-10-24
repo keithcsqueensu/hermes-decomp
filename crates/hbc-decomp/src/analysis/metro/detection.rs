@@ -13,8 +13,8 @@ impl MetroDetector {
         param_counts: &HashMap<u32, u32>,
     ) {
         let mut reg_functions: HashMap<String, u32> = HashMap::new();
-        let mut reg_arrays: HashMap<String, Vec<u32>> = HashMap::new();
-        let mut reg_integers: HashMap<String, u32> = HashMap::new();
+        let mut reg_arrays: HashMap<String, Vec<u64>> = HashMap::new();
+        let mut reg_integers: HashMap<String, u64> = HashMap::new();
 
         for stmt in statements {
             Self::analyze_stmt(
@@ -31,8 +31,8 @@ impl MetroDetector {
     fn analyze_stmt(
         stmt: &Statement,
         reg_functions: &mut HashMap<String, u32>,
-        reg_arrays: &mut HashMap<String, Vec<u32>>,
-        reg_integers: &mut HashMap<String, u32>,
+        reg_arrays: &mut HashMap<String, Vec<u64>>,
+        reg_integers: &mut HashMap<String, u64>,
         registry: &mut MetroRegistry,
         param_counts: &HashMap<u32, u32>,
     ) {
@@ -144,8 +144,8 @@ impl MetroDetector {
     fn check_for_d_call(
         expr: &Expression,
         reg_functions: &HashMap<String, u32>,
-        reg_arrays: &HashMap<String, Vec<u32>>,
-        reg_integers: &HashMap<String, u32>,
+        reg_arrays: &HashMap<String, Vec<u64>>,
+        reg_integers: &HashMap<String, u64>,
         registry: &mut MetroRegistry,
         param_counts: &HashMap<u32, u32>,
     ) {
@@ -176,12 +176,7 @@ impl MetroDetector {
 
                 // Get module ID - either directly or via register/variable lookup
                 let module_id = match &arguments[2] {
-                    Expression::Value(Value::Constant(crate::ir::Constant::Integer(n))) => {
-                        Some(*n as u32)
-                    }
-                    Expression::Value(Value::Constant(crate::ir::Constant::Number(n))) => {
-                        Some(*n as u32)
-                    }
+                    e @ Expression::Value(Value::Constant(_)) => extract_integer(e),
                     Expression::Value(Value::Binding(Binding::Register(r))) => {
                         reg_integers.get(&format!("r{r}")).copied()
                     }
@@ -209,6 +204,11 @@ impl MetroDetector {
 
                 // Register the module if we have function and module IDs
                 if let (Some(func_id), Some(mod_id)) = (function_id, module_id) {
+                    let mod_id = registry.intern_module_id(mod_id);
+                    let dependencies = dependencies
+                        .into_iter()
+                        .map(|d| registry.intern_module_id(d))
+                        .collect();
                     let inferred_name = match &arguments[1] {
                         Expression::Function { name: Some(n), .. } if is_meaningful_name(n) => {
                             Some(n.clone())
@@ -244,20 +244,29 @@ impl MetroDetector {
     }
 }
 
-fn extract_integer(expr: &Expression) -> Option<u32> {
+// A module id, exactly. Most fit a u32, but react-native-worklets registers
+// each worklet factory as a module keyed by its hash, which does not: cast to
+// u32, all 1,447 of Expensify's saturated to one id and overwrote each other.
+fn extract_integer(expr: &Expression) -> Option<u64> {
     match expr {
-        Expression::Value(Value::Constant(crate::ir::Constant::Integer(n))) => Some(*n as u32),
-        Expression::Value(Value::Constant(crate::ir::Constant::Number(n))) => Some(*n as u32),
+        Expression::Value(Value::Constant(crate::ir::Constant::Integer(n))) => {
+            u64::try_from(*n).ok()
+        }
+        Expression::Value(Value::Constant(crate::ir::Constant::Number(n)))
+            if n.fract() == 0.0 && *n >= 0.0 && *n <= 9_007_199_254_740_992.0 =>
+        {
+            Some(*n as u64)
+        }
         _ => None,
     }
 }
 
 fn extract_array_of_integers(
     expr: &Expression,
-    reg_integers: Option<&HashMap<String, u32>>,
-) -> Option<Vec<u32>> {
+    reg_integers: Option<&HashMap<String, u64>>,
+) -> Option<Vec<u64>> {
     if let Expression::Array { elements } = expr {
-        let values: Vec<u32> = elements
+        let values: Vec<u64> = elements
             .iter()
             .flatten()
             .filter_map(|e| {
@@ -306,4 +315,49 @@ pub(crate) fn is_meaningful_name(name: &str) -> bool {
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{Constant, FunctionId};
+
+    // `__d(undefined, F<func>, <id>, [])`
+    fn d_call(func: u32, id: Constant) -> Statement {
+        let function = Expression::Function {
+            id: FunctionId(func),
+            name: None,
+            is_arrow: false,
+            is_async: false,
+            is_generator: false,
+        };
+        Statement::Expr(Expression::Call {
+            callee: Box::new(Expression::Value(Value::Binding(Binding::Variable(
+                "__d".into(),
+            )))),
+            arguments: vec![
+                Expression::Value(Value::Constant(Constant::Undefined)),
+                function,
+                Expression::Value(Value::Constant(id)),
+                Expression::Array { elements: vec![] },
+            ],
+        })
+    }
+
+    #[test]
+    fn worklet_modules_keyed_by_hash_stay_apart() {
+        let stmts = vec![
+            d_call(10, Constant::Integer(7)),
+            d_call(11, Constant::Number(4_739_766_416.0)),
+            d_call(12, Constant::Number(15_714_428_054.0)),
+        ];
+        let mut registry = MetroRegistry::new();
+        MetroDetector::analyze_statements(&stmts, &mut registry, &HashMap::new());
+        assert_eq!(registry.modules.len(), 3);
+        let shown: Vec<u64> = [10, 11, 12]
+            .iter()
+            .map(|f| registry.display_id(registry.function_to_module[f]))
+            .collect();
+        assert_eq!(shown, vec![7, 4_739_766_416, 15_714_428_054]);
+    }
 }

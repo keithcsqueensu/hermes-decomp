@@ -277,11 +277,46 @@ pub struct MetroRegistry {
     pub function_to_module: BTreeMap<u32, u32>,
     // Function ID -> Module info (Factory specific definition)
     pub factories: BTreeMap<u32, MetroModule>,
+    // Synthetic id -> the module id the bundle registered, for ids past u32
+    // (react-native-worklets keys a worklet factory's module by its hash).
+    #[serde(default)]
+    pub wide_ids: BTreeMap<u32, u64>,
+    #[serde(default)]
+    wide_lookup: BTreeMap<u64, u32>,
 }
+
+// Where synthetic ids for wide module ids start; Metro's own ids are dense
+// from 0 and never come near it.
+const WIDE_ID_BASE: u32 = 0xF000_0000;
 
 impl MetroRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    // The u32 id the registry files a module id under: itself when it fits,
+    // otherwise a synthetic one, the same each time for the same id.
+    pub fn intern_module_id(&mut self, id: u64) -> u32 {
+        if let Ok(small) = u32::try_from(id) {
+            if small < WIDE_ID_BASE {
+                return small;
+            }
+        }
+        if let Some(&synthetic) = self.wide_lookup.get(&id) {
+            return synthetic;
+        }
+        let synthetic = WIDE_ID_BASE + self.wide_ids.len() as u32;
+        self.wide_ids.insert(synthetic, id);
+        self.wide_lookup.insert(id, synthetic);
+        synthetic
+    }
+
+    // The id the bundle registered a module under, for printing.
+    pub fn display_id(&self, module_id: u32) -> u64 {
+        self.wide_ids
+            .get(&module_id)
+            .copied()
+            .unwrap_or(module_id as u64)
     }
 
     // Get a module by its ID.
@@ -316,6 +351,19 @@ impl MetroRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wide_module_ids_get_distinct_synthetic_ids() {
+        let mut r = MetroRegistry::new();
+        assert_eq!(r.intern_module_id(530), 530);
+        let a = r.intern_module_id(4_739_766_416);
+        let b = r.intern_module_id(15_714_428_054);
+        assert_ne!(a, b);
+        assert_eq!(r.intern_module_id(4_739_766_416), a);
+        assert_eq!(r.display_id(a), 4_739_766_416);
+        assert_eq!(r.display_id(b), 15_714_428_054);
+        assert_eq!(r.display_id(530), 530);
+    }
 
     #[test]
     fn classic_4_param_layout() {

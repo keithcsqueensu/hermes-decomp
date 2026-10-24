@@ -272,7 +272,11 @@ impl PipelineContext {
                 &statements,
             );
             codegen = codegen.with_nested_writes(extra);
-            codegen.generate_esm_module(&statements, module.module_id, module.name.as_deref())
+            codegen.generate_esm_module(
+                &statements,
+                self.registry.display_id(module.module_id),
+                module.name.as_deref(),
+            )
         } else {
             // Insert const/let declarations into the IR before codegen.
             // Nested functions must not redeclare ancestor env slots.

@@ -11,7 +11,8 @@ impl Codegen {
     pub fn generate_esm_module(
         &mut self,
         statements: &[Statement],
-        module_id: u32,
+        // As the bundle registered it, which may be wider than a u32.
+        module_id: u64,
         module_name: Option<&str>,
     ) -> String {
         use std::collections::{HashMap, HashSet};
