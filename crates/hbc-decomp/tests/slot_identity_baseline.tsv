@@ -1,5 +1,12 @@
 # Per-bundle ceilings on slot identity violations (closure model K4.3), checked by
 # tests/slot_identity.rs against HBC_CORPUS_BUNDLE. Columns: SHA-256 of the bundle,
 # label, I1, I2, I3. Lower a ceiling whenever the real count drops.
-085c10a82cd273a1c9e9f7b84bc2c8f2571eae4e92a6c9d5226418cd7a73e75e	equinox 11.43.0 (v96)	2259	2110	22
-702c2b611a3366676f28bb6a58f8e3bf57acd1e46a51a08d0ba226ecf01a72bb	coachrx 2.1.223	2794	1364	29
+# D3 (2026-10-24): equinox raised I1 2259 -> 2263 and I2 2110 -> 2117, I3 lowered 22 -> 10.
+# The inline_expressions fix gave readers real locals where they had dangling temps;
+# the new I1 rows are a parent keeping an unused `let closure_0 = param` alias while
+# its child reads the parameter, and the I2 rows are 11 former I3 undeclared captures
+# a body now declares.
+085c10a82cd273a1c9e9f7b84bc2c8f2571eae4e92a6c9d5226418cd7a73e75e	equinox 11.43.0 (v96)	2263	2117	10
+# D3: coachrx I1 2794 -> 2781, I3 29 -> 9; I2 1364 -> 1390 (D2 was already at 1374;
+# the rest are former I3 undeclared captures now declared, as for equinox).
+702c2b611a3366676f28bb6a58f8e3bf57acd1e46a51a08d0ba226ecf01a72bb	coachrx 2.1.223	2781	1390	9

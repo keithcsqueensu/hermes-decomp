@@ -6,10 +6,10 @@
 > *Delegates* environment and slot identity to
 > `../03_analysis/closure_model/V98_ENV_PLAN.md` and `K4_PLAN.md`.
 
-Status: **D0, D1 and D2 landed (2026-10-23); D3 planned.** Every root cause below comes
+Status: **D0, D1, D2 and D3 landed (2026-10-24).** Every root cause below comes
 from an investigation run on 2026-10-23 against main at 330e329 (outputs `k4e3`). Each was
 reproduced on a fixture or a bundle output. File:line references are as of that commit; check
-them again when implementing. Results are in §5 (D0, D1) and §6 (D2).
+them again when implementing. Results are in §5 (D0, D1), §6 (D2) and §7 (D3).
 
 ---
 
@@ -301,3 +301,71 @@ defect counters on a second line.
   factory under one header. Each now gets its own; why they go unclaimed is still open.
 - E1 KNOWN is down to 11 rows: block_scopes ×3, class_scopes ×2 (D3), async_forms ×2,
   deep_nesting.v98/.v99 and generator_states.v98/.v99. All but class_scopes are environment causes.
+
+## 7. D3 results
+
+**[measured]** Base: D2 complete (§6). New: D3 complete, with the fixes it turned up on the way.
+
+| | Equinox | CoachRx | Expensify | Discord |
+|---|---|---|---|---|
+| undeclared | 12,667 → 10,130 | 13,207 → 11,841 | 62,091 → 53,845 | 69,130 → 59,407 |
+| placeholders | 1,414 → 46 | 579 → 105 | 9,066 → 8,926 | 3,799 → 3,506 |
+| constructors left building their own receiver | – | – | – | 189 + 224 → 4 |
+
+- **The largest change is not a class fix.** `inline_expressions` cleared the definitions an
+  enclosing statement had activated after the first statement of a nested list, so in
+  `if (c) {…} else { use(r) }` the else branch read a register whose definition had already
+  been consumed: a dangling `tmp`/`tmp2`. That is what made v98 `peek` print `tmp.#secret`,
+  and it is most of the drop on every bundle.
+- `collect_function_refs` used the plain visitor, which does not enter class methods, so a
+  class's parent was never re-rendered once its methods' bodies landed: an arrow made in a
+  constructor stayed `/* body not rendered */`. With that and the inline fix, the constructor's
+  slot 0 no longer prints under the factory's name; there was no separate slot-naming bug.
+- Private names needed no IR value of their own: they already flow through slot naming as
+  `#name`. The brand (a `CreatePrivateName` without `#`) is named `#K` and printed as a field
+  `#K;`, not the `#K() {}` method §2 proposed: Hermes installs it on each instance like a field,
+  and the `#K in this` check behaves the same. `#f in obj` and `obj.#f = v` print as private
+  syntax.
+- `restore_constructor_this` gives a base constructor `this` back
+  (`obj = Object.create(new.target.prototype)` → `obj = this`, the double-init guard, the
+  `= undefined` installs and the trailing `return obj` go). A derived class's
+  compiler-written constructor, `r = HermesBuiltin.applyArguments(this, new.target)`, read
+  `this` before `super()` and threw (224 sites on Discord); it is `super(...arguments); const
+  r = this;`. The 4 left on Discord build the receiver inside a branch and have no private
+  fields; they run correctly as printed.
+- **Not done: an explicit `super(…)`.** It lowers to a construct of the parent with
+  `new.target` and prints as `new Own(arg0, 1, new.target, this)` (57 sites on Discord), and
+  hermesc inlines such a constructor at its `new` site, which prints a private store outside
+  the class. Fixture class_super records it.
+- **Module 4294967295 was 1,447 real modules.** react-native-worklets registers each worklet
+  factory as a Metro module keyed by its hash (`__d(F11977, 4739766416, [])`). The id was cast
+  to u32, which saturates, so every registration overwrote the last (all named `PathEffects`,
+  the last one) and batch.rs grouped the factories as one module. Ids are read as exact u64; one
+  past u32 is filed under a synthetic id and printed as registered. `--modules`,
+  `--from-module`, `deps`, `modules`, `extract`, `decompile --json`, `frida-hooks`, the TUI and
+  the MCP tools take and print the registered id. U5's per-function headers went with it.
+- **The inline fix exposed four naming heuristics**, which the slot-identity gate caught
+  (Equinox I1/I2/I3 rose above their ceilings):
+  - The closure-context walk analysed class method bodies with the enclosing function's
+    names and registers, so a method's `tmp15 = closure_37` stood for the enclosing body's
+    `tmp15`; moment.js's factory then named its locales table after another slot and
+    `loadLocale` read a `closure_37` nothing assigned. Each method now sees a copy of the
+    enclosing names and fresh registers.
+  - A reserved word made a usable object key: React's `child.return = nextEffect` named the
+    shared slot `return`, printed `_return`, which landed on a local `_return` and the body
+    declared its own. Reserved words no longer name variables.
+  - Inheriting an ancestor's name for a capture gave up when a plain local of the reader held
+    the name, leaving a placeholder nothing declares (Sentry's `setState(closure_10)`). The
+    local is renamed instead, when the owner really binds the slot under that name.
+  - A body did not declare a local that any nested function also named, stamped or not, so
+    superagent's `Request` constructor wrote the module's `root` slot as `self`. Declarations
+    now yield only to names nested functions use stamped with a slot above the body, or read
+    without assigning.
+- Slot-identity ceilings are set to the new counts (`slot_identity_baseline.tsv` says why):
+  Equinox I1 2,263, I2 2,117, I3 10; CoachRx 2,781, 1,390, 9. I3 falls by 11 on Equinox and
+  25 on CoachRx because a capture nothing declared is now declared where it is read (that
+  rises I2 by as much); the new I1 rows are a parent keeping an unused `let closure_0 =
+  param` alias while its child reads the parameter.
+- Against D2, Equinox's undeclared names fall by 2,654 and rise by 117 (`arg0` +35, the most).
+- E1 KNOWN: class_scopes ×2 off; class_derived (new) passes; class_super ×2 (new) on. 11 rows:
+  9 environment causes, class_super ×2.
