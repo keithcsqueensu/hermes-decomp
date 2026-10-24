@@ -99,6 +99,11 @@ impl MutVisitor for ExpressionInliner {
 
         // We drain the original statements and build them back
         let old_stmts = std::mem::take(stmts);
+        // Definitions the enclosing statement activated. A nested list must hand
+        // them back intact: clearing them after its first statement lost the
+        // value for a use in a later branch (`if (c) {…} else { use(r) }`), and
+        // the definition had already been consumed, so `r` read nothing.
+        let outer = self.definitions.clone();
 
         for mut stmt in old_stmts {
             let has_side_effects = crate::ir::stmt_has_side_effects(&stmt);
@@ -126,7 +131,7 @@ impl MutVisitor for ExpressionInliner {
             self.visit_statement(&mut stmt);
 
             // Clear applied definitions to not leak
-            self.definitions.clear();
+            self.definitions.clone_from(&outer);
 
             // Process the resulting statement for potential new pending
             if let Statement::Assign {
@@ -153,6 +158,7 @@ impl MutVisitor for ExpressionInliner {
             result.push(s);
         }
 
+        self.definitions = outer;
         *stmts = result;
     }
 
