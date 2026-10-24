@@ -21,7 +21,7 @@ fn is_synthesized_default_ctor(body: &Option<Vec<Statement>>) -> bool {
 }
 
 // `Object.create(new.target.prototype)`, the synthesized base constructor.
-fn is_object_create_new_target(expr: &Expression) -> bool {
+pub(crate) fn is_object_create_new_target(expr: &Expression) -> bool {
     let Expression::Call { callee, arguments } = expr else {
         return false;
     };

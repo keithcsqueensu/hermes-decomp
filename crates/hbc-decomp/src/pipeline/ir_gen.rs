@@ -258,7 +258,10 @@ pub fn generate_ir(
         // Runs last, on fully-named statements, once cleanup has produced the clean
         // trailing `if (EXIT) break;` shape.
         let statements = transforms::convert_while_true_loops(statements);
-        transforms::fold_guarded_loops(statements)
+        let statements = transforms::fold_guarded_loops(statements);
+        // A base-class constructor builds and returns its own receiver; on
+        // fully named statements, give it `this` back.
+        transforms::restore_constructor_this(statements)
     } else {
         statements
     };

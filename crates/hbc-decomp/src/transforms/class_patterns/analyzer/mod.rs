@@ -10,6 +10,7 @@ use crate::ir::{
 use std::collections::{BTreeMap, HashSet};
 
 mod emit;
+pub(crate) use emit::is_object_create_new_target;
 
 pub struct ClassAnalyzer<'a> {
     file: &'a crate::BytecodeFile,

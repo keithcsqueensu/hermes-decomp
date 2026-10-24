@@ -304,6 +304,17 @@ pub fn handle_create_private_name(
     } else {
         format!("#private{name_idx}")
     };
+    // A name without the `#` is the class brand: Hermes names it after the class
+    // and installs it on each instance like a field, which a private method's
+    // `#m in obj` check then tests. Read as a plain variable it was the class
+    // itself, still in its TDZ where the brand is minted.
+    let name = if name.starts_with('#') {
+        name
+    } else if crate::util::is_valid_identifier(&name) {
+        format!("#{name}")
+    } else {
+        "#brand".to_string()
+    };
 
     Some(Statement::Assign {
         target: AssignTarget::Binding(Binding::Register(dst)),

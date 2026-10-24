@@ -27,7 +27,7 @@ pub mod var_naming;
 pub mod worklet_source;
 
 pub use chain_access::optimize_chain_access;
-pub use class_patterns::detect_class_patterns;
+pub use class_patterns::{detect_class_patterns, restore_constructor_this};
 pub use cleanup::advanced::cleanup_advanced;
 pub use cleanup::cleanup_statements;
 pub use codegen::{body_hole, Codegen, CodegenOptions, BODY_HOLE};

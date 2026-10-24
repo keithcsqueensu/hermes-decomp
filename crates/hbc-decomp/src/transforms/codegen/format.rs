@@ -130,6 +130,10 @@ impl Codegen {
             }
             AssignTarget::Index { object, key } => {
                 let obj = self.generate_expr(object);
+                // A private field is only ever written `obj.#f`.
+                if let Some(name) = crate::ir::expr::display::private_field_name(key) {
+                    return format!("{obj}.{name}");
+                }
                 let k = self.generate_expr(key);
                 format!("{obj}[{k}]")
             }

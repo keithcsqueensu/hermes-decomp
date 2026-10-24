@@ -1,9 +1,11 @@
 mod analyzer;
 mod builder;
+mod ctor_this;
 mod utils;
 
 use crate::ir::Statement;
 use analyzer::ClassAnalyzer;
+pub use ctor_this::restore_constructor_this;
 
 pub fn detect_class_patterns(
     stmts: Vec<Statement>,

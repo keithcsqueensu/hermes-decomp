@@ -46,7 +46,14 @@ impl Codegen {
                 } else {
                     (prec, prec + 1) // left-assoc: parens on right if same prec
                 };
-                let l = self.generate_expr_with_parens(left, l_prec);
+                // `#f in obj` is the one place a private name stands alone.
+                let private = matches!(op, crate::ir::BinaryOp::In)
+                    .then(|| crate::ir::expr::display::private_field_name(left))
+                    .flatten();
+                let l = match private {
+                    Some(name) => name.to_string(),
+                    None => self.generate_expr_with_parens(left, l_prec),
+                };
                 let r = self.generate_expr_with_parens(right, r_prec);
                 format!("{l} {op} {r}")
             }

@@ -154,7 +154,12 @@ impl fmt::Display for AssignTarget {
                 );
                 write!(f, "{s}")
             }
-            AssignTarget::Index { object, key } => write!(f, "{object}[{key}]"),
+            AssignTarget::Index { object, key } => {
+                match crate::ir::expr::display::private_field_name(key) {
+                    Some(name) => write!(f, "{object}.{name}"),
+                    None => write!(f, "{object}[{key}]"),
+                }
+            }
             AssignTarget::Binding(Binding::ClosureVar { level, slot }) => {
                 write!(f, "{}", crate::ir::Value::closure_var_name(*level, *slot))
             }

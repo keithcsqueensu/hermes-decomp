@@ -32,8 +32,6 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("block_scopes", 96, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),
     ("block_scopes", 98, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),
     ("block_scopes", 99, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),
-    ("class_scopes", 98, "other: v98 class lowering (private fields, static block) is not recovered; the class is read before it is declared"),
-    ("class_scopes", 99, "other: v98 class lowering (private fields, static block) is not recovered; the class is read before it is declared"),
     ("deep_nesting", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
     ("deep_nesting", 99, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
     ("generator_states", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as `tmp3` before it is declared"),
