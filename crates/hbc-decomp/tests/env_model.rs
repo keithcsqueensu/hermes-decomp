@@ -32,6 +32,8 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("block_scopes", 96, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),
     ("block_scopes", 98, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),
     ("block_scopes", 99, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),
+    ("class_super", 98, "other: an explicit `super(a, 1)` lowers to a construct of the parent with new.target, which prints as `new Own(…)`, and hermesc inlines the constructor at `new Own(4)`, which prints a private store outside the class"),
+    ("class_super", 99, "other: an explicit `super(a, 1)` lowers to a construct of the parent with new.target, which prints as `new Own(…)`, and hermesc inlines the constructor at `new Own(4)`, which prints a private store outside the class"),
     ("deep_nesting", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
     ("deep_nesting", 99, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
     ("generator_states", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as `tmp3` before it is declared"),

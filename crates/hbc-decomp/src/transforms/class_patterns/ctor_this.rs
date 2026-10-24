@@ -16,13 +16,19 @@
 // already, and the trailing `return obj` is what a constructor does anyway.
 // The receiver keeps its name as an alias of `this`: an arrow made in the
 // constructor reads it through its slot.
+//
+// A derived class's implicit constructor (`constructor(...args) {
+// super(...args); }`, written by the compiler when the class has fields) gets
+// its receiver from `HermesBuiltin.applyArguments(this, new.target)` instead.
+// Printed as is it reads `this` before `super()` and throws; it is
+// `super(...arguments)` followed by the same alias.
 
 use crate::ir::{AssignTarget, Binding, Constant, Expression, Statement, Value, Visitor};
 
 const DOUBLE_INIT: &str = "Cannot initialize private field twice.";
 
 pub fn restore_constructor_this(mut stmts: Vec<Statement>) -> Vec<Statement> {
-    let Some((at, receiver)) = stmts
+    let Some((at, (receiver, derived))) = stmts
         .iter()
         .enumerate()
         .find_map(|(i, s)| receiver_def(s).map(|b| (i, b)))
@@ -42,6 +48,15 @@ pub fn restore_constructor_this(mut stmts: Vec<Statement>) -> Vec<Statement> {
     }
 
     let mut out: Vec<Statement> = stmts.drain(..=at).collect();
+    if derived {
+        let super_call = Statement::Expr(Expression::Call {
+            callee: Box::new(Expression::Value(Value::Super)),
+            arguments: vec![Expression::Spread(Box::new(Expression::Value(
+                Value::Arguments,
+            )))],
+        });
+        out.insert(at, super_call);
+    }
     let mut rest: Vec<Statement> = stmts;
     // The guard: the branch that throws goes, the other stays in place, and
     // the installs open it: one `X[name] = undefined` per private name, the
@@ -71,8 +86,10 @@ pub fn restore_constructor_this(mut stmts: Vec<Statement>) -> Vec<Statement> {
     out
 }
 
-// `X = Object.create(new.target.prototype)` at the top of the body.
-fn receiver_def(stmt: &Statement) -> Option<Binding> {
+// `X = Object.create(new.target.prototype)` (false) or
+// `X = HermesBuiltin.applyArguments(this, new.target)` (true, derived) at the
+// top of the body.
+fn receiver_def(stmt: &Statement) -> Option<(Binding, bool)> {
     let (binding, value) = match stmt {
         Statement::Assign {
             target: AssignTarget::Binding(b),
@@ -81,7 +98,32 @@ fn receiver_def(stmt: &Statement) -> Option<Binding> {
         Statement::Let { name, value, .. } => (Binding::Variable(name.clone()), value),
         _ => return None,
     };
-    super::analyzer::is_object_create_new_target(value).then_some(binding)
+    if super::analyzer::is_object_create_new_target(value) {
+        return Some((binding, false));
+    }
+    is_super_forwarding(value).then_some((binding, true))
+}
+
+// `HermesBuiltin.applyArguments([r,] this, new.target)`.
+fn is_super_forwarding(value: &Expression) -> bool {
+    let Expression::Call { callee, arguments } = value else {
+        return false;
+    };
+    let Expression::Member {
+        object, property, ..
+    } = callee.as_ref()
+    else {
+        return false;
+    };
+    matches!(property, crate::ir::PropertyKey::Ident(p) if p == "applyArguments")
+        && matches!(object.to_string().as_str(), "HermesBuiltin" | "globalThis.HermesBuiltin")
+        // A leading argument, the receiver CreateThisForSuper made, is still
+        // there at this point; a later pass drops it.
+        && matches!(
+            arguments.as_slice(),
+            [.., Expression::Value(Value::This), Expression::Value(Value::NewTarget)]
+                if arguments.len() <= 3
+        )
 }
 
 fn is_binding(expr: &Expression, binding: &Binding) -> bool {
@@ -236,6 +278,41 @@ mod tests {
         let out = restore_constructor_this(body);
         let text: Vec<String> = out.iter().map(|s| s.to_string()).collect();
         assert_eq!(text, vec!["const obj = this;", "obj.#f = x;"]);
+    }
+
+    #[test]
+    fn a_derived_implicit_constructor_calls_super_first() {
+        let forward = Expression::Call {
+            callee: Box::new(Expression::member(var("HermesBuiltin"), "applyArguments")),
+            arguments: vec![
+                Expression::Value(Value::This),
+                Expression::Value(Value::NewTarget),
+            ],
+        };
+        let body = vec![
+            Statement::Let {
+                name: "r".into(),
+                value: forward,
+                kind: crate::ir::VarKind::Const,
+            },
+            Statement::Assign {
+                target: AssignTarget::Member {
+                    object: var("r"),
+                    property: "tag".into(),
+                },
+                value: var("x"),
+            },
+            Statement::Return(Some(var("r"))),
+        ];
+        let out = restore_constructor_this(body);
+        assert!(
+            matches!(&out[0], Statement::Expr(Expression::Call { callee, arguments })
+            if matches!(callee.as_ref(), Expression::Value(Value::Super))
+                && matches!(arguments.as_slice(), [Expression::Spread(a)]
+                    if matches!(a.as_ref(), Expression::Value(Value::Arguments))))
+        );
+        let text: Vec<String> = out[1..].iter().map(|s| s.to_string()).collect();
+        assert_eq!(text, vec!["const r = this;", "r.tag = x;"]);
     }
 
     #[test]
