@@ -934,6 +934,21 @@ fn collect_function_refs(stmts: &[crate::ir::Statement], out: &mut Vec<u32>) {
             }
             self.walk_expression(e);
         }
+        // The visitor leaves method bodies alone, but a class renders its
+        // methods' functions and whatever they create inline. Unrecorded, the
+        // parent was never re-rendered once those bodies landed, and kept
+        // `/* body not rendered */` for an arrow made in a constructor.
+        fn visit_statement(&mut self, s: &'b crate::ir::Statement) {
+            if let crate::ir::Statement::Class { methods, .. } = s {
+                for method in methods {
+                    self.visit_expression(&method.value);
+                    for st in method.body.iter().flatten() {
+                        self.visit_statement(st);
+                    }
+                }
+            }
+            self.walk_statement(s);
+        }
     }
     let mut c = C(out);
     for s in stmts {
