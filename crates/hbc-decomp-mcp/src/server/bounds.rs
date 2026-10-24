@@ -3,7 +3,7 @@
 
 // Parse "100-150,200" into inclusive id ranges. Malformed parts are skipped,
 // a reversed range is normalized. Same grammar as the CLI `--modules` flag.
-pub fn parse_id_ranges(spec: Option<&str>) -> Vec<(u32, u32)> {
+pub fn parse_id_ranges(spec: Option<&str>) -> Vec<(u64, u64)> {
     let spec = match spec {
         Some(s) => s,
         None => return Vec::new(),
@@ -15,10 +15,10 @@ pub fn parse_id_ranges(spec: Option<&str>) -> Vec<(u32, u32)> {
             continue;
         }
         if let Some((lo, hi)) = part.split_once('-') {
-            if let (Ok(lo), Ok(hi)) = (lo.trim().parse::<u32>(), hi.trim().parse::<u32>()) {
+            if let (Ok(lo), Ok(hi)) = (lo.trim().parse::<u64>(), hi.trim().parse::<u64>()) {
                 ranges.push((lo.min(hi), lo.max(hi)));
             }
-        } else if let Ok(n) = part.parse::<u32>() {
+        } else if let Ok(n) = part.parse::<u64>() {
             ranges.push((n, n));
         }
     }

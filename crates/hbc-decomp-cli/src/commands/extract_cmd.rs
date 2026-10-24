@@ -43,34 +43,37 @@ pub fn run_extract(
     println!("Found {} modules.", ctx.registry.modules.len());
 
     let mut modules: Vec<_> = ctx.registry.modules.values().cloned().collect();
-    modules.sort_by_key(|m| m.module_id);
+    modules.sort_by_key(|m| ctx.registry.display_id(m.module_id));
 
     for module in &modules {
+        let shown_id = ctx.registry.display_id(module.module_id);
+        let shown_deps: Vec<u64> = module
+            .dependencies
+            .iter()
+            .map(|&d| ctx.registry.display_id(d))
+            .collect();
         // Prefix with the module ID so distinct modules that share an inferred
         // name (common in large bundles) never overwrite each other.
         let filename = if let Some(name) = &module.name {
             let safe_name = name.replace(['/', '\\'], "_");
-            format!("{}_{safe_name}.js", module.module_id)
+            format!("{shown_id}_{safe_name}.js")
         } else {
-            format!("module_{}.js", module.module_id)
+            format!("module_{shown_id}.js")
         };
         let path = output_dir.join(filename);
 
-        print!(
-            "Extracting module {} (F{})... ",
-            module.module_id, module.function_id
-        );
+        print!("Extracting module {shown_id} (F{})... ", module.function_id);
 
         let code = ctx.generate_function_code(file, module.function_id);
 
         // Add header
         let mut content = String::new();
-        content.push_str(&format!("// Module ID: {}\n", module.module_id));
+        content.push_str(&format!("// Module ID: {shown_id}\n"));
         content.push_str(&format!("// Function ID: {}\n", module.function_id));
         if let Some(name) = &module.name {
             content.push_str(&format!("// Name: {name}\n"));
         }
-        content.push_str(&format!("// Dependencies: {:?}\n", module.dependencies));
+        content.push_str(&format!("// Dependencies: {shown_deps:?}\n"));
         if !module.exports.is_empty() {
             let mut names: Vec<_> = module.exports.keys().cloned().collect();
             names.sort();
@@ -111,7 +114,7 @@ pub fn print_modules(
     println!("Total modules: {}\n", registry.modules.len());
 
     let mut modules: Vec<_> = registry.modules.values().collect();
-    modules.sort_by_key(|m| m.module_id);
+    modules.sort_by_key(|m| registry.display_id(m.module_id));
 
     let display_count = limit.unwrap_or(modules.len()).min(modules.len());
 
@@ -129,7 +132,7 @@ pub fn print_modules(
                 module
                     .dependencies
                     .iter()
-                    .map(|d| d.to_string())
+                    .map(|&d| registry.display_id(d).to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -141,7 +144,11 @@ pub fn print_modules(
         };
         println!(
             "Module {} (F{}){}{}{}",
-            module.module_id, module.function_id, name_str, deps_str, exports_str
+            registry.display_id(module.module_id),
+            module.function_id,
+            name_str,
+            deps_str,
+            exports_str
         );
     }
 
@@ -157,7 +164,8 @@ pub fn print_module_deps(
     format: &hbc_decomp::BytecodeFormat,
     bytes: &[u8],
     cache_path: &Path,
-    module_id: u32,
+    // As the bundle registered it, which may be wider than a u32.
+    shown_id: u64,
     depth: usize,
     json: bool,
 ) -> Result<(), Box<dyn Error>> {
@@ -166,15 +174,16 @@ pub fn print_module_deps(
     let registry = &ctx.registry;
 
     if json {
-        let doc = deps_json(registry, module_id, depth)?;
+        let doc = deps_json(registry, shown_id, depth)?;
         println!("{}", serde_json::to_string_pretty(&doc)?);
         return Ok(());
     }
 
-    println!("=== Module {module_id} dependencies ===\n");
+    println!("=== Module {shown_id} dependencies ===\n");
 
-    if let Some(module) = registry.get_module(module_id) {
-        println!("Module ID: {}", module.module_id);
+    let filed = registry.filed_id(shown_id);
+    if let Some((module_id, module)) = filed.and_then(|id| Some((id, registry.get_module(id)?))) {
+        println!("Module ID: {shown_id}");
         println!("Function ID: F{}", module.function_id);
         if let Some(name) = &module.name {
             println!("Name: {name}");
@@ -185,7 +194,7 @@ pub fn print_module_deps(
                 .get_module(dep_id)
                 .map(|m| format!(" -> F{}", m.function_id))
                 .unwrap_or_default();
-            println!("  Module {dep_id}{dep_info}");
+            println!("  Module {}{dep_info}", registry.display_id(dep_id));
         }
 
         println!("\nDependency tree (depth {depth}):");
@@ -202,14 +211,14 @@ pub fn print_module_deps(
                     .get_module(*dep_id)
                     .map(|m| format!(" (F{})", m.function_id))
                     .unwrap_or_default();
-                println!("  Module {dep_id}{dep_info}");
+                println!("  Module {}{dep_info}", registry.display_id(*dep_id));
             }
             if dependents.len() > 20 {
                 println!("  ... and {} more", dependents.len() - 20);
             }
         }
     } else {
-        println!("Module {module_id} not found in registry.");
+        println!("Module {shown_id} not found in registry.");
         println!("\nRegistry contains {} modules.", registry.modules.len());
         println!("\nTip: Use 'hermes-dec modules <file>' to list all modules.");
     }
@@ -220,17 +229,23 @@ pub fn print_module_deps(
 // The module listing as a JSON document: the first `limit` modules in id order
 // plus the total count, each with its dependencies and export map.
 pub fn modules_json(registry: &MetroRegistry, limit: Option<usize>) -> Value {
-    let modules: Vec<Value> = registry
-        .modules
-        .values()
+    let mut sorted: Vec<_> = registry.modules.values().collect();
+    sorted.sort_by_key(|m| registry.display_id(m.module_id));
+    let modules: Vec<Value> = sorted
+        .into_iter()
         .take(limit.unwrap_or(usize::MAX))
         .map(|m| {
             let exports: BTreeMap<&String, &u32> = m.exports.iter().collect();
+            let dependencies: Vec<u64> = m
+                .dependencies
+                .iter()
+                .map(|&d| registry.display_id(d))
+                .collect();
             json!({
-                "module_id": m.module_id,
+                "module_id": registry.display_id(m.module_id),
                 "function_id": m.function_id,
                 "name": m.name,
-                "dependencies": m.dependencies,
+                "dependencies": dependencies,
                 "exports": exports,
             })
         })
@@ -251,16 +266,19 @@ fn tree_json(tree: &DependencyTree) -> Value {
 // An unknown module is an error here: a machine consumer needs a clear failure.
 pub fn deps_json(
     registry: &MetroRegistry,
-    module_id: u32,
+    shown_id: u64,
     depth: usize,
 ) -> Result<Value, Box<dyn Error>> {
-    let module = registry.get_module(module_id).ok_or_else(|| {
+    let found = registry
+        .filed_id(shown_id)
+        .and_then(|id| Some((id, registry.get_module(id)?)));
+    let (module_id, module) = found.ok_or_else(|| {
         format!(
-            "module {module_id} not found in registry ({} modules)",
+            "module {shown_id} not found in registry ({} modules)",
             registry.modules.len()
         )
     })?;
-    let with_function = |id: u32| json!({ "module_id": id, "function_id": registry.get_module(id).map(|m| m.function_id) });
+    let with_function = |id: u32| json!({ "module_id": registry.display_id(id), "function_id": registry.get_module(id).map(|m| m.function_id) });
     let dependencies: Vec<Value> = module
         .dependencies
         .iter()
@@ -272,7 +290,7 @@ pub fn deps_json(
         .map(with_function)
         .collect();
     Ok(json!({
-        "module_id": module.module_id,
+        "module_id": shown_id,
         "function_id": module.function_id,
         "name": module.name,
         "dependencies": dependencies,

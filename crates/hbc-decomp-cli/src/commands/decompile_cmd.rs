@@ -228,7 +228,8 @@ pub fn select_json_functions(
 struct FunctionJson<'a> {
     id: u32,
     name: Option<String>,
-    module: Option<u32>,
+    // As the bundle registered it.
+    module: Option<u64>,
     body: &'a [Statement],
 }
 
@@ -251,7 +252,7 @@ pub fn write_ir_json<W: Write>(
         let row = FunctionJson {
             id,
             name: function_name(file, id),
-            module,
+            module: module.map(|m| ctx.registry.display_id(m)),
             body,
         };
         serde_json::to_writer(&mut *w, &row)?;

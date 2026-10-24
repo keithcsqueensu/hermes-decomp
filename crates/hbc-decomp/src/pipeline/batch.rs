@@ -11,14 +11,15 @@ use super::{build_function_name_index, generate_ir, DecompileOptionsV2, Pipeline
 // `decompile --modules/--module-name/--from-module ...` CLI flags.
 #[derive(Debug, Clone, Default)]
 pub struct ModuleFilter {
-    // Inclusive module-id ranges from `--modules` (e.g. `100-150,200`).
-    pub id_ranges: Vec<(u32, u32)>,
+    // Inclusive module-id ranges from `--modules` (e.g. `100-150,200`), in the
+    // ids the bundle registered, which may be wider than a u32.
+    pub id_ranges: Vec<(u64, u64)>,
     // Name globs from `--module-name` (e.g. `Login*`). `*` is a wildcard.
     pub name_globs: Vec<String>,
     // Name globs from `--exclude-module-name` (e.g. `react*,lodash*`).
     pub exclude_globs: Vec<String>,
-    // Dependency-subtree root from `--from-module`.
-    pub from: Option<u32>,
+    // Dependency-subtree root from `--from-module`, as registered.
+    pub from: Option<u64>,
     // Max depth for the `--from-module` subtree (0 = the root only).
     pub depth: usize,
 }
@@ -47,7 +48,12 @@ impl ModuleFilter {
         let mut included: HashSet<u32> = HashSet::new();
         if self.has_include() {
             for &m in registry.modules.keys() {
-                if self.id_ranges.iter().any(|&(lo, hi)| m >= lo && m <= hi) {
+                let shown = registry.display_id(m);
+                if self
+                    .id_ranges
+                    .iter()
+                    .any(|&(lo, hi)| shown >= lo && shown <= hi)
+                {
                     included.insert(m);
                 }
                 if self
@@ -58,7 +64,7 @@ impl ModuleFilter {
                     included.insert(m);
                 }
             }
-            if let Some(root) = self.from {
+            if let Some(root) = self.from.and_then(|id| registry.filed_id(id)) {
                 collect_dependency_subtree(registry, root, self.depth, &mut included);
             }
         } else {
@@ -436,6 +442,42 @@ mod tests {
         assert!(f.id_ranges.iter().any(|&(lo, hi)| 6 >= lo && 6 <= hi));
         assert!(f.id_ranges.iter().any(|&(lo, hi)| 100 >= lo && 100 <= hi));
         assert!(!f.id_ranges.iter().any(|&(lo, hi)| 8 >= lo && 8 <= hi));
+    }
+
+    #[test]
+    fn filters_select_modules_by_the_id_the_bundle_registered() {
+        let mut registry = MetroRegistry::new();
+        for (func, id) in [(10, 7u64), (11, 4_739_766_416)] {
+            let filed = registry.intern_module_id(id);
+            registry.modules.insert(
+                filed,
+                crate::analysis::MetroModule {
+                    module_id: filed,
+                    function_id: func,
+                    name: None,
+                    dependencies: vec![],
+                    exports: Default::default(),
+                    roles: Default::default(),
+                    name_from_default_export: false,
+                },
+            );
+        }
+        let wide = registry.filed_id(4_739_766_416).unwrap();
+        let by_range = ModuleFilter {
+            id_ranges: vec![(4_739_766_416, 4_739_766_416)],
+            ..Default::default()
+        };
+        assert_eq!(by_range.resolve(&registry), HashSet::from([wide]));
+        let by_root = ModuleFilter {
+            from: Some(4_739_766_416),
+            ..Default::default()
+        };
+        assert_eq!(by_root.resolve(&registry), HashSet::from([wide]));
+        let small = ModuleFilter {
+            id_ranges: vec![(0, 100)],
+            ..Default::default()
+        };
+        assert_eq!(small.resolve(&registry), HashSet::from([7]));
     }
 
     #[test]

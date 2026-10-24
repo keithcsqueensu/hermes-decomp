@@ -3,7 +3,8 @@ use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
 pub struct DependencyTree {
-    pub module_id: u32,
+    // As the bundle registered it (`MetroRegistry::display_id`).
+    pub module_id: u64,
     pub function_id: Option<u32>,
     pub name: Option<String>,
     pub children: Vec<DependencyTree>,
@@ -56,7 +57,7 @@ impl DependencyGraph {
         visited: &mut HashSet<u32>,
     ) -> DependencyTree {
         let mut tree = DependencyTree {
-            module_id,
+            module_id: registry.display_id(module_id),
             function_id: registry.modules.get(&module_id).map(|m| m.function_id),
             name: registry
                 .modules

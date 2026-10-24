@@ -31,7 +31,7 @@ pub struct DecompileAllParams {
     )]
     pub exclude_module_name: Option<String>,
     #[schemars(description = "Emit only the dependency subtree rooted at this Metro module id")]
-    pub from_module: Option<u32>,
+    pub from_module: Option<u64>,
     #[schemars(
         description = "Max depth of the from_module subtree, 0 is the root only (default: 3)"
     )]
@@ -121,7 +121,7 @@ fn default_string() -> String {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ModuleDepsParams {
     #[schemars(description = "Metro module ID")]
-    pub module_id: u32,
+    pub module_id: u64,
     #[schemars(description = "Dependency tree depth (default: 2)")]
     #[serde(default = "default_depth")]
     pub depth: usize,
@@ -253,11 +253,11 @@ pub struct CallgraphParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DecompileModuleParams {
     #[schemars(description = "Metro module ID")]
-    pub module_id: u32,
+    pub module_id: u64,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ModuleExportsParams {
     #[schemars(description = "Metro module ID")]
-    pub module_id: u32,
+    pub module_id: u64,
 }

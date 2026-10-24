@@ -144,7 +144,7 @@ pub enum Command {
         exclude_module_name: Option<String>,
         /// Emit a module and its dependency subtree (use with --module-depth).
         #[arg(long)]
-        from_module: Option<u32>,
+        from_module: Option<u64>,
         /// Max dependency depth for --from-module.
         #[arg(long, default_value = "3")]
         module_depth: usize,
@@ -176,7 +176,7 @@ pub enum Command {
         input: PathBuf,
         /// Metro module ID (not the function ID).
         #[arg(long)]
-        module: u32,
+        module: u64,
         #[command(flatten)]
         format: FormatArgs,
         /// Dependency-tree depth to display.

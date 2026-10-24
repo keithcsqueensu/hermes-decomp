@@ -5,7 +5,8 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ModuleRow {
-    pub module_id: u32,
+    // As the bundle registered it, which may be wider than a u32.
+    pub module_id: u64,
     pub function_id: u32,
     pub name: String,
     pub export_count: usize,
@@ -20,26 +21,25 @@ pub struct ModulesState {
     pub scroll: usize,
     pub query: String,
     /// Lazy cache of decompiled module source.
-    pub cache: HashMap<u32, String>,
+    pub cache: HashMap<u64, String>,
 }
 
 impl ModulesState {
     pub fn rebuild_from(&mut self, ctx: &PipelineContext) {
-        let mut rows: Vec<ModuleRow> = ctx
-            .registry
-            .modules
-            .values()
-            .map(|m| ModuleRow {
-                module_id: m.module_id,
-                function_id: m.function_id,
-                name: m
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("module_{}", m.module_id)),
-                export_count: m.exports.len(),
-                dep_count: m.dependencies.len(),
-            })
-            .collect();
+        let mut rows: Vec<ModuleRow> =
+            ctx.registry
+                .modules
+                .values()
+                .map(|m| ModuleRow {
+                    module_id: ctx.registry.display_id(m.module_id),
+                    function_id: m.function_id,
+                    name: m.name.clone().unwrap_or_else(|| {
+                        format!("module_{}", ctx.registry.display_id(m.module_id))
+                    }),
+                    export_count: m.exports.len(),
+                    dep_count: m.dependencies.len(),
+                })
+                .collect();
         rows.sort_by_key(|r| r.module_id);
         self.rows = rows;
         self.query.clear();

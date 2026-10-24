@@ -302,7 +302,7 @@ impl HermesService {
             loaded.ensure_pipeline(false)?;
             let registry = &loaded.pipeline_ctx.as_ref().unwrap().registry;
             let mut modules: Vec<_> = registry.modules.values().collect();
-            modules.sort_by_key(|m| m.module_id);
+            modules.sort_by_key(|m| registry.display_id(m.module_id));
             let limit = params.limit.unwrap_or(modules.len()).min(modules.len());
 
             let mut output = format!("Found {} Metro modules:\n", modules.len());
@@ -313,9 +313,18 @@ impl HermesService {
                     .map(|n| format!(" - {n}"))
                     .unwrap_or_default();
                 let export_count = m.exports.len();
+                let deps: Vec<u64> = m
+                    .dependencies
+                    .iter()
+                    .map(|&d| registry.display_id(d))
+                    .collect();
                 output.push_str(&format!(
                     "  Module {} (F{}){} deps: {:?} exports: {}\n",
-                    m.module_id, m.function_id, name_str, m.dependencies, export_count
+                    registry.display_id(m.module_id),
+                    m.function_id,
+                    name_str,
+                    deps,
+                    export_count
                 ));
             }
             text_result(output)
@@ -331,7 +340,10 @@ impl HermesService {
             // Full pipeline so the tree carries real module names.
             loaded.ensure_pipeline(false)?;
             let registry = &loaded.pipeline_ctx.as_ref().unwrap().registry;
-            let tree = registry.get_dependency_tree(params.module_id, params.depth);
+            let module_id = registry.filed_id(params.module_id).ok_or_else(|| {
+                McpError::invalid_params(format!("Module {} not found", params.module_id), None)
+            })?;
+            let tree = registry.get_dependency_tree(module_id, params.depth);
             text_result(tree.format(0))
         })
     }
@@ -670,8 +682,8 @@ impl HermesService {
             let pipeline = loaded.pipeline_ctx.as_ref().unwrap();
             let module = pipeline
                 .registry
-                .modules
-                .get(&params.module_id)
+                .filed_id(params.module_id)
+                .and_then(|id| pipeline.registry.modules.get(&id))
                 .ok_or_else(|| {
                     McpError::invalid_params(format!("Module {} not found", params.module_id), None)
                 })?;
@@ -693,8 +705,8 @@ impl HermesService {
             let pipeline = loaded.pipeline_ctx.as_ref().unwrap();
             let module = pipeline
                 .registry
-                .modules
-                .get(&params.module_id)
+                .filed_id(params.module_id)
+                .and_then(|id| pipeline.registry.modules.get(&id))
                 .ok_or_else(|| {
                     McpError::invalid_params(format!("Module {} not found", params.module_id), None)
                 })?;

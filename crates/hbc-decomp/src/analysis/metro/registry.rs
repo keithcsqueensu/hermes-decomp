@@ -311,6 +311,15 @@ impl MetroRegistry {
         synthetic
     }
 
+    // The id a module the bundle registered as `id` is filed under, for an id
+    // typed by a user (`--modules`, `deps --module`).
+    pub fn filed_id(&self, id: u64) -> Option<u32> {
+        if let Some(&synthetic) = self.wide_lookup.get(&id) {
+            return Some(synthetic);
+        }
+        u32::try_from(id).ok().filter(|&small| small < WIDE_ID_BASE)
+    }
+
     // The id the bundle registered a module under, for printing.
     pub fn display_id(&self, module_id: u32) -> u64 {
         self.wide_ids
