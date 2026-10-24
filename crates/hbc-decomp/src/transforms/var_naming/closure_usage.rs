@@ -185,6 +185,13 @@ pub(super) fn is_usable_object_key(k: &str) -> bool {
     if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$') {
         return false;
     }
+    // A reserved word prints with a leading underscore, so `return` would land
+    // on a local already called `_return` without either name check seeing it:
+    // React's `child.return = nextEffect` named the shared `nextEffect` slot
+    // that way, and the body then declared its own `let _return`.
+    if crate::constants::is_reserved_word(k) {
+        return false;
+    }
     // JS object machinery and positional guesses are not domain names.
     !matches!(
         k,
