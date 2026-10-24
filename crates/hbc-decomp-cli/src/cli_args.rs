@@ -344,7 +344,7 @@ pub enum Command {
         input: PathBuf,
         /// Metro module id to hook.
         #[arg(long)]
-        module: u32,
+        module: u64,
         /// Comma-separated export names (default: all known exports).
         #[arg(long)]
         export: Option<String>,

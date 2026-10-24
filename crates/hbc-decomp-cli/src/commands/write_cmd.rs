@@ -70,7 +70,7 @@ pub fn run_secrets(
 pub fn run_frida_hooks(
     input: &PathBuf,
     args: &FormatArgs,
-    module_id: u32,
+    module_id: u64,
     export: Option<String>,
     out_dir: PathBuf,
 ) -> Result<(), BoxErr> {

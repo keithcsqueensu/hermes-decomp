@@ -220,7 +220,7 @@ pub struct CreateHbcParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct FridaHooksParams {
     #[schemars(description = "Metro module id whose exports to hook")]
-    pub module_id: u32,
+    pub module_id: u64,
     #[schemars(description = "Comma separated export names to hook. Default is all known exports")]
     pub exports: Option<String>,
     #[schemars(description = "Output directory for before.js / after.js / agent.js / run.sh")]

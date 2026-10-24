@@ -18,7 +18,9 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct FridaHookOptions {
-    pub module_id: u32,
+    /// As the bundle registered it: the id the Metro runtime knows the module
+    /// by, which a worklet module's hash makes wider than a u32.
+    pub module_id: u64,
     /// Export names to wrap. Empty = all known exports from the registry.
     pub exports: Vec<String>,
     pub on_access: bool,
@@ -51,7 +53,7 @@ pub struct FridaBundle {
     pub after_js: String,
     pub agent_js: String,
     pub run_sh: String,
-    pub module_id: u32,
+    pub module_id: u64,
     pub exports: Vec<String>,
 }
 
@@ -87,10 +89,10 @@ pub fn build_metro_registry(file: &BytecodeFile, format: &BytecodeFormat) -> Res
 }
 
 // Resolve export list for a module.
-pub fn resolve_exports(registry: &MetroRegistry, module_id: u32) -> Result<Vec<String>> {
+pub fn resolve_exports(registry: &MetroRegistry, module_id: u64) -> Result<Vec<String>> {
     let m = registry
-        .modules
-        .get(&module_id)
+        .filed_id(module_id)
+        .and_then(|id| registry.modules.get(&id))
         .ok_or_else(|| Error::Write(format!("metro module {module_id} not found")))?;
     let mut names: Vec<String> = m.exports.keys().cloned().collect();
     names.sort();
@@ -409,5 +411,30 @@ mod tests {
         assert!(bundle.before_js.contains("MODULE_ID = 42"));
         assert!(bundle.before_js.contains("API_BASE"));
         assert!(bundle.run_sh.contains("frida"));
+    }
+
+    #[test]
+    fn a_worklet_module_is_hooked_by_its_hash() {
+        let mut registry = MetroRegistry::new();
+        let filed = registry.intern_module_id(4_739_766_416);
+        registry.modules.insert(
+            filed,
+            crate::analysis::MetroModule {
+                module_id: filed,
+                function_id: 11977,
+                name: None,
+                dependencies: vec![],
+                exports: [("default".to_string(), 63042)].into_iter().collect(),
+                roles: Default::default(),
+                name_from_default_export: false,
+            },
+        );
+        let opts = FridaHookOptions {
+            module_id: 4_739_766_416,
+            ..FridaHookOptions::default()
+        };
+        let bundle = generate_frida_hooks(&registry, opts).unwrap();
+        assert_eq!(bundle.exports, vec!["default".to_string()]);
+        assert!(bundle.before_js.contains("MODULE_ID = 4739766416"));
     }
 }
