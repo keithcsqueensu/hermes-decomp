@@ -845,6 +845,11 @@ impl PipelineContext {
             *stmts = transforms::fold_array_literals(old);
         }
 
+        // Spread calls the register-level pass could not see (W16).
+        for stmts in all_ir.values_mut() {
+            transforms::fold_named_spreads(stmts);
+        }
+
         // Simplify Babel arguments-to-array copy pattern
         for stmts in all_ir.values_mut() {
             let old = std::mem::take(stmts);

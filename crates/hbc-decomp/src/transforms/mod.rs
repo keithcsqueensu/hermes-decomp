@@ -67,7 +67,7 @@ pub use patterns::{
 };
 pub use propagate::{propagate, propagate_copies, resolve_global_reads, PropagationConfig};
 pub use simplify::{simplify_expr, simplify_statements, simplify_stmt};
-pub use spread_rest::transform_spread_rest;
+pub use spread_rest::{fold_named_spreads, transform_spread_rest};
 pub use ssa::transform_to_ssa;
 pub use ternary_returns::optimize_ternary_returns;
 pub use var_kind::promote_const_bindings;

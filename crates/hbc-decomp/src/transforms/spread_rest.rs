@@ -1,6 +1,9 @@
 use crate::ir::{AssignTarget, Binding, Expression, PropertyKey, Statement, Value};
 
 mod apply;
+mod named;
+
+pub use named::fold_named_spreads;
 
 // Reconstruct spread syntax from the Hermes spread/apply protocol.
 //
@@ -77,6 +80,13 @@ fn fold_array_spreads(stmts: &mut Vec<Statement>) {
         while j < stmts.len() {
             if let Some(src) = arr_spread_into(&stmts[j], &aliases) {
                 elements.push(Some(Expression::Spread(Box::new(src))));
+                saw_spread = true;
+                remove.push(j);
+            } else if let Some((src, val)) = put_at_spread_end(&stmts[j], &aliases) {
+                // `t[arraySpread(t, src, k)] = v`: the store after the spread
+                // indexed by its return, folded into one statement.
+                elements.push(Some(Expression::Spread(Box::new(src))));
+                elements.push(Some(val));
                 saw_spread = true;
                 remove.push(j);
             } else if let Some(val) = put_into_array(&stmts[j], &aliases) {
@@ -207,6 +217,27 @@ fn put_into_array(stmt: &Statement, arrs: &std::collections::HashSet<u32>) -> Op
         }
     }
     None
+}
+
+// `arr[HermesBuiltin.arraySpread(arr, src, _)] = val` -> Some((src, val)): the
+// element after a spread, stored at the index the spread returns
+// (`[0, ...s, 5]`).
+fn put_at_spread_end(
+    stmt: &Statement,
+    arrs: &std::collections::HashSet<u32>,
+) -> Option<(Expression, Expression)> {
+    let Statement::Assign {
+        target: AssignTarget::Index { object, key },
+        value,
+    } = stmt
+    else {
+        return None;
+    };
+    if !reg_in(&Some(object), arrs) {
+        return None;
+    }
+    let src = arr_spread_into(&Statement::Expr(key.clone()), arrs)?;
+    Some((src, value.clone()))
 }
 
 // A pure register assignment that does not reference the array, safe to step

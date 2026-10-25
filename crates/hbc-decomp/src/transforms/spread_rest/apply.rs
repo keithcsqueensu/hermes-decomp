@@ -74,19 +74,36 @@ fn apply_to_call(value: &Expression, before: &[Statement]) -> Option<Expression>
         )))
     );
 
+    // This runs before `strip_hermes_this` (W12), which takes argument 0 of
+    // every call for its receiver: each call built here carries one. Without
+    // it `f(1, 2, ...s)` printed as `f(2, ...s)`, and `o.m.apply(o, args)` as
+    // `o.m.apply(args)`.
     if this_is_undefined {
         // f(...elements)
-        Some(Expression::Call {
+        let mut arguments = vec![Expression::Value(Value::Constant(
+            crate::ir::Constant::Undefined,
+        ))];
+        arguments.extend(elements);
+        return Some(Expression::Call {
             callee: Box::new(func),
-            arguments: elements,
-        })
-    } else {
-        // f.apply(thisArg, argsArray)
-        Some(Expression::Call {
-            callee: Box::new(Expression::member(func, "apply")),
-            arguments: vec![this_arg.unwrap(), args_array],
-        })
+            arguments,
+        });
     }
+    let this_arg = this_arg.unwrap();
+    // `o.m` applied to `o` is the method call `o.m(...elements)`.
+    if matches!(&func, Expression::Member { object, .. } if **object == this_arg) {
+        let mut arguments = vec![this_arg];
+        arguments.extend(elements);
+        return Some(Expression::Call {
+            callee: Box::new(func),
+            arguments,
+        });
+    }
+    // f.apply(thisArg, argsArray)
+    Some(Expression::Call {
+        callee: Box::new(Expression::member(func.clone(), "apply")),
+        arguments: vec![func, this_arg, args_array],
+    })
 }
 
 // Resolve an expression to array elements: an inline Array literal, or a
