@@ -48,15 +48,50 @@ pub fn analyze(cfg: &CFG) -> (Structure, Vec<LoopInfo>) {
         try_starts.insert(handler.try_block_start, *handler);
     }
 
+    let mut emitted = HashSet::new();
     let mut ctx = RecoveryCtx {
         cfg,
         loops: &loops,
         visited: &mut visited,
+        emitted: &mut emitted,
         try_starts: &try_starts,
     };
 
     let root = recover_structure(&mut ctx, cfg.entry, &loop_stack);
     (root, loops)
+}
+
+// A `return` or `throw` tail (a block, or a straight run of jumps ending in
+// one) reached again after it was emitted on another path: structured code
+// cannot jump to it, so it is emitted again. Left
+// empty, the branch that led here lost its condition with it: a v98
+// generator's resume test `i < n ? yield : return "end"` had both targets
+// emitted already and printed as nothing at all. A block only marked visited
+// (a merge point or loop exit held back to follow its region) is not.
+fn reemit_exit(ctx: &RecoveryCtx<'_>, block_id: BlockId) -> Option<Structure> {
+    if !ctx.emitted.contains(&block_id) {
+        return None;
+    }
+    let mut all = Vec::new();
+    let mut at = block_id;
+    let mut seen = HashSet::new();
+    loop {
+        if !seen.insert(at) || seen.len() > 16 {
+            return None;
+        }
+        let block = ctx.cfg.get(at)?;
+        all.extend(block.statements.iter().cloned());
+        match &block.terminator {
+            Terminator::Return(e) => all.push(Statement::Return(e.clone())),
+            Terminator::Throw(e) => all.push(Statement::Throw(e.clone())),
+            Terminator::Jump(next) => {
+                at = *next;
+                continue;
+            }
+            _ => return None,
+        }
+        return Some(Structure::Block(block_id, all));
+    }
 }
 
 pub(super) fn recover_structure(
@@ -84,7 +119,7 @@ pub(super) fn recover_structure(
                 return Structure::Break(label);
             }
         }
-        return Structure::Block(block_id, vec![]);
+        return reemit_exit(ctx, block_id).unwrap_or(Structure::Block(block_id, vec![]));
     }
 
     if let Some(handler) = ctx.try_starts.get(&block_id) {
@@ -166,7 +201,7 @@ pub(super) fn recover_structure_inner(
                 return Structure::Break(label);
             }
         }
-        return Structure::Block(block_id, vec![]);
+        return reemit_exit(ctx, block_id).unwrap_or(Structure::Block(block_id, vec![]));
     }
 
     // Check if this is a loop header
@@ -178,6 +213,7 @@ pub(super) fn recover_structure_inner(
     }
 
     ctx.visited.insert(block_id);
+    ctx.emitted.insert(block_id);
 
     let block = match ctx.cfg.get(block_id) {
         Some(b) => b,

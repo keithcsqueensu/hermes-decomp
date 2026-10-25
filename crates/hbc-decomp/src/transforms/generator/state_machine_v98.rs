@@ -48,6 +48,12 @@ pub fn try_reconstruct_generator_v98(body: &[Statement]) -> Option<Vec<Statement
     try_reconstruct(body)
 }
 
+// `body` is an HBC >= 97 generator state machine: it dispatches on a label
+// slot. A v96 generator has real `yield`s and no dispatch.
+pub fn is_generator_state_machine_v98(body: &[Statement]) -> bool {
+    find_label_dispatch(body).is_some()
+}
+
 // A parsed state-machine case: the value the case resumes with (`x = <resume>`),
 // the real code before the suspend point, the yielded/returned value and whether
 // this is the terminal (done) case.
@@ -154,7 +160,7 @@ fn try_reconstruct(body: &[Statement]) -> Option<Vec<Statement>> {
 // `x-refresh-token` included, exactly this way. Anything else now bails, which
 // leaves the raw machine in place: unreadable, but complete.
 fn is_catch_label(body: &[Statement]) -> bool {
-    let real = strip_arg_protocol(body);
+    let (_, real) = strip_arg_protocol(body);
     !real.is_empty() && real.iter().all(only_exits)
 }
 
@@ -250,20 +256,27 @@ fn parse_case(
     case_body: &[Statement],
     state_vars: &std::collections::HashSet<String>,
 ) -> Option<ParsedCase> {
-    let real = strip_arg_protocol(case_body);
+    let (lead, real) = strip_arg_protocol(case_body);
 
     // A leading `x = <resume param>` binds the value the generator was resumed
-    // with (the result of the previous yield / await).
+    // with (the result of the previous yield / await). Copies a cleanup has
+    // not inlined yet can stand in front of it (`tmp2 = closure_1`).
     let mut resume_binding = None;
     let mut idx = 0;
-    if let Some(Statement::Assign { target, value }) = real.first() {
+    let copies = real.iter().take_while(|s| is_plain_copy(s)).count();
+    if let Some(Statement::Assign { target, value }) = real.get(copies) {
         if is_resume_param(value) {
             resume_binding = Some(target.clone());
-            idx = 1;
+            idx = copies + 1;
         }
     }
 
-    let mut pre = Vec::new();
+    let mut pre: Vec<Statement> = lead
+        .iter()
+        .chain(&real[..idx.saturating_sub(1)])
+        .filter(|s| !is_bookkeeping(s, state_vars))
+        .cloned()
+        .collect();
     let (value, done) = collect_pre_and_yield(&real[idx..], &mut pre, state_vars)?;
     Some(ParsedCase {
         resume_binding,
@@ -640,21 +653,61 @@ fn collect_label_cases(mut s: &Statement) -> Option<Vec<(i32, Vec<Statement>)>> 
 // --- per-case extraction ---
 
 // Navigate past the `if (arg0===1) {throw} else if (arg0===2) {return} else {..}`
-// resume-protocol wrapper to the real (next) branch.
-fn strip_arg_protocol(body: &[Statement]) -> &[Statement] {
-    if body.len() == 1 {
-        if let Statement::If {
-            condition,
-            else_body,
-            ..
-        } = &body[0]
-        {
-            if is_resume_protocol_cond(condition) {
-                return strip_arg_protocol(else_body);
+// resume-protocol wrapper to the real (next) branch. A cleanup that un-nests
+// the branch after an exit can have flattened it into `if (arg0===1) {throw}
+// if (arg0===2) {return} ..`; those leading guards are the same protocol.
+// Left in, they read as the case's own code: `top` in deep_nesting kept the
+// prologue at its head and its resume value as `let closure_4 = arg1` after
+// the await that produced it.
+// Plain copies in front of the protocol (`num9 = 1`, not inlined yet) are
+// returned apart, to be kept as the case's code.
+fn strip_arg_protocol(body: &[Statement]) -> (Vec<Statement>, &[Statement]) {
+    let mut lead = Vec::new();
+    let mut rest = body;
+    loop {
+        match rest {
+            [Statement::If {
+                condition,
+                else_body,
+                ..
+            }] if is_resume_protocol_cond(condition) => rest = else_body,
+            [Statement::If {
+                condition,
+                then_body,
+                else_body,
+            }, tail @ ..]
+                if is_resume_protocol_cond(condition)
+                    && else_body.is_empty()
+                    && matches!(
+                        then_body.last(),
+                        Some(Statement::Throw(_) | Statement::Return(_))
+                    ) =>
+            {
+                rest = tail
             }
+            [first, tail @ ..] if is_plain_copy(first) && tail.iter().any(is_protocol_guard) => {
+                lead.push(first.clone());
+                rest = tail;
+            }
+            _ => return (lead, rest),
         }
     }
-    body
+}
+
+fn is_protocol_guard(s: &Statement) -> bool {
+    matches!(s, Statement::If { condition, .. } if is_resume_protocol_cond(condition))
+}
+
+// `x = <constant | variable>`: a copy with no effect of its own, never the
+// resume value.
+fn is_plain_copy(s: &Statement) -> bool {
+    matches!(
+        s,
+        Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable(_)),
+            value: Expression::Value(Value::Constant(_) | Value::Binding(_)),
+        }
+    )
 }
 
 // `arg0 === 1` or `arg0 === 2` (resume method check; arg0 is Parameter(0)).
@@ -762,6 +815,69 @@ mod tests {
                 else_body: real,
             }],
         }]
+    }
+
+    fn copy(dst: &str, value: Expression) -> Statement {
+        Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable(dst.into())),
+            value,
+        }
+    }
+
+    #[test]
+    fn reads_a_flattened_protocol_behind_uninlined_copies() {
+        // `if (arg0 === 1) {throw}` un-nested from its `else`, a copy in front
+        // of it, and another in front of the resume binding (deep_nesting's
+        // `top`, lifted before its temporaries were inlined).
+        let flat = |real: Vec<Statement>| -> Vec<Statement> {
+            let mut out = vec![
+                copy("num9", int(1)),
+                Statement::If {
+                    condition: eq(param(0), int(1)),
+                    then_body: vec![Statement::Throw(param(1))],
+                    else_body: vec![],
+                },
+                Statement::If {
+                    condition: eq(param(0), int(2)),
+                    then_body: vec![Statement::Return(Some(obj_value_done(param(1), true)))],
+                    else_body: vec![],
+                },
+            ];
+            out.extend(real);
+            out
+        };
+        let yield_case = flat(vec![Statement::Return(Some(obj_value_done(
+            Expression::Call {
+                callee: Box::new(var("fetch")),
+                arguments: vec![],
+            },
+            false,
+        )))]);
+        let done_case = flat(vec![
+            copy("tmp2", var("other")),
+            copy("got", param(1)),
+            Statement::Return(Some(obj_value_done(var("got"), true))),
+        ]);
+        let body = vec![Statement::TryCatch {
+            try_body: vec![Statement::If {
+                condition: eq(int(0), var("label")),
+                then_body: yield_case,
+                else_body: done_case,
+            }],
+            catch_param: Some("e".into()),
+            catch_body: vec![Statement::Throw(var("e"))],
+            finally_body: vec![],
+        }];
+        let out = try_reconstruct_generator_v98(&body).expect("lifts");
+        let text: Vec<String> = out.iter().map(|s| s.to_string()).collect();
+        assert!(
+            text.contains(&"got = yield fetch();".to_string()),
+            "{text:?}"
+        );
+        assert!(
+            !text.iter().any(|t| t.contains("arg0")),
+            "protocol left in: {text:?}"
+        );
     }
 
     #[test]

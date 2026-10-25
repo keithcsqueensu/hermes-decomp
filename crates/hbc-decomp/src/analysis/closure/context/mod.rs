@@ -91,6 +91,33 @@ impl ClosureContext {
         Self::default()
     }
 
+    // `from`'s body now lives in `to` (a generator wrapper took over the
+    // machine it created), so the block environments `from` built are `to`'s:
+    // the generator body's own environment, created once when the machine
+    // starts, holds what are now `to`'s locals. Left with `from`, which no
+    // longer has a body, its slots read as an ancestor's from `to` (1 178
+    // CaptureAndLocal rows on Discord once its generators lifted). The parent
+    // chain stays as it is: levels count hops along it.
+    pub fn rehome_block_scopes(&mut self, from: u32, to: u32) -> Vec<u32> {
+        let moved: Vec<((u32, u32), u32)> = self
+            .block_scopes
+            .iter()
+            .filter(|((builder, _), _)| *builder == from)
+            .map(|(&k, &v)| (k, v))
+            .collect();
+        let mut out = Vec::new();
+        for ((_, level), id) in moved {
+            if self.block_scopes.contains_key(&(to, level)) {
+                continue;
+            }
+            self.block_scopes.remove(&(from, level));
+            self.block_scopes.insert((to, level), id);
+            self.block_function.insert(id, to);
+            out.push(id);
+        }
+        out
+    }
+
     // The synthetic scope for the block environment `level` that `parent`
     // built, created on first use. The scope's parent is the function.
     pub fn block_scope(&mut self, parent: u32, level: u32) -> u32 {

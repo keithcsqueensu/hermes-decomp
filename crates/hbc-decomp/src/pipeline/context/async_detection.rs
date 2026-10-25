@@ -187,6 +187,10 @@ fn is_async_helper_callee(callee: &crate::ir::Expression) -> bool {
             // a native `async function`, so the property carries the name.
             if p == "default" {
                 is_async_helper_callee(object)
+            } else if p == "createGenerator" {
+                // A machine that did not lift, handed to the runtime as is
+                // (`keep_raw_machines`): a sync generator object, not async.
+                false
             } else {
                 looks_like_async_helper(p)
             }
@@ -303,12 +307,18 @@ fn strip_redundant_async_helper_expr(
 // ```
 //
 // These wrappers are replaced with the body of the inner generator function,
-// and the wrapper is marked as async.
+// and the wrapper is marked as async. Each wrapper's own body and parameter
+// names go into `originals`: an HBC >= 97 machine that later fails to lift
+// puts them back (`collapse_generator_wrappers`), since an `async function`
+// is only right once the machine reads as awaits.
+pub(super) type Unwrapped = BTreeMap<u32, (Vec<Statement>, Option<Vec<Option<String>>>)>;
+
 pub(super) fn unwrap_async_wrappers(
     all_ir: &mut BTreeMap<u32, Vec<Statement>>,
     closure_ctx: &mut ClosureContext,
     param_names: &mut BTreeMap<u32, Vec<Option<String>>>,
     file: &BytecodeFile,
+    originals: &mut Unwrapped,
 ) -> usize {
     // Step 1: Detect wrappers, collect (wrapper_id, inner_generator_id)
     let mut wrappers: Vec<(u32, u32)> = Vec::new();
@@ -330,7 +340,9 @@ pub(super) fn unwrap_async_wrappers(
 
         // Step 3: Copy body's IR to the wrapper function
         if let Some(body_stmts) = all_ir.get(&body_id).cloned() {
-            all_ir.insert(wrapper_id, body_stmts);
+            if let Some(own) = all_ir.insert(wrapper_id, body_stmts) {
+                originals.insert(wrapper_id, (own, param_names.get(&wrapper_id).cloned()));
+            }
         }
 
         // Step 4: Mark wrapper as async

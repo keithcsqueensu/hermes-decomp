@@ -12,6 +12,9 @@ pub(crate) struct RecoveryCtx<'a> {
     pub cfg: &'a crate::ir::CFG,
     pub loops: &'a [LoopInfo],
     pub visited: &'a mut HashSet<BlockId>,
+    // Blocks already emitted somewhere, as opposed to merely marked visited
+    // (a merge point or loop exit held back to be emitted after its region).
+    pub emitted: &'a mut HashSet<BlockId>,
     pub try_starts: &'a BTreeMap<BlockId, &'a CfgExceptionHandler>,
 }
 

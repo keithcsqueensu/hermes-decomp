@@ -285,6 +285,12 @@ fn inline_named_with_candidates(
             } else {
                 let mut stmt = stmt;
                 apply_pending_to_stmt(&mut stmt, &mut pending);
+                // A folded definition reaches every later use, an assignment
+                // to an ordinary variable included: left out here, its
+                // definition was gone and `m = _default.mark` read nothing.
+                if !multi_use_defs.is_empty() {
+                    apply_multi_use_to_stmt(&mut stmt, &multi_use_defs);
+                }
                 result.push(stmt);
             }
         } else {
@@ -565,15 +571,12 @@ fn apply_multi_use_to_stmt(stmt: &mut Statement, defs: &BTreeMap<String, Express
     }
 }
 
+// Every expression inside the target, a destructuring pattern's included: a
+// derived constructor's `const constructResult = this` was folded away while
+// `({ ruleId: constructResult.ruleId } = arg0)` kept reading it (516 on
+// Discord).
 fn apply_multi_use_to_target(target: &mut AssignTarget, defs: &BTreeMap<String, Expression>) {
-    match target {
-        AssignTarget::Member { object, .. } => substitute_vars_in_expr(object, defs),
-        AssignTarget::Index { object, key } => {
-            substitute_vars_in_expr(object, defs);
-            substitute_vars_in_expr(key, defs);
-        }
-        _ => {}
-    }
+    crate::ir::for_each_target_expression_mut(target, &mut |e| substitute_vars_in_expr(e, defs));
 }
 
 // Shared list of generic register role prefixes (from register naming analysis).
@@ -718,5 +721,89 @@ mod pending_order_tests {
         let rendered: Vec<String> = out.iter().map(|s| s.to_string()).collect();
         let calls = rendered.iter().filter(|s| s.contains("f()")).count();
         assert_eq!(calls, 1, "f() rendered once: {rendered:?}");
+    }
+}
+
+#[cfg(test)]
+mod folded_definitions {
+    use super::*;
+    use crate::ir::{Binding, Value, Visitor};
+
+    fn v(n: &str) -> Expression {
+        Expression::Value(Value::Binding(Binding::Variable(n.into())))
+    }
+
+    fn set(n: &str, e: Expression) -> Statement {
+        Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable(n.into())),
+            value: e,
+        }
+    }
+
+    #[test]
+    fn a_folded_definition_reaches_an_ordinary_assignment() {
+        // `_default` is folded into its two uses; `m` and `r` are ordinary
+        // variables. The fold reached neither, and the definition was gone.
+        let stmts = vec![
+            set("_default", Expression::member(v("N"), "default")),
+            set("m", Expression::member(v("_default"), "mark")),
+            set(
+                "r",
+                Expression::Call {
+                    callee: Box::new(Expression::member(v("m"), "call")),
+                    arguments: vec![v("_default"), v("x")],
+                },
+            ),
+            Statement::Return(Some(v("r"))),
+        ];
+        let out = inline_named_variables_keeping(stmts, &Default::default());
+        struct Reads(bool);
+        impl<'a> Visitor<'a> for Reads {
+            fn visit_expression(&mut self, e: &'a Expression) {
+                if matches!(e, Expression::Value(Value::Binding(Binding::Variable(n))) if n.name == "_default")
+                {
+                    self.0 = true;
+                }
+                self.walk_expression(e);
+            }
+        }
+        let mut reads = Reads(false);
+        for s in &out {
+            reads.visit_statement(s);
+        }
+        assert!(!reads.0, "a use of the folded `_default` is left: {out:?}");
+    }
+
+    #[test]
+    fn a_folded_definition_reaches_a_destructuring_target() {
+        // `({ ruleId: constructResult.ruleId } = arg0)` after
+        // `constructResult = this`.
+        let stmts = vec![
+            set("constructResult", Expression::Value(Value::This)),
+            Statement::Assign {
+                target: AssignTarget::DestructuringObject(vec![(
+                    "ruleId".to_string(),
+                    AssignTarget::Member {
+                        object: v("constructResult"),
+                        property: "ruleId".into(),
+                    },
+                    None,
+                )]),
+                value: v("arg0"),
+            },
+            Statement::Expr(v("constructResult")),
+        ];
+        let out = inline_named_variables_keeping(stmts, &Default::default());
+        let text: Vec<String> = out.iter().map(|s| s.to_string()).collect();
+        assert!(
+            out.iter().any(|s| matches!(
+                s,
+                Statement::Assign {
+                    target: AssignTarget::Binding(_),
+                    ..
+                }
+            )) || !text.iter().any(|t| t.contains("constructResult")),
+            "constructResult read without its definition: {text:?}"
+        );
     }
 }

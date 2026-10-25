@@ -269,7 +269,11 @@ impl PipelineContext {
         // real name instead of staying `closure_1_9` / `closure_1_5`.
         let t = std::time::Instant::now();
         if let Some(ctx) = closure_ctx.as_ref() {
-            let inherited = transforms::inherit_ancestor_closure_names(all_ir, ctx);
+            let inherited = transforms::inherit_ancestor_closure_names(
+                all_ir,
+                ctx,
+                &global_analysis.param_names,
+            );
             log::debug!(
                 "[pipeline] ancestor closure inherit: {inherited} references renamed ({:.2?})",
                 t.elapsed()
@@ -340,7 +344,11 @@ impl PipelineContext {
                     );
                     // A slot that was Unknown / argN becomes inheritable once IPA has
                     // named it, so re-run the inherit pass each round (Piste 2).
-                    renamed += transforms::inherit_ancestor_closure_names(all_ir, ctx);
+                    renamed += transforms::inherit_ancestor_closure_names(
+                        all_ir,
+                        ctx,
+                        &global_analysis.param_names,
+                    );
                 }
                 if added == 0 && renamed == 0 {
                     break;

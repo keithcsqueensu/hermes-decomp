@@ -52,6 +52,13 @@ impl Codegen {
                     .flatten();
                 let l = match private {
                     Some(name) => name.to_string(),
+                    // `-a ** b` does not parse: the left of `**` cannot be a
+                    // unary expression, whatever the precedence says.
+                    None if matches!(op, crate::ir::BinaryOp::Exp)
+                        && matches!(left.as_ref(), Expression::Unary { .. }) =>
+                    {
+                        format!("({})", self.generate_expr(left))
+                    }
                     None => self.generate_expr_with_parens(left, l_prec),
                 };
                 let r = self.generate_expr_with_parens(right, r_prec);
@@ -99,7 +106,12 @@ impl Codegen {
                 }
                 // For unary applied to non-binary expressions, check if parens needed
                 match operand.as_ref() {
-                    Expression::Conditional { .. } | Expression::Assignment { .. } => {
+                    // A binary operand binds looser than the unary: `-(a ** b)`
+                    // printed as `-a ** b`, which does not parse, and `-(a + b)`
+                    // would read as `-a + b`.
+                    Expression::Conditional { .. }
+                    | Expression::Assignment { .. }
+                    | Expression::Binary { .. } => {
                         format!("{op}({})", self.generate_expr(operand))
                     }
                     // `+(+x)` and `-(-x)` must not print as `++x` / `--x`,

@@ -489,12 +489,89 @@ pub(super) fn own_slots_escaping_their_block(
                 break;
             }
         }
-        if escapes {
+        if escapes || shared_across_iterations(stmts, name, read_by) {
             out.push(name.clone());
         }
     }
     out.sort();
     out
+}
+
+// A loop body assigns the slot and creates a closure that reads it. The slot
+// is the function's (a block scope's slot has another owner, and hermesc
+// gives such a scope a fresh environment each time it is entered), so every
+// iteration and every closure share one binding; a `let` at the write would
+// give each iteration its own (block_scopes: `() => tag + i + "/" + sq`
+// printed `t20/0` where the bytecode prints `t22/1`).
+fn shared_across_iterations(
+    stmts: &[Statement],
+    name: &str,
+    read_by: &std::collections::HashMap<u32, std::collections::HashSet<String>>,
+) -> bool {
+    stmts.iter().any(|stmt| {
+        let body = match stmt {
+            Statement::While { body, .. }
+            | Statement::DoWhile { body, .. }
+            | Statement::ForIn { body, .. }
+            | Statement::ForOf { body, .. }
+            | Statement::For { body, .. } => Some(body),
+            _ => None,
+        };
+        if let Some(body) = body {
+            let mut assigned = Vec::new();
+            collect_assigned(body, &mut assigned);
+            if assigned.iter().any(|a| a == name) && creates_reader(body, name, read_by) {
+                return true;
+            }
+        }
+        let mut found = false;
+        visit_nested_bodies(stmt, &mut |b| {
+            found |= shared_across_iterations(b, name, read_by);
+        });
+        found
+    })
+}
+
+// `stmts` create a closure whose functions read `name`.
+fn creates_reader(
+    stmts: &[Statement],
+    name: &str,
+    read_by: &std::collections::HashMap<u32, std::collections::HashSet<String>>,
+) -> bool {
+    use crate::ir::Visitor;
+    struct C<'n> {
+        name: &'n str,
+        read_by: &'n std::collections::HashMap<u32, std::collections::HashSet<String>>,
+        found: bool,
+    }
+    impl<'a> Visitor<'a> for C<'_> {
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if let Expression::Function { id, .. } = e {
+                self.found |= self
+                    .read_by
+                    .get(&id.0)
+                    .is_some_and(|r| r.contains(self.name));
+            }
+            self.walk_expression(e);
+        }
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Class { methods, .. } = s {
+                for m in methods {
+                    self.visit_expression(&m.value);
+                }
+            }
+            self.walk_statement(s);
+        }
+    }
+    let mut c = C {
+        name,
+        read_by,
+        found: false,
+    };
+    for s in stmts {
+        c.visit_statement(s);
+    }
+    c.found
 }
 
 // Reads of `name` in `stmts`, counting each closure created there whose

@@ -90,8 +90,6 @@ fn try_env_handlers(name: &str, inst: &Instruction, env_map: &mut EnvRegMap) -> 
         "StoreNPToEnvironment" | "StoreNPToEnvironmentL" => {
             handle_store_np_to_environment(inst, env_map)
         }
-        // Legacy aliases treated as GetEnvironment.
-        "LoadParentNoTraps" | "TypedLoadParent" => handle_get_environment(name, inst, env_map),
         _ => None,
     }
 }
@@ -247,8 +245,14 @@ fn try_call_handlers(
             handle_call_fixed(name, inst).map(FlowResult::Statement)
         }
         "Call" | "CallLong" => handle_call(inst, frame_size, version).map(FlowResult::Statement),
-        "Construct" | "ConstructLong" | "CallWithNewTarget" | "CallWithNewTargetLong" => {
+        "Construct" | "ConstructLong" => {
             handle_construct(inst, frame_size, version).map(FlowResult::Statement)
+        }
+        "CallWithNewTarget" | "CallWithNewTargetLong" => {
+            handle_call_with_new_target(inst, frame_size, version).map(FlowResult::Statement)
+        }
+        "LoadParentNoTraps" | "TypedLoadParent" => {
+            handle_load_parent(inst).map(FlowResult::Statement)
         }
         "CreateClosure" | "CreateClosureLongIndex" => {
             handle_create_closure(inst, file, resolve_strings).map(FlowResult::Statement)

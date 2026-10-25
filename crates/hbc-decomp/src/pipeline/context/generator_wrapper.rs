@@ -32,8 +32,11 @@ pub(super) fn generator_wrapper_target(body: &[Statement]) -> Option<u32> {
     };
     let is_env_init = |s: &Statement| -> bool {
         match s {
+            // A slot named by now (`self = this`) is still an environment
+            // slot: the stamp says so where the spelling no longer does.
             Statement::Let { name, value, .. } => {
-                is_env_slot_name(name) && (is_zero(value) || is_param_value(value))
+                (is_env_slot_name(name) || name.slot.is_some())
+                    && (is_zero(value) || is_param_value(value))
             }
             Statement::Assign {
                 target: AssignTarget::Binding(crate::ir::Binding::ClosureVar { .. }),
@@ -42,7 +45,10 @@ pub(super) fn generator_wrapper_target(body: &[Statement]) -> Option<u32> {
             Statement::Assign {
                 target: AssignTarget::Binding(crate::ir::Binding::Variable(n)),
                 value,
-            } => is_env_slot_name(n) && (is_zero(value) || is_param_value(value)),
+            } => {
+                (is_env_slot_name(n) || n.slot.is_some())
+                    && (is_zero(value) || is_param_value(value))
+            }
             _ => false,
         }
     };

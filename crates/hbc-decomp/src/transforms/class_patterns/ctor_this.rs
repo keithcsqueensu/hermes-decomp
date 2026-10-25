@@ -21,14 +21,16 @@
 // super(...args); }`, written by the compiler when the class has fields) gets
 // its receiver from `HermesBuiltin.applyArguments(this, new.target)` instead.
 // Printed as is it reads `this` before `super()` and throws; it is
-// `super(...arguments)` followed by the same alias.
+// `super(...arguments)` followed by the same alias. An explicit `super(a, 1)`
+// lowers to `Reflect.construct(Object.getPrototypeOf(Own), [a, 1],
+// new.target)` (`handle_call_with_new_target`) and is `super(a, 1)`.
 
 use crate::ir::{AssignTarget, Binding, Constant, Expression, Statement, Value, Visitor};
 
 const DOUBLE_INIT: &str = "Cannot initialize private field twice.";
 
 pub fn restore_constructor_this(mut stmts: Vec<Statement>) -> Vec<Statement> {
-    let Some((at, (receiver, derived))) = stmts
+    let Some((at, (receiver, super_args))) = stmts
         .iter()
         .enumerate()
         .find_map(|(i, s)| receiver_def(s).map(|b| (i, b)))
@@ -48,12 +50,13 @@ pub fn restore_constructor_this(mut stmts: Vec<Statement>) -> Vec<Statement> {
     }
 
     let mut out: Vec<Statement> = stmts.drain(..=at).collect();
-    if derived {
+    if let Some(args) = super_args {
+        // The receiver first, as on every call here (`strip_hermes_this`).
+        let mut arguments = vec![Expression::Value(Value::This)];
+        arguments.extend(args);
         let super_call = Statement::Expr(Expression::Call {
             callee: Box::new(Expression::Value(Value::Super)),
-            arguments: vec![Expression::Spread(Box::new(Expression::Value(
-                Value::Arguments,
-            )))],
+            arguments,
         });
         out.insert(at, super_call);
     }
@@ -86,10 +89,11 @@ pub fn restore_constructor_this(mut stmts: Vec<Statement>) -> Vec<Statement> {
     out
 }
 
-// `X = Object.create(new.target.prototype)` (false) or
-// `X = HermesBuiltin.applyArguments(this, new.target)` (true, derived) at the
-// top of the body.
-fn receiver_def(stmt: &Statement) -> Option<(Binding, bool)> {
+// `X = Object.create(new.target.prototype)` (no `super` call), or a derived
+// constructor's `X = HermesBuiltin.applyArguments(this, new.target)` or
+// `X = Reflect.construct(Object.getPrototypeOf(C), [args], new.target)`, with
+// the arguments of the `super` call it stands for.
+fn receiver_def(stmt: &Statement) -> Option<(Binding, Option<Vec<Expression>>)> {
     let (binding, value) = match stmt {
         Statement::Assign {
             target: AssignTarget::Binding(b),
@@ -99,9 +103,41 @@ fn receiver_def(stmt: &Statement) -> Option<(Binding, bool)> {
         _ => return None,
     };
     if super::analyzer::is_object_create_new_target(value) {
-        return Some((binding, false));
+        return Some((binding, None));
     }
-    is_super_forwarding(value).then_some((binding, true))
+    if is_super_forwarding(value) {
+        let all = Expression::Spread(Box::new(Expression::Value(Value::Arguments)));
+        return Some((binding, Some(vec![all])));
+    }
+    explicit_super_args(value).map(|args| (binding, Some(args)))
+}
+
+// `Reflect.construct(Object.getPrototypeOf(C), [args], new.target)`: the
+// arguments of an explicit `super(args)`.
+fn explicit_super_args(value: &Expression) -> Option<Vec<Expression>> {
+    let Expression::Call { callee, arguments } = value else {
+        return None;
+    };
+    let is_member = |e: &Expression, obj: &str, prop: &str| {
+        matches!(e, Expression::Member { object, property: crate::ir::PropertyKey::Ident(p), .. }
+            if p == prop && matches!(object.as_ref(),
+                Expression::Value(Value::Binding(Binding::Variable(v))) if v == obj))
+    };
+    if !is_member(callee, "Reflect", "construct") {
+        return None;
+    }
+    // The receiver each call carries is still in front at this point.
+    let [.., Expression::Call {
+        callee: parent,
+        arguments: of,
+    }, Expression::Array { elements }, Expression::Value(Value::NewTarget)] = arguments.as_slice()
+    else {
+        return None;
+    };
+    if arguments.len() > 4 || !is_member(parent, "Object", "getPrototypeOf") || of.len() > 2 {
+        return None;
+    }
+    elements.iter().cloned().collect()
 }
 
 // `HermesBuiltin.applyArguments([r,] this, new.target)`.
@@ -308,7 +344,7 @@ mod tests {
         assert!(
             matches!(&out[0], Statement::Expr(Expression::Call { callee, arguments })
             if matches!(callee.as_ref(), Expression::Value(Value::Super))
-                && matches!(arguments.as_slice(), [Expression::Spread(a)]
+                && matches!(arguments.as_slice(), [Expression::Value(Value::This), Expression::Spread(a)]
                     if matches!(a.as_ref(), Expression::Value(Value::Arguments))))
         );
         let text: Vec<String> = out[1..].iter().map(|s| s.to_string()).collect();

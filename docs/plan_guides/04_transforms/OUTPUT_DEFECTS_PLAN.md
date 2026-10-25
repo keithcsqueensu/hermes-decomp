@@ -6,10 +6,10 @@
 > *Delegates* environment and slot identity to
 > `../03_analysis/closure_model/V98_ENV_PLAN.md` and `K4_PLAN.md`.
 
-Status: **D0, D1, D2 and D3 landed (2026-10-24).** Every root cause below comes
+Status: **D0, D1, D2, D3 and D3.1 landed (2026-10-24).** Every root cause below comes
 from an investigation run on 2026-10-23 against main at 330e329 (outputs `k4e3`). Each was
 reproduced on a fixture or a bundle output. File:line references are as of that commit; check
-them again when implementing. Results are in §5 (D0, D1), §6 (D2) and §7 (D3).
+them again when implementing. Results are in §5 (D0, D1), §6 (D2), §7 (D3) and §8 (D3.1).
 
 ---
 
@@ -369,3 +369,106 @@ defect counters on a second line.
 - Against D2, Equinox's undeclared names fall by 2,654 and rise by 117 (`arg0` +35, the most).
 - E1 KNOWN: class_scopes ×2 off; class_derived (new) passes; class_super ×2 (new) on. 11 rows:
   9 environment causes, class_super ×2.
+
+## 8. D3.1 results
+
+**[measured]** Base: D3 (§7). New: D3.1, which set out to bring the D3 slot-identity
+ceilings back down and then took on the E1 known failures.
+
+| | Equinox | CoachRx | Expensify | Discord |
+|---|---|---|---|---|
+| I1 | 2,263 → 1,055 | 2,781 → 1,103 | 4,617 → 2,641 | 9,796 → 8,367 |
+| I2 | 2,117 → 2,136 | 1,390 → 1,624 | 5,470 → 4,073 | 12,204 → 7,263 |
+| I3 | 10 → 9 | 9 → 9 | 255 → 268 | 340 → 351 |
+| undeclared | 10,130 → 6,346 | 11,841 → 9,864 | 53,845 → 27,254 | 59,407 → 22,068 |
+| unparsable modules | 0 → 0 | 0 → 0 | 0 → 5 | 0 → 3 |
+| raw generator machines | – | – | – | 2,166 → 1,719 |
+
+Most of the undeclared fall is the inliner (below): a definition folded into its uses
+never reached a later assignment to an ordinary variable, or a destructuring target, so it
+vanished and its uses read nothing. The 5 + 3 unparsable modules are raw-machine wrappers
+declaring a variable of their own under a parameter's name; I2 rises where dropped branches
+are printed again (`slot_identity_baseline.tsv`).
+
+- **I1: the owner did not follow its readers.** W16f's inherit pass names a reader's
+  placeholder after the slot's recorded name, which is often the parameter stored into it, so
+  the readers said `filterBy` while the owner kept `let closure_0 = filterBy` (1,355 of
+  Equinox's 2,263). The owner's placeholder is renamed too when every other reference already
+  follows (`SlotFollow::owner_binding_if_follows`) and the name means nothing else in its body;
+  the parameter whose value the slot holds is allowed, and its store prints as a dropped
+  self-assignment. What I1 has left is mixed, wrong inherited names among it (a `useState`
+  setter's slot called `refreshHandler` in a child).
+- **I2 is mostly CaptureAndLocal** (1,828 of 2,117 on Equinox), present from W6 on: a local
+  named like a captured slot the same body reads. The largest group is real, not a counting
+  artefact: in `consoleTablePolyfill` a fresh `obj = {}` is undeclared and writes the module's
+  levels table, which the same function reads as `obj.info`. Not fixed here.
+- **The literal buffer misread `undefined` on HBC 98+.** Tag 6 was a one-byte string id through
+  v97; v98 reuses it as `UndefinedTag`, with no payload. Read as a string it took the next byte
+  for a string id and lost step: `{ value: undefined, done: true }` came out as
+  `{ value: "top", done: null }`, in every v98 array and object literal holding `undefined`, and
+  no generator whose result object held one could lift.
+- **A raw machine's case could not be read past uninlined copies** (`num9 = 1` before a
+  flattened `if (arg0 === 1) {throw} if (arg0 === 2) {return}`, `tmp2 = closure_1` before the
+  resume binding). Both are stepped over now, so the await's result binds to the await.
+- **An async method that captures `this` did not collapse.** Its wrapper's `this` store reads
+  `self = this` by then, and the wrapper test only took placeholder-spelled targets; the
+  wrapper and the stale inner both held the state machine, so W16g hoisted it to the global
+  scope as `f16`. A slot-stamped target counts, and the receiver store is kept like a
+  parameter's.
+- **A collapsed generator's own environment stayed with the removed machine.** The block scope
+  the machine built is the wrapper's after the collapse; left keyed to the machine, its slots
+  read as an ancestor's from the wrapper. Re-homing it is most of Discord's I2 fall. I3 moves a
+  little the other way on v98 (checker classification: the text of those functions did not
+  change).
+- **A function-scope slot first written in a loop got its `let` there**, a binding per
+  iteration where the bytecode shares one (both v96 and v98 hermesc do): closures made in the
+  loop printed `t20/0` for `t22/1`. Such a slot, read by a closure the loop creates, is declared
+  at the top.
+- **A machine that does not lift stays apart from its wrapper** (1,750 on Discord after the
+  fixes above). Collapsing it anyway made the wrapper's status, label and loop slots locals the
+  machine declared afresh on every step (`let c0; if (c0 === 2)`), so it restarted each call.
+  It now prints as what the bytecode does, `HermesBuiltin.createGenerator(function step(arg0,
+  value) {…})`, a plain step function handed to the `CreateGenerator` instruction, whose
+  `next`/`throw`/`return` call it with 0/1/2. `HermesBuiltin.createGenerator` is not a real
+  builtin (`spawnAsync` is); the name says which instruction it stands for. A function W15 had
+  unwrapped into an `async function` gets its `spawnAsync` body back. The environment the
+  machine builds on its first step and keeps in the wrapper's slot (a loop counter across
+  yields) becomes the wrapper's variables. E1's harness gives node a `createGenerator` with
+  that contract; fixture raw_generators (new) passes.
+- **The structurer dropped a branch whose targets were already emitted.** A `return`/`throw`
+  tail reached a second time came out empty, so the branch leading to it lost its condition:
+  raw_generators' resume path (`i < n ? yield : return "end"`, both emitted on the first path)
+  printed no test at all and looped. Such a tail is emitted again. This is not specific to
+  generators.
+  Re-emitting a tail also brought back code the dropped branches had taken with them (React's
+  `if (tmp.key !== tmp35.key)` in `mapIntoWithKeyPrefixInternal`, React.lazy's `-1 === _status`
+  arms), and with it `-a ** b`, which does not parse: the left of `**` is parenthesised when it
+  is a unary expression.
+- **A method read apart from its call lost its receiver.** `out.push(b.next().value, …)`
+  printed `const push = globalThis.out.push; …; push(value, …)`: the read is kept apart to keep
+  the order of evaluation (or because it has two uses, which re-emitted tails make more common),
+  and W12 strips argument 0 of every call whose callee is not a member. A call through a
+  binding assigned once from `O.m`, passing `O` as its receiver, keeps it: `push.call(out, …)`.
+- **An explicit `super(a, 1)` decompiles.** `CallWithNewTarget` was read as `Construct`, whose
+  operands differ (its new.target register was taken for the argument count), and
+  `LoadParentNoTraps`, a prototype read since v98, as an environment load. They are
+  `Reflect.construct(callee, [args], newTarget)` and `Object.getPrototypeOf(x)`, and
+  `restore_constructor_this` turns `Reflect.construct(Object.getPrototypeOf(C), [args],
+  new.target)` into `super(args)`. Fixture class_super_call (new) passes. class_super stays
+  known for the other half of its reason: hermesc inlines the constructor at `new Own(4)`, so
+  its private-field installs print outside the class; `privateTwice` is 0 on all four bundles.
+  (class_super_call first called its factory as `make(Plain, 2, 3)`, which Metro detection took
+  for `__d(factory, id, deps)`.)
+- **A folded definition did not reach every use.** `inline_named_variables_keeping` folds a
+  cheap definition (`_default = X.default`, `constructResult = this`) into its uses and drops
+  it, but substituted it only into statements it was handling anyway: a plain assignment to
+  an ordinary variable (`m = _default.mark`) and destructuring targets (`({ ruleId:
+  constructResult.ruleId } = arg0)`) kept the name. The single-use path had the same gap in
+  targets, where the pending definition was flushed after the pattern that read it.
+- **Unary operands.** `-(a ** b)` printed as `-a ** b`, which does not parse: a binary operand
+  of a unary operator is parenthesised, in both printers.
+- **Raw machines' environment variables can clash** with a parameter, a slot of the wrapper's
+  own or each other once named; such a variable takes a fresh name (`separate_step_env_names`).
+- Ceilings: Equinox I1 1,055, I2 2,136, I3 9; CoachRx 1,103, 1,624, 9.
+- E1 KNOWN: block_scopes ×3, async_forms ×2, generator_states ×2 and deep_nesting ×2 off;
+  raw_generators ×2 and class_super_call ×2 (new) pass. 2 rows left, class_super ×2.

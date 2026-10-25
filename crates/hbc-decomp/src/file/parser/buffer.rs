@@ -57,7 +57,7 @@ pub fn read_buffer_series(
     let mut values = Vec::with_capacity(reader.capacity_hint(count as usize));
 
     while values.len() < count as usize {
-        let (tag, length) = read_buffer_tag(&mut reader)?;
+        let (tag, length) = read_buffer_tag(&mut reader, file.header.version)?;
         // Hermes never emits length-0 sequences, but a corrupt/misaligned stream
         // can produce them. Skip empty tags rather than aborting the whole series
         // so a single bad tag doesn't wipe the rest of a large literal.
@@ -76,7 +76,12 @@ pub fn read_buffer_series(
     Ok(values)
 }
 
-fn read_buffer_tag(reader: &mut ByteReader<'_>) -> Result<(DataBufferTag, u32)> {
+// Tag 6 was a one-byte string id through HBC 97; HBC 98 reuses it for
+// `undefined` (SerializedLiteralGenerator::UndefinedTag), which carries no
+// payload. Read as a byte string it took the next byte for a string id and
+// lost step with the stream: a generator's `{ value: undefined, done: true }`
+// came out as `{ value: "top", done: null }`, and the machine never lifted.
+fn read_buffer_tag(reader: &mut ByteReader<'_>, version: u32) -> Result<(DataBufferTag, u32)> {
     let key_tag = reader.read_u8()?;
     let tag_bits = key_tag & 0x70;
     let length = if (key_tag & 0x80) != 0 {
@@ -93,6 +98,7 @@ fn read_buffer_tag(reader: &mut ByteReader<'_>) -> Result<(DataBufferTag, u32)> 
         0x30 => DataBufferTag::Number,
         0x40 => DataBufferTag::LongString,
         0x50 => DataBufferTag::ShortString,
+        0x60 if version >= 98 => DataBufferTag::Undefined,
         0x60 => DataBufferTag::ByteString,
         0x70 => DataBufferTag::Integer,
         _ => DataBufferTag::Undefined,
@@ -126,4 +132,19 @@ fn read_buffer_value(
         }
         DataBufferTag::Undefined => LiteralValue::Undefined,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tag_six_is_undefined_from_hbc_98() {
+        // One value of tag 6, then nothing: from 98 it takes no payload.
+        let bytes = [0x61u8];
+        let (tag, n) = read_buffer_tag(&mut ByteReader::new(&bytes), 98).unwrap();
+        assert!(matches!(tag, DataBufferTag::Undefined) && n == 1);
+        let (tag, _) = read_buffer_tag(&mut ByteReader::new(&bytes), 96).unwrap();
+        assert!(matches!(tag, DataBufferTag::ByteString));
+    }
 }

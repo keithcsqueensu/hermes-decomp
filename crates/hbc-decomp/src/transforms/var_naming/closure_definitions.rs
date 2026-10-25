@@ -319,9 +319,9 @@ fn parse_closure_capture(name: &str) -> Option<(u32, u32)> {
 }
 
 // For each slot, the names its owner's body references it by, by stamp.
-type OwnerSlotNames = BTreeMap<crate::ir::SlotRef, std::collections::BTreeSet<String>>;
+pub(super) type OwnerSlotNames = BTreeMap<crate::ir::SlotRef, std::collections::BTreeSet<String>>;
 
-fn owner_slot_names(
+pub(super) fn owner_slot_names(
     all_ir: &BTreeMap<u32, Vec<Statement>>,
     closure_ctx: &ClosureContext,
 ) -> OwnerSlotNames {
@@ -371,13 +371,13 @@ fn add_owner_slot_names(
 
 // Who else references each slot, to decide which owner binding a rename may
 // take (`owner_binding`).
-struct SlotFollow {
+pub(super) struct SlotFollow {
     stamped: BTreeMap<crate::ir::SlotRef, std::collections::BTreeSet<(u32, String)>>,
     unstamped: std::collections::HashMap<String, std::collections::BTreeSet<u32>>,
 }
 
 impl SlotFollow {
-    fn new(all_ir: &BTreeMap<u32, Vec<Statement>>) -> Self {
+    pub(super) fn new(all_ir: &BTreeMap<u32, Vec<Statement>>) -> Self {
         let mut unstamped: std::collections::HashMap<String, std::collections::BTreeSet<u32>> =
             std::collections::HashMap::new();
         for (&func, stmts) in all_ir {
@@ -418,7 +418,7 @@ impl SlotFollow {
     }
 
     // `owner_binding`'s stamped binding, when every reference follows it.
-    fn owner_binding_if_follows(
+    pub(super) fn owner_binding_if_follows(
         &self,
         closure_ctx: &ClosureContext,
         owner_names: &OwnerSlotNames,

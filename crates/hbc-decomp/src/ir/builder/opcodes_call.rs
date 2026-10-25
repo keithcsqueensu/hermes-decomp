@@ -127,6 +127,75 @@ pub fn handle_construct(inst: &Instruction, frame_size: u32, version: u32) -> Op
     })
 }
 
+// `CallWithNewTarget dst, callee, newTarget, argc` (HBC >= 98): calls `callee`
+// with an explicit `this` (the first of the `argc` outgoing arguments) and
+// `new.target`. The only `this` it is given is the one `CreateThisForSuper`
+// builds from `new.target.prototype`, which is what `Reflect.construct`
+// builds too, so that is its form: `super(a, 1)` lowers to
+// `Reflect.construct(Object.getPrototypeOf(Own), [a, 1], new.target)`, and
+// `restore_constructor_this` turns it back. Read as `Construct`, the
+// new.target register was taken for the argument count and the call printed
+// as `new Own(a, 1, new.target, this, a)`.
+pub fn handle_call_with_new_target(
+    inst: &Instruction,
+    frame_size: u32,
+    version: u32,
+) -> Option<Statement> {
+    let dst = get_reg(&inst.operands, 0)?;
+    let callee = reg_expr(&inst.operands, 1)?;
+    let new_target = reg_expr(&inst.operands, 2)?;
+    let arg_count = inst.operands.get(3)?.value.as_u32()? as usize;
+    let this_from_top = if version >= NEW_TARGET_FRAME_SLOT_MIN_VERSION {
+        THIS_ARG_FROM_TOP + 1
+    } else {
+        THIS_ARG_FROM_TOP
+    };
+    let mut arguments = resolve_implicit_args_from(arg_count, frame_size, this_from_top);
+    if !arguments.is_empty() {
+        arguments.remove(0);
+    }
+    Some(Statement::Assign {
+        target: AssignTarget::Binding(Binding::Register(dst)),
+        value: Expression::Call {
+            callee: Box::new(Expression::member(
+                Expression::Value(Value::Binding(Binding::Variable("Reflect".into()))),
+                "construct",
+            )),
+            // The receiver first, as every call the builder emits carries it
+            // (`strip_hermes_this` takes it off).
+            arguments: vec![
+                Expression::Value(Value::Binding(Binding::Variable("Reflect".into()))),
+                callee,
+                Expression::Array {
+                    elements: arguments.into_iter().map(Some).collect(),
+                },
+                new_target,
+            ],
+        },
+    })
+}
+
+// `LoadParentNoTraps dst, obj` (HBC >= 98): the prototype of `obj`, read
+// without running a proxy's trap. A derived constructor uses it to find its
+// parent class. It was taken for an environment load.
+pub fn handle_load_parent(inst: &Instruction) -> Option<Statement> {
+    let dst = get_reg(&inst.operands, 0)?;
+    let object = reg_expr(&inst.operands, 1)?;
+    Some(Statement::Assign {
+        target: AssignTarget::Binding(Binding::Register(dst)),
+        value: Expression::Call {
+            callee: Box::new(Expression::member(
+                Expression::Value(Value::Binding(Binding::Variable("Object".into()))),
+                "getPrototypeOf",
+            )),
+            arguments: vec![
+                Expression::Value(Value::Binding(Binding::Variable("Object".into()))),
+                object,
+            ],
+        },
+    })
+}
+
 // Handle CreateClosure opcode.
 pub fn handle_create_closure(
     inst: &Instruction,

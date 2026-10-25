@@ -120,15 +120,11 @@ pub(super) fn apply_pending_to_stmt(stmt: &mut Statement, pending: &mut BTreeMap
     }
 }
 
+// Every expression inside the target, a destructuring pattern's included
+// (`{ a: x.b } = v`): a pending definition left out here was flushed after the
+// pattern that read it.
 fn apply_pending_to_target(target: &mut AssignTarget, pending: &mut BTreeMap<Var, Expression>) {
-    match target {
-        AssignTarget::Member { object, .. } => substitute_vars_in_expr(object, pending),
-        AssignTarget::Index { object, key } => {
-            substitute_vars_in_expr(object, pending);
-            substitute_vars_in_expr(key, pending);
-        }
-        _ => {}
-    }
+    crate::ir::for_each_target_expression_mut(target, &mut |e| substitute_vars_in_expr(e, pending));
 }
 
 pub(super) fn flush_pending(pending: &mut BTreeMap<Var, Expression>, result: &mut Vec<Statement>) {
@@ -163,12 +159,5 @@ pub(super) fn remove_used_from_pending(expr: &Expression, pending: &mut BTreeMap
 }
 
 fn remove_used_from_target(target: &AssignTarget, pending: &mut BTreeMap<Var, Expression>) {
-    match target {
-        AssignTarget::Member { object, .. } => remove_used_from_pending(object, pending),
-        AssignTarget::Index { object, key } => {
-            remove_used_from_pending(object, pending);
-            remove_used_from_pending(key, pending);
-        }
-        _ => {}
-    }
+    crate::ir::for_each_target_expression(target, &mut |e| remove_used_from_pending(e, pending));
 }

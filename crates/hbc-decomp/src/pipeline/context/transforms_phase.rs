@@ -9,6 +9,11 @@ use crate::ir::Statement;
 use crate::transforms;
 use std::collections::BTreeMap;
 
+// Slot numbers of a wrapper standing for its machine's environment
+// (`keep_raw_machines`): above any slot hermesc allocates, below the
+// block-level bits.
+const STEP_ENV_SLOTS: u32 = 0x00E0_0000;
+
 impl PipelineContext {
     pub(super) fn run_transform_pipeline(
         all_ir: &mut BTreeMap<u32, Vec<Statement>>,
@@ -80,12 +85,14 @@ impl PipelineContext {
         crate::analysis::closure::stamps::report("after W14", all_ir, closure_ctx.as_ref());
 
         // STAGE W15: Unwrap Babel async wrappers
+        let mut async_originals = async_detection::Unwrapped::new();
         if let Some(ctx) = closure_ctx.as_mut() {
             let unwrapped = async_detection::unwrap_async_wrappers(
                 all_ir,
                 ctx,
                 &mut global_analysis.param_names,
                 file,
+                &mut async_originals,
             );
             if unwrapped > 0 {
                 log::debug!("[pipeline] async wrapper unwrap: {unwrapped} functions unwrapped");
@@ -149,7 +156,12 @@ impl PipelineContext {
         // the inner body into the wrapper so we emit `function* gen() { yield ... }`
         // instead of `function* gen() { return function*() { yield ... } }`.
         if let Some(ctx) = closure_ctx.as_mut() {
-            Self::collapse_generator_wrappers(all_ir, ctx);
+            Self::collapse_generator_wrappers(
+                all_ir,
+                ctx,
+                &mut global_analysis.param_names,
+                &async_originals,
+            );
         }
 
         crate::analysis::closure::stamps::report("after W16b", all_ir, closure_ctx.as_ref());
@@ -164,7 +176,11 @@ impl PipelineContext {
                 ctx,
                 &mut global_analysis.param_names,
             );
-            let inherited = transforms::inherit_ancestor_closure_names(all_ir, ctx);
+            let inherited = transforms::inherit_ancestor_closure_names(
+                all_ir,
+                ctx,
+                &global_analysis.param_names,
+            );
             if renamed > 0 || inherited > 0 {
                 log::debug!(
                     "[pipeline] post-reconstruct object-key naming: {renamed} closures, {inherited} inherited"
@@ -188,10 +204,13 @@ impl PipelineContext {
             log::debug!("[pipeline] hoisted {hoisted} repeated closures");
         }
         crate::analysis::closure::stamps::report("after W16g", all_ir, closure_ctx.as_ref());
+
+        Self::separate_step_env_names(all_ir, &global_analysis.param_names);
     }
 
     // The wrapper statements that must survive its body being replaced: the
-    // stores that hand a parameter to an environment slot. Everything else a
+    // stores that hand a parameter, or the receiver, to an environment slot
+    // (an async method's `self = this`). Everything else a
     // wrapper does is bookkeeping (zeroing the status and label slots) or the
     // return of the generator object itself, both of which the replacement
     // supersedes.
@@ -203,7 +222,7 @@ impl PipelineContext {
                     stmt,
                     Statement::Assign {
                         target: AssignTarget::Binding(_),
-                        value: Expression::Value(Value::Parameter(_)),
+                        value: Expression::Value(Value::Parameter(_) | Value::This),
                     }
                 )
             })
@@ -319,11 +338,266 @@ impl PipelineContext {
         strip(body, &doomed)
     }
 
+    // A machine that does not lift is printed as what the bytecode does: its
+    // wrapper hands the step function to `CreateGenerator`, whose `next`,
+    // `throw` and `return` call it with 0, 1 and 2 and return its `{ value,
+    // done }` as is. So the creation reads `HermesBuiltin.createGenerator(step)`
+    // with `step` a plain function, the way an unlowered async body reads
+    // `HermesBuiltin.spawnAsync(...)`; as `(function* step() {...})()` it was a
+    // real generator that returned the step's result object once. A function
+    // W15 unwrapped into the wrapper's body gets its own back and is not
+    // `async`: its `spawnAsync` call is what drives the machine.
+    fn keep_raw_machines(
+        all_ir: &mut BTreeMap<u32, Vec<Statement>>,
+        closure_ctx: &mut ClosureContext,
+        param_names: &mut BTreeMap<u32, Vec<Option<String>>>,
+        async_originals: &async_detection::Unwrapped,
+        raw: &[(u32, u32)],
+    ) {
+        use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, SlotRef, Value};
+        struct Restamp<'m>(&'m BTreeMap<SlotRef, SlotRef>);
+        impl Restamp<'_> {
+            fn var(&self, v: &mut crate::ir::Var) {
+                if let Some(to) = v.slot.and_then(|s| self.0.get(&s)) {
+                    v.slot = Some(*to);
+                }
+            }
+        }
+        impl MutVisitor for Restamp<'_> {
+            fn visit_statement(&mut self, s: &mut Statement) {
+                if let Statement::Let { name, .. } = s {
+                    self.var(name);
+                }
+                self.walk_statement(s);
+            }
+            fn visit_expression(&mut self, e: &mut Expression) {
+                if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                    self.var(v);
+                }
+                self.walk_expression(e);
+            }
+            fn visit_assign_target(&mut self, t: &mut AssignTarget) {
+                if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                    self.var(v);
+                }
+                self.walk_assign_target(t);
+            }
+        }
+        struct Create(u32);
+        impl MutVisitor for Create {
+            fn visit_expression(&mut self, e: &mut Expression) {
+                if let Expression::Call { callee, arguments } = e {
+                    let plain_args = arguments.iter().all(|a| {
+                        matches!(
+                            a,
+                            Expression::Value(
+                                Value::Constant(crate::ir::Constant::Undefined) | Value::This
+                            )
+                        )
+                    });
+                    if let Expression::Function {
+                        id,
+                        is_generator: true,
+                        ..
+                    } = callee.as_ref()
+                    {
+                        if id.0 == self.0 && plain_args {
+                            let mut step = callee.as_ref().clone();
+                            if let Expression::Function {
+                                is_generator,
+                                is_async,
+                                ..
+                            } = &mut step
+                            {
+                                *is_generator = false;
+                                *is_async = false;
+                            }
+                            *e = Expression::Call {
+                                callee: Box::new(Expression::member(
+                                    Expression::Value(Value::Binding(
+                                        crate::ir::Binding::Variable("HermesBuiltin".into()),
+                                    )),
+                                    "createGenerator",
+                                )),
+                                arguments: vec![step],
+                            };
+                            return;
+                        }
+                    }
+                }
+                self.walk_expression(e);
+            }
+        }
+        for &(fid, inner) in raw {
+            // The environment the machine builds on its first step is kept in
+            // the wrapper's and lives as long as the generator: its slots (a
+            // loop counter across yields) are the wrapper's variables, which
+            // the step reads; declared in the step they restarted each call.
+            // Its later steps reach that environment through the wrapper's
+            // slot, a load the stamps cannot follow, so those references are
+            // plain names, and the scope hangs below the step, never above
+            // it. Each slot the step uses becomes a variable of the wrapper,
+            // the step's parent: its references are stamped with a slot of
+            // the wrapper's past any real one, which the wrapper binds, so the
+            // step takes the name for the wrapper's and does not declare it.
+            let moved = closure_ctx.rehome_block_scopes(inner, fid);
+            let mut bound: BTreeMap<crate::ir::SlotRef, String> = BTreeMap::new();
+            let mut restamp: BTreeMap<crate::ir::SlotRef, crate::ir::SlotRef> = BTreeMap::new();
+            if let Some(step) = all_ir.get(&inner) {
+                for (name, slot) in crate::analysis::closure::stamps::var_refs(step) {
+                    if let Some(slot) = slot.filter(|s| moved.contains(&s.owner)) {
+                        let scope = moved.iter().position(|m| *m == slot.owner).unwrap_or(0) as u32;
+                        let held = crate::ir::SlotRef {
+                            owner: fid,
+                            slot: STEP_ENV_SLOTS | scope << 16 | (slot.slot & 0xFFFF),
+                        };
+                        restamp.insert(slot, held);
+                        bound.entry(held).or_insert_with(|| name.to_string());
+                    }
+                }
+            }
+            if let Some(step) = all_ir.get_mut(&inner) {
+                Restamp(&restamp).visit_statement_list(step);
+            }
+            if let Some(body) = all_ir.get_mut(&fid) {
+                let lets = bound.into_iter().map(|(slot, name)| Statement::Let {
+                    name: crate::ir::Var {
+                        name,
+                        slot: Some(slot),
+                    },
+                    value: Expression::Value(Value::Constant(crate::ir::Constant::Undefined)),
+                    kind: crate::ir::VarKind::Let,
+                });
+                body.splice(0..0, lets);
+            }
+            closure_ctx.generator_functions.remove(&inner);
+            closure_ctx.async_functions.remove(&inner);
+            closure_ctx.async_functions.remove(&fid);
+            if let Some((own, params)) = async_originals.get(&fid) {
+                all_ir.insert(fid, own.clone());
+                match params {
+                    Some(p) => param_names.insert(fid, p.clone()),
+                    None => param_names.remove(&fid),
+                };
+                continue;
+            }
+            if let Some(body) = all_ir.get_mut(&fid) {
+                Create(inner).visit_statement_list(body);
+            }
+        }
+    }
+
+    // A raw machine's environment variable (`keep_raw_machines`) is named by
+    // the passes after it like any slot, and the name can be its wrapper's
+    // parameter's: the machine copies the parameter in, and both take the
+    // name the code gives the value (`captureDetails`), or a slot of the
+    // wrapper's own or another machine slot can share it. Declared in the
+    // wrapper as well, it is a second `let` of the name, a syntax error (all
+    // but one of Discord's 49 unparsable modules). Such a variable takes a
+    // fresh name, everywhere its stamp is.
+    fn separate_step_env_names(
+        all_ir: &mut BTreeMap<u32, Vec<Statement>>,
+        param_names: &BTreeMap<u32, Vec<Option<String>>>,
+    ) {
+        use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, SlotRef, Value, Var};
+        let mut renames: BTreeMap<SlotRef, String> = BTreeMap::new();
+        let none = Vec::new();
+        for (&fid, body) in all_ir.iter() {
+            let is_step_env = |slot: Option<SlotRef>| {
+                slot.filter(|s| s.owner == fid && s.slot & STEP_ENV_SLOTS == STEP_ENV_SLOTS)
+            };
+            if !body.iter().any(
+                |st| matches!(st, Statement::Let { name, .. } if is_step_env(name.slot).is_some()),
+            ) {
+                continue;
+            }
+            let params: std::collections::HashSet<&str> = param_names
+                .get(&fid)
+                .unwrap_or(&none)
+                .iter()
+                .flatten()
+                .map(String::as_str)
+                .collect();
+            let refs = crate::analysis::closure::stamps::var_refs(body);
+            let mut used: std::collections::HashSet<String> =
+                refs.iter().map(|(n, _)| n.to_string()).collect();
+            used.extend(params.iter().map(|p| p.to_string()));
+            let mut kept: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for stmt in body {
+                let Statement::Let { name, .. } = stmt else {
+                    continue;
+                };
+                let Some(slot) = is_step_env(name.slot) else {
+                    continue;
+                };
+                // Another variable of the wrapper under this name: a
+                // parameter, a slot of its own (`userId = 0`, declared by
+                // codegen later), or another machine slot already named so.
+                let clash = params.contains(name.name.as_str())
+                    || kept.contains(name.name.as_str())
+                    || refs
+                        .iter()
+                        .any(|(n, s)| *n == name.name.as_str() && *s != Some(slot));
+                if !clash {
+                    kept.insert(name.name.as_str());
+                    continue;
+                }
+                let mut n = 2;
+                let fresh = loop {
+                    let candidate = format!("{}{n}", name.name);
+                    if !used.contains(&candidate) {
+                        break candidate;
+                    }
+                    n += 1;
+                };
+                used.insert(fresh.clone());
+                renames.insert(slot, fresh);
+            }
+        }
+        if renames.is_empty() {
+            return;
+        }
+        struct Rename<'r>(&'r BTreeMap<SlotRef, String>);
+        impl Rename<'_> {
+            fn var(&self, v: &mut Var) {
+                if let Some(n) = v.slot.and_then(|s| self.0.get(&s)) {
+                    v.name = n.clone();
+                }
+            }
+        }
+        impl MutVisitor for Rename<'_> {
+            fn visit_statement(&mut self, s: &mut Statement) {
+                if let Statement::Let { name, .. } = s {
+                    self.var(name);
+                }
+                self.walk_statement(s);
+            }
+            fn visit_expression(&mut self, e: &mut Expression) {
+                if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                    self.var(v);
+                }
+                self.walk_expression(e);
+            }
+            fn visit_assign_target(&mut self, t: &mut AssignTarget) {
+                if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                    self.var(v);
+                }
+                self.walk_assign_target(t);
+            }
+        }
+        let mut r = Rename(&renames);
+        for body in all_ir.values_mut() {
+            r.visit_statement_list(body);
+        }
+    }
+
     // See STAGE W16b. Replace each generator wrapper's body with the inner
     // generator body it merely creates and returns.
     pub(super) fn collapse_generator_wrappers(
         all_ir: &mut BTreeMap<u32, Vec<Statement>>,
         closure_ctx: &mut ClosureContext,
+        param_names: &mut BTreeMap<u32, Vec<Option<String>>>,
+        async_originals: &async_detection::Unwrapped,
     ) {
         // Names each function's nested functions still read: never dropped as
         // dead by the cleanups below.
@@ -336,9 +610,22 @@ impl PipelineContext {
         // `generator_wrapper_target` only matches Function{is_generator:true}, so
         // the inner is a generator even if analysis missed marking it earlier.
         let mut replacements: Vec<(u32, u32, Vec<Statement>)> = Vec::new();
+        let mut raw: Vec<(u32, u32)> = Vec::new();
         for (&fid, body) in all_ir.iter() {
             if let Some(inner) = generator_wrapper_target(body) {
-                if inner != fid && all_ir.contains_key(&inner) {
+                // A v98 machine that will not lift stays apart from its
+                // wrapper. Its status and label live in the wrapper's
+                // environment, kept from one call of the machine to the next;
+                // moved into the wrapper they became locals the machine
+                // declared afresh on every call (`let c0; if (c0 === 2)`),
+                // 1 750 of them on Discord.
+                let stays_raw = all_ir.get(&inner).is_some_and(|b| {
+                    transforms::is_generator_state_machine_v98(b)
+                        && transforms::try_reconstruct_generator_v98(b).is_none()
+                });
+                if inner != fid && stays_raw {
+                    raw.push((fid, inner));
+                } else if inner != fid && all_ir.contains_key(&inner) {
                     replacements.push((fid, inner, Self::parameter_captures(body)));
                 }
             }
@@ -352,6 +639,7 @@ impl PipelineContext {
         let wrappers: std::collections::HashSet<u32> =
             replacements.iter().map(|(fid, _, _)| *fid).collect();
         replacements.retain(|(_, inner, _)| !wrappers.contains(inner));
+        Self::keep_raw_machines(all_ir, closure_ctx, param_names, async_originals, &raw);
         // Parameter captures held back from each collapsed wrapper, re-attached
         // once the state machine has been lifted.
         let mut wrapper_captures: BTreeMap<u32, Vec<Statement>> = BTreeMap::new();
@@ -386,6 +674,7 @@ impl PipelineContext {
                 // The inner body now lives in the wrapper; drop the standalone copy
                 // so it is not also emitted as an orphan function.
                 all_ir.remove(&inner);
+                closure_ctx.rehome_block_scopes(inner, fid);
             }
         }
         // The wrapper collapse above just marked new generators, and W14 marked the

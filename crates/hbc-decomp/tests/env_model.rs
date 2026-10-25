@@ -9,7 +9,7 @@
 //! for `<name>.vN.hbc` (`scripts/build/build_env_fixtures.sh` rebuilds both),
 //! so the oracle is the bytecode's behaviour, not the source's.
 //!
-//! The decompiled program runs under node, wrapped with a `print` shim and a
+//! The decompiled program runs under node, wrapped with shims (`SHIMS`) and a
 //! call to the `global` function the decompiler prints the top level as. No
 //! node on PATH skips the run with a note.
 //!
@@ -27,17 +27,8 @@ use hbc_decomp::{BytecodeFile, BytecodeFormat, DecompileOptionsV2};
 // `env:` marks a cause in the environment model (V98_ENV_PLAN.md), `other:` one
 // outside it that the fixture happens to reach first.
 const KNOWN: &[(&str, u32, &str)] = &[
-    ("async_forms", 98, "env: a closure reads `closure_1$2`, a disambiguated slot name nothing declares"),
-    ("async_forms", 99, "env: a closure reads `closure_1$2`, a disambiguated slot name nothing declares"),
-    ("block_scopes", 96, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),
-    ("block_scopes", 98, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),
-    ("block_scopes", 99, "env: a slot of the function's environment is declared inside the loop, so each iteration gets a binding the bytecode shares"),
-    ("class_super", 98, "other: an explicit `super(a, 1)` lowers to a construct of the parent with new.target, which prints as `new Own(…)`, and hermesc inlines the constructor at `new Own(4)`, which prints a private store outside the class"),
-    ("class_super", 99, "other: an explicit `super(a, 1)` lowers to a construct of the parent with new.target, which prints as `new Own(…)`, and hermesc inlines the constructor at `new Own(4)`, which prints a private store outside the class"),
-    ("deep_nesting", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
-    ("deep_nesting", 99, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as an undeclared `tmp2`"),
-    ("generator_states", 98, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as `tmp3` before it is declared"),
-    ("generator_states", 99, "env: the generator's state machine is printed raw; its state, kept in the wrapper's environment slots, reads as `tmp3` before it is declared"),
+    ("class_super", 98, "other: hermesc inlines the constructor at `new Own(4)`, so its private-field installs print outside the class, a syntax error; never seen in the four bundles (privateTwice 0). class_super_call covers the explicit `super(a, 1)` itself"),
+    ("class_super", 99, "other: hermesc inlines the constructor at `new Own(4)`, so its private-field installs print outside the class, a syntax error; never seen in the four bundles (privateTwice 0). class_super_call covers the explicit `super(a, 1)` itself"),
 ];
 
 fn fixture_dir() -> PathBuf {
@@ -76,12 +67,21 @@ fn node_available() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+// A generator machine the decompiler could not lift prints as
+// `HermesBuiltin.createGenerator(step)`, the `CreateGenerator` instruction,
+// which node lacks. The shim gives it the instruction's contract (`next`,
+// `throw` and `return` call the step with 0, 1 and 2 and hand back its
+// `{ value, done }`), so the run tests the machine itself.
+const SHIMS: &str = "globalThis.print = (...a) => console.log(...a);
+globalThis.HermesBuiltin = { createGenerator: (step) => ({ next: (v) => step(0, v), \
+throw: (e) => step(1, e), return: (v) => step(2, v), [Symbol.iterator]() { return this; } }) };
+";
+
 // Run `program` under node; stdout on a clean exit, the first error line
 // otherwise. A decompiled state machine can loop, so the run is time-boxed.
 fn run_node(program: &str, scratch: &Path) -> Result<String, String> {
     let script = scratch.with_extension("run.js");
-    let wrapped =
-        format!("globalThis.print = (...a) => console.log(...a);\n{program}\n;global();\n");
+    let wrapped = format!("{SHIMS}{program}\n;global();\n");
     std::fs::write(&script, wrapped).map_err(|e| e.to_string())?;
     let mut child = Command::new("node")
         .arg(&script)

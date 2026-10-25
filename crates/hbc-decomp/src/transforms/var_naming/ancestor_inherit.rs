@@ -14,7 +14,7 @@
 // than aliased. An honest generic name is preferred over two different values sharing
 // one identifier.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::analysis::naming::rename_variables_in_stmts;
 use crate::analysis::{ClosureContext, ClosureInfo};
@@ -23,6 +23,7 @@ use crate::ir::{Expression, Statement, Value, Visitor};
 pub fn inherit_ancestor_closure_names(
     all_ir: &mut BTreeMap<u32, Vec<Statement>>,
     closure_ctx: &ClosureContext,
+    param_names: &BTreeMap<u32, Vec<Option<String>>>,
 ) -> usize {
     let fids: Vec<u32> = all_ir.keys().copied().collect();
     // `get_closure_info_for` rebuilds and clones the whole ancestor-slot map, so
@@ -34,6 +35,8 @@ pub fn inherit_ancestor_closure_names(
     // Reused across functions (cleared each iteration) to avoid per-function allocation.
     let mut all_names: HashSet<String> = HashSet::new();
     let mut closure_names: HashSet<String> = HashSet::new();
+    // (scope, slot, name) for every slot a reader took its name from.
+    let mut inherited: BTreeSet<(u32, u32, String)> = BTreeSet::new();
 
     for fid in fids {
         all_names.clear();
@@ -128,6 +131,7 @@ pub fn inherit_ancestor_closure_names(
                 let fresh = super::closure_definitions::make_unique_name(&target, used);
                 renames.insert(target.clone(), fresh);
             }
+            inherited.insert((ancestor, slot, target.clone()));
             renames.insert(old, target);
         }
 
@@ -138,7 +142,119 @@ pub fn inherit_ancestor_closure_names(
             }
         }
     }
+    total + rename_owner_bindings(all_ir, closure_ctx, param_names, &inherited)
+}
+
+// The owner's own binding of a slot its readers now call `name`. The slot's
+// recorded name is often the parameter stored into it, so the readers said
+// `filterBy` while the owner kept `let closure_0 = filterBy`: one variable
+// under two names (I1), 1 355 of them on Equinox. The owner follows only
+// when every other reference to the slot already says `name` and `name`
+// means nothing else in the owner's body; the parameter whose value the slot
+// holds is the one exception, and its store then prints as `filterBy =
+// filterBy`, which codegen drops.
+fn rename_owner_bindings(
+    all_ir: &mut BTreeMap<u32, Vec<Statement>>,
+    closure_ctx: &ClosureContext,
+    param_names: &BTreeMap<u32, Vec<Option<String>>>,
+    inherited: &BTreeSet<(u32, u32, String)>,
+) -> usize {
+    use super::closure_definitions::{owner_slot_names, SlotFollow};
+    if inherited.is_empty() {
+        return 0;
+    }
+    let follow = SlotFollow::new(all_ir);
+    let owner_names = owner_slot_names(all_ir, closure_ctx);
+    let no_renames = BTreeMap::new();
+    let mut names_of: HashMap<u32, HashSet<String>> = HashMap::new();
+    let mut per_owner: BTreeMap<u32, BTreeMap<String, String>> = BTreeMap::new();
+    for (scope, slot, name) in inherited {
+        let Some(var) = follow.owner_binding_if_follows(
+            closure_ctx,
+            &owner_names,
+            (*scope, *slot),
+            name,
+            &no_renames,
+        ) else {
+            continue;
+        };
+        let owner = closure_ctx.scope_function(*scope);
+        let Some(stmts) = all_ir.get(&owner) else {
+            continue;
+        };
+        let names = names_of
+            .entry(owner)
+            .or_insert_with(|| super::capture_sync::names_in(stmts));
+        if names.contains(name) || closure_ctx.declared_function_names(owner).contains(name) {
+            continue;
+        }
+        let param = param_names
+            .get(&owner)
+            .and_then(|ps| ps.iter().position(|p| p.as_deref() == Some(name.as_str())));
+        let key = crate::ir::SlotRef {
+            owner: *scope,
+            slot: *slot,
+        };
+        if param.is_some_and(|i| !stores_param(stmts, key, i as u32)) {
+            continue;
+        }
+        per_owner
+            .entry(owner)
+            .or_default()
+            .insert(var, name.clone());
+    }
+    let mut total = 0;
+    for (owner, mut renames) in per_owner {
+        // Two slots of one owner that would take one name: neither does.
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for n in renames.values() {
+            *counts.entry(n.clone()).or_default() += 1;
+        }
+        renames.retain(|_, n| counts[n] == 1);
+        if let Some(stmts) = all_ir.get_mut(&owner) {
+            total += renames.len();
+            rename_variables_in_stmts(stmts, &renames);
+        }
+    }
     total
+}
+
+// The body stores parameter `index` into `slot` (`closure_0 = arg0`).
+fn stores_param(stmts: &[Statement], slot: crate::ir::SlotRef, index: u32) -> bool {
+    use crate::ir::{AssignTarget, Binding};
+    struct S {
+        slot: crate::ir::SlotRef,
+        index: u32,
+        found: bool,
+    }
+    impl S {
+        fn check(&mut self, v: &crate::ir::Var, value: &Expression) {
+            self.found |= v.slot == Some(self.slot)
+                && matches!(value, Expression::Value(Value::Parameter(i)) if *i == self.index);
+        }
+    }
+    impl<'a> Visitor<'a> for S {
+        fn visit_statement(&mut self, s: &'a Statement) {
+            match s {
+                Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Variable(v)),
+                    value,
+                } => self.check(v, value),
+                Statement::Let { name, value, .. } => self.check(name, value),
+                _ => {}
+            }
+            self.walk_statement(s);
+        }
+    }
+    let mut s = S {
+        slot,
+        index,
+        found: false,
+    };
+    for st in stmts {
+        s.visit_statement(st);
+    }
+    s.found
 }
 
 // Every name the statements assign or declare, nested blocks included.
@@ -337,7 +453,55 @@ fn collect_names(stmts: &[Statement], all: &mut HashSet<String>, closures: &mut 
 
 #[cfg(test)]
 mod tests {
-    use super::is_inheritable;
+    use super::*;
+    use crate::ir::{AssignTarget, Binding, SlotRef, Var};
+
+    fn slot_var(name: &str, owner: u32, slot: u32) -> Var {
+        Var {
+            name: name.into(),
+            slot: Some(SlotRef { owner, slot }),
+        }
+    }
+
+    // Function 1 stores its parameter in slot 0; function 2 reads the slot
+    // by the parameter's name. `local` is a further statement for the owner.
+    fn owner_and_reader(local: Option<Statement>) -> BTreeMap<u32, Vec<Statement>> {
+        let mut owner = vec![Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable(slot_var("closure_0", 1, 0))),
+            value: Expression::Value(Value::Parameter(0)),
+        }];
+        owner.extend(local);
+        let reader = vec![Statement::Expr(Expression::Value(Value::Binding(
+            Binding::Variable(slot_var("filterBy", 1, 0)),
+        )))];
+        BTreeMap::from([(1, owner), (2, reader)])
+    }
+
+    fn rename(all_ir: &mut BTreeMap<u32, Vec<Statement>>) -> usize {
+        let mut ctx = ClosureContext::default();
+        ctx.parent_function.insert(2, 1);
+        let params = BTreeMap::from([(1, vec![Some("filterBy".to_string())])]);
+        let inherited = BTreeSet::from([(1, 0, "filterBy".to_string())]);
+        rename_owner_bindings(all_ir, &ctx, &params, &inherited)
+    }
+
+    #[test]
+    fn the_owner_takes_the_name_its_readers_inherited() {
+        let mut all_ir = owner_and_reader(None);
+        assert_eq!(rename(&mut all_ir), 1);
+        assert_eq!(all_ir[&1][0].to_string(), "filterBy = arg0;");
+    }
+
+    #[test]
+    fn the_owner_keeps_its_binding_when_the_name_is_taken() {
+        let local = Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable("filterBy".into())),
+            value: Expression::Value(Value::Constant(crate::ir::Constant::Null)),
+        };
+        let mut all_ir = owner_and_reader(Some(local));
+        assert_eq!(rename(&mut all_ir), 0);
+        assert_eq!(all_ir[&1][0].to_string(), "closure_0 = arg0;");
+    }
 
     #[test]
     fn accessor_keys_are_not_inheritable() {

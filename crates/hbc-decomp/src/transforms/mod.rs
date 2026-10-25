@@ -38,7 +38,8 @@ pub use destructuring::{
 };
 pub use generator::{
     cleanup_generator_comments, detect_generator_patterns, has_generator_patterns,
-    reconstruct_generator_v98, simplify_state_machine, try_reconstruct_generator_v98,
+    is_generator_state_machine_v98, reconstruct_generator_v98, simplify_state_machine,
+    try_reconstruct_generator_v98,
 };
 pub use hoist_closures::hoist_repeated_closures;
 pub use inline::{

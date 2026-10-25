@@ -261,9 +261,7 @@ impl Step<'_> {
                     parent: None,
                 })
             }
-            "GetParentEnvironment" | "LoadParentNoTraps" | "TypedLoadParent" => {
-                Some(Env::Closure(imm(inst, 1).unwrap_or(0) + 1))
-            }
+            "GetParentEnvironment" => Some(Env::Closure(imm(inst, 1).unwrap_or(0) + 1)),
             "GetEnvironment" if inst.operands.len() >= 3 => {
                 let start = Self::env_of(state, reg(inst, 1));
                 Some(start.up(imm(inst, 2).unwrap_or(0)))

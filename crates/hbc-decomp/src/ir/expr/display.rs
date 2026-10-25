@@ -269,13 +269,24 @@ pub fn format_expr(expr: &Expression) -> String {
             } else {
                 (prec, prec + 1)
             };
-            let l = format_expr_with_parens(left, l_prec);
+            // `-a ** b` does not parse: the left of `**` cannot be a unary
+            // expression, whatever the precedence says.
+            let l = if matches!(op, BinaryOp::Exp)
+                && matches!(left.as_ref(), Expression::Unary { .. })
+            {
+                format!("({})", format_expr(left))
+            } else {
+                format_expr_with_parens(left, l_prec)
+            };
             let r = format_expr_with_parens(right, r_prec);
             format!("{l} {op} {r}")
         }
-        Expression::Unary { op, operand } => {
-            format!("{op}{}", format_expr(operand))
-        }
+        Expression::Unary { op, operand } => match operand.as_ref() {
+            Expression::Binary { .. } | Expression::Conditional { .. } => {
+                format!("{op}({})", format_expr(operand))
+            }
+            _ => format!("{op}{}", format_expr(operand)),
+        },
         Expression::Conditional {
             condition,
             then_expr,
