@@ -6,10 +6,10 @@
 > *Delegates* environment and slot identity to
 > `../03_analysis/closure_model/V98_ENV_PLAN.md` and `K4_PLAN.md`.
 
-Status: **D0, D1, D2, D3 and D3.1 landed (2026-10-24).** Every root cause below comes
+Status: **D0, D1, D2, D3 and D3.1 landed (2026-10-25).** Every root cause below comes
 from an investigation run on 2026-10-23 against main at 330e329 (outputs `k4e3`). Each was
 reproduced on a fixture or a bundle output. File:line references are as of that commit; check
-them again when implementing. Results are in §5 (D0, D1), §6 (D2), §7 (D3) and §8 (D3.1).
+them again when implementing. Results are in §5 (D0, D1), §6 (D2), §7 (D3), §8 (D3.1) and §9 (D3.1, slot naming).
 
 ---
 
@@ -472,3 +472,56 @@ are printed again (`slot_identity_baseline.tsv`).
 - Ceilings: Equinox I1 1,055, I2 2,136, I3 9; CoachRx 1,103, 1,624, 9.
 - E1 KNOWN: block_scopes ×3, async_forms ×2, generator_states ×2 and deep_nesting ×2 off;
   raw_generators ×2 and class_super_call ×2 (new) pass. 2 rows left, class_super ×2.
+
+## 9. D3.1, slot naming and spread calls
+
+**[measured]** Base: §8. A breakdown of Discord's undeclared references (22,068) by cause
+picked four targets: a slot whose owner and readers disagree on its name (21.6%), unfolded
+`HermesBuiltin.arraySpread`/`apply` (about 2,000), a local named like a capture the same body
+reads (most of I2), and undefined `tmp` stores in raw machines.
+
+| | Equinox | CoachRx | Expensify | Discord |
+|---|---|---|---|---|
+| I1 | 1,055 → 875 | 1,103 → 704 | 2,641 → 2,173 | 8,367 → 7,593 |
+| I2 | 2,136 → 409 | 1,624 → 271 | 4,073 → 1,627 | 7,263 → 2,772 |
+| I3 | 9 → 7 | 9 → 7 | 268 → 285 | 351 → 369 |
+| undeclared | 6,346 → 6,169 | 9,864 → 9,472 | 27,254 → 25,061 | 22,068 → 18,788 |
+| `HermesBuiltin.*` | 90 → 90 | 532 → 252 | 3,055 → 1,870 | 3,867 → 2,873 |
+| unparsable modules | 0 → 0 | 0 → 0 | 5 → 0 | 3 → 3 |
+
+- **Definition-site names go to the slot (W11).** `rename_closures_from_definitions` renamed
+  `closure_N` after the value a body stores into it, in that body alone. The body that stored
+  was often a reader (`closure_1 = constants.getConstants()` in a getter), so the owner kept
+  `let closure_1 = null` and the readers said `constants2`. A name for a stamped variable now
+  names the slot, unique across every body that uses it, and is applied in all of them.
+  Closure naming also filed a block scope's owner rename under the scope's own id, which has no
+  body; it goes to the function that built the block, when every reference follows.
+- **A local named like a capture the body reads takes a fresh name**
+  (`separate_locals_from_captures`). The slot's name comes from the owner's local and reaches
+  readers whatever they call their own temporaries; the local was then undeclared and wrote the
+  outer variable (`consoleTablePolyfill`'s `obj = {}` over the level table). Only a slot of a
+  real ancestor counts as a capture: a collapsed machine's variables are the body's own.
+- **A collapsed machine's variables are the wrapper's** (`restamp_collapsed_machines`). Their
+  stamps kept the removed machine as owner, so closures made in the body declared their own copy
+  (`let session` in an arrow whose write had to reach the async function's `session`).
+- **Spread calls.** The early fold built calls without the receiver argument W12 strips, so it
+  stripped a real one (`f(1, 2, ...s)` printed `f(2, ...s)`); a store at the index a spread
+  returns (`[0, ...s, 5]`) folds; a late pass folds spreads into named argument arrays. Fixture
+  spread_calls (new).
+- **Raw async machines.** A function W15 unwrapped is restored before anything moves to the
+  machine's real wrapper, and that wrapper stays a plain function after the async re-scan.
+  `fold_prop_assignments` (JSX) no longer folds a store into an earlier literal across a
+  statement that writes what the value reads (a step's result read `_Promise` before it was
+  assigned). Fixture raw_async (new), with a `spawnAsync` shim in E1.
+- **Not done: the undefined `tmp` stores in raw machines are S3.** On its first step a machine
+  stores its parent environment and the environment it creates into its wrapper's slots
+  (`StoreToEnvironment wrapper, 1, GetParentEnvironment 1`; `…, 0, CreateTopLevelEnvironment`),
+  and its later steps reach `this`, parameters and its own variables through them. The
+  scope graph already resolves those accesses (V98_ENV_PLAN E3/E4; the identity log's 36,693
+  "slot-held env accesses" counts the shape, not failures). What is left is that the parking
+  itself prints: `closure_0$2 = tmp`, about 3,500 lines on Discord. Staged plan:
+  `03_analysis/closure_model/S3_PARKED_ENV_PLAN.md`.
+- Still on Discord: `HermesBuiltin.createGenerator` 1,711 (raw machines), `arraySpread` 992
+  (shapes neither fold reads yet), lodash's `arr` (1,214), and 3 modules where a raw machine's
+  wrapper declares one of its own slots under its parameter's name.
+- Ceilings: Equinox I1 875, I2 409, I3 7; CoachRx 704, 271, 7.

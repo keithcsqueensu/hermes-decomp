@@ -206,6 +206,9 @@ impl PipelineContext {
         crate::analysis::closure::stamps::report("after W16g", all_ir, closure_ctx.as_ref());
 
         Self::separate_step_env_names(all_ir, &global_analysis.param_names);
+        if let Some(ctx) = closure_ctx.as_ref() {
+            Self::separate_locals_from_captures(all_ir, ctx);
+        }
     }
 
     // The wrapper statements that must survive its body being replaced: the
@@ -428,7 +431,25 @@ impl PipelineContext {
                 self.walk_expression(e);
             }
         }
+        // A function W15 unwrapped is not the machine's wrapper: its body was
+        // a copy of the wrapper's, and it gets its own back (`spawnAsync(…)`)
+        // before anything is moved to the wrapper proper.
         for &(fid, inner) in raw {
+            if let Some((own, params)) = async_originals.get(&fid) {
+                all_ir.insert(fid, own.clone());
+                match params {
+                    Some(p) => param_names.insert(fid, p.clone()),
+                    None => param_names.remove(&fid),
+                };
+                closure_ctx.async_functions.remove(&fid);
+                closure_ctx.generator_functions.remove(&inner);
+                closure_ctx.async_functions.remove(&inner);
+            }
+        }
+        for &(fid, inner) in raw {
+            if async_originals.contains_key(&fid) {
+                continue;
+            }
             // The environment the machine builds on its first step is kept in
             // the wrapper's and lives as long as the generator: its slots (a
             // loop counter across yields) are the wrapper's variables, which
@@ -473,17 +494,146 @@ impl PipelineContext {
             closure_ctx.generator_functions.remove(&inner);
             closure_ctx.async_functions.remove(&inner);
             closure_ctx.async_functions.remove(&fid);
-            if let Some((own, params)) = async_originals.get(&fid) {
-                all_ir.insert(fid, own.clone());
-                match params {
-                    Some(p) => param_names.insert(fid, p.clone()),
-                    None => param_names.remove(&fid),
-                };
-                continue;
-            }
             if let Some(body) = all_ir.get_mut(&fid) {
                 Create(inner).visit_statement_list(body);
             }
+        }
+    }
+
+    // A body's own local named like a variable of an enclosing scope the same
+    // body reads (I2 CaptureAndLocal, 4 850 on Discord; `obj` alone 2 140):
+    // the slot's name comes from the owner's local and reaches its readers when
+    // closures are resolved, whatever the reader already calls its own
+    // temporaries. Printed as is, the local is not declared (the name is taken)
+    // and its writes land in the outer variable: `consoleTablePolyfill`'s
+    // `obj = {}` replaced the console's level table it reads as `obj.info`.
+    // The local is the body's alone (a nested function reaches a variable of
+    // this body through a slot, stamped), so it takes a fresh name.
+    fn separate_locals_from_captures(
+        all_ir: &mut BTreeMap<u32, Vec<Statement>>,
+        ctx: &ClosureContext,
+    ) {
+        use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, Value, Var, Visitor};
+        use std::collections::{HashMap, HashSet};
+        #[derive(Default)]
+        struct Use {
+            captured: bool,
+            plain: bool,
+            plain_write: bool,
+        }
+        struct Scan<'c> {
+            ctx: &'c ClosureContext,
+            // The functions enclosing the body: a slot of one of them (or of
+            // a block scope one of them built) is a capture. Any other stamp
+            // (the body's own scopes, or the machine a generator wrapper took
+            // its body from) is the body's variable, whose plain references
+            // only lost their stamp.
+            ancestors: HashSet<u32>,
+            own: HashSet<u32>,
+            uses: HashMap<String, Use>,
+        }
+        impl Scan<'_> {
+            fn note(&mut self, v: &Var, write: bool) {
+                let u = self.uses.entry(v.name.clone()).or_default();
+                match v.slot {
+                    Some(s)
+                        if !self.own.contains(&s.owner)
+                            && self.ancestors.contains(&self.ctx.scope_function(s.owner)) =>
+                    {
+                        u.captured = true
+                    }
+                    Some(_) => {}
+                    None => {
+                        u.plain = true;
+                        u.plain_write |= write;
+                    }
+                }
+            }
+        }
+        impl<'a> Visitor<'a> for Scan<'_> {
+            fn visit_statement(&mut self, s: &'a Statement) {
+                if let Statement::Let { name, .. } = s {
+                    self.note(name, true);
+                }
+                self.walk_statement(s);
+            }
+            fn visit_expression(&mut self, e: &'a Expression) {
+                if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                    self.note(v, false);
+                }
+                self.walk_expression(e);
+            }
+            fn visit_assign_target(&mut self, t: &'a AssignTarget) {
+                if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                    self.note(v, true);
+                }
+                self.walk_assign_target(t);
+            }
+        }
+        struct Rename<'r>(&'r HashMap<String, String>);
+        impl Rename<'_> {
+            fn var(&self, v: &mut Var) {
+                if v.slot.is_none() {
+                    if let Some(n) = self.0.get(&v.name) {
+                        v.name = n.clone();
+                    }
+                }
+            }
+        }
+        impl MutVisitor for Rename<'_> {
+            fn visit_statement(&mut self, s: &mut Statement) {
+                if let Statement::Let { name, .. } = s {
+                    self.var(name);
+                }
+                self.walk_statement(s);
+            }
+            fn visit_expression(&mut self, e: &mut Expression) {
+                if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                    self.var(v);
+                }
+                self.walk_expression(e);
+            }
+            fn visit_assign_target(&mut self, t: &mut AssignTarget) {
+                if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                    self.var(v);
+                }
+                self.walk_assign_target(t);
+            }
+        }
+        for (&fid, body) in all_ir.iter_mut() {
+            let mut scan = Scan {
+                ctx,
+                ancestors: ctx.ancestors_of(fid).into_iter().collect(),
+                own: crate::analysis::closure::stamps::own_scopes(ctx, fid),
+                uses: HashMap::new(),
+            };
+            for s in body.iter() {
+                scan.visit_statement(s);
+            }
+            let clashing: Vec<String> = scan
+                .uses
+                .iter()
+                .filter(|(_, u)| u.captured && u.plain && u.plain_write)
+                .map(|(n, _)| n.clone())
+                .collect();
+            if clashing.is_empty() {
+                continue;
+            }
+            let mut used: HashSet<String> = scan.uses.keys().cloned().collect();
+            let mut renames: HashMap<String, String> = HashMap::new();
+            for name in clashing {
+                let mut k = 2;
+                let fresh = loop {
+                    let candidate = format!("{name}{k}");
+                    if !used.contains(&candidate) {
+                        break candidate;
+                    }
+                    k += 1;
+                };
+                used.insert(fresh.clone());
+                renames.insert(name, fresh);
+            }
+            Rename(&renames).visit_statement_list(body);
         }
     }
 
@@ -643,6 +793,7 @@ impl PipelineContext {
         // Parameter captures held back from each collapsed wrapper, re-attached
         // once the state machine has been lifted.
         let mut wrapper_captures: BTreeMap<u32, Vec<Statement>> = BTreeMap::new();
+        let mut collapsed: BTreeMap<u32, u32> = BTreeMap::new();
         for (fid, inner, captures) in replacements {
             if let Some(inner_body) = all_ir.get(&inner).cloned() {
                 // The wrapper's body goes away, but the stores that put its
@@ -675,8 +826,10 @@ impl PipelineContext {
                 // so it is not also emitted as an orphan function.
                 all_ir.remove(&inner);
                 closure_ctx.rehome_block_scopes(inner, fid);
+                collapsed.insert(inner, fid);
             }
         }
+        restamp_collapsed_machines(all_ir, &collapsed);
         // The wrapper collapse above just marked new generators, and W14 marked the
         // wrappers async. Propagate now so a generator whose parent is async is
         // known to be async BEFORE the reconstruction loop below, which is what
@@ -750,6 +903,13 @@ impl PipelineContext {
         let async_ids = async_detection::detect_async_generator_wrappers(all_ir);
         for func_id in &async_ids {
             closure_ctx.mark_async(*func_id);
+        }
+        // A raw machine's wrapper is what `spawnAsync` is handed, which the
+        // scan takes for an async helper's body; it returns the generator
+        // object that call drives, so it stays a plain function.
+        for (fid, inner) in &raw {
+            closure_ctx.async_functions.remove(fid);
+            closure_ctx.async_functions.remove(inner);
         }
         // Every async function renders as `async function`, never `async
         // function*` (Hermes has no async generators; Babel lowers them), so a
@@ -855,6 +1015,67 @@ impl PipelineContext {
             let old = std::mem::take(stmts);
             *stmts = transforms::simplify_arguments_copy(old);
         }
+    }
+}
+
+// Slot numbers of a wrapper standing for the function scope of the machine
+// collapsed into it (`restamp_collapsed_machines`): apart from the wrapper's
+// own environment slots and from `STEP_ENV_SLOTS`.
+const COLLAPSED_SLOTS: u32 = 0x00D0_0000;
+
+// After a collapse the machine's body is the wrapper's, but its variables were
+// still stamped with the machine as owner, a function with no body now: to the
+// wrapper they read as another function's slots (a local, whatever its
+// closures did), and to the closures made in the body as slots of an owner
+// that binds nothing, so they declared their own (`let session` in an arrow
+// whose write had to reach the async function's `session`). They are the
+// wrapper's: stamped as its slots, in a range of their own.
+fn restamp_collapsed_machines(
+    all_ir: &mut BTreeMap<u32, Vec<crate::ir::Statement>>,
+    collapsed: &BTreeMap<u32, u32>,
+) {
+    use crate::ir::{
+        AssignTarget, Binding, Expression, MutVisitor, SlotRef, Statement, Value, Var,
+    };
+    if collapsed.is_empty() {
+        return;
+    }
+    struct R<'m>(&'m BTreeMap<u32, u32>);
+    impl R<'_> {
+        fn var(&self, v: &mut Var) {
+            if let Some(s) = v.slot {
+                if let Some(&to) = self.0.get(&s.owner) {
+                    v.slot = Some(SlotRef {
+                        owner: to,
+                        slot: COLLAPSED_SLOTS | (s.slot & 0xFFFF),
+                    });
+                }
+            }
+        }
+    }
+    impl MutVisitor for R<'_> {
+        fn visit_statement(&mut self, s: &mut Statement) {
+            if let Statement::Let { name, .. } = s {
+                self.var(name);
+            }
+            self.walk_statement(s);
+        }
+        fn visit_expression(&mut self, e: &mut Expression) {
+            if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                self.var(v);
+            }
+            self.walk_expression(e);
+        }
+        fn visit_assign_target(&mut self, t: &mut AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.var(v);
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut r = R(collapsed);
+    for body in all_ir.values_mut() {
+        r.visit_statement_list(body);
     }
 }
 

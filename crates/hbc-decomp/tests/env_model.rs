@@ -71,10 +71,17 @@ fn node_available() -> bool {
 // `HermesBuiltin.createGenerator(step)`, the `CreateGenerator` instruction,
 // which node lacks. The shim gives it the instruction's contract (`next`,
 // `throw` and `return` call the step with 0, 1 and 2 and hand back its
-// `{ value, done }`), so the run tests the machine itself.
+// `{ value, done }`), so the run tests the machine itself. An async function
+// whose machine does not lift keeps Hermes' `HermesBuiltin.spawnAsync(body,
+// this, arguments)`, which drives the generator `body` returns as the runtime
+// does.
 const SHIMS: &str = "globalThis.print = (...a) => console.log(...a);
 globalThis.HermesBuiltin = { createGenerator: (step) => ({ next: (v) => step(0, v), \
-throw: (e) => step(1, e), return: (v) => step(2, v), [Symbol.iterator]() { return this; } }) };
+throw: (e) => step(1, e), return: (v) => step(2, v), [Symbol.iterator]() { return this; } }), \
+spawnAsync: (body, self, args) => new Promise((resolve, reject) => { const it = body.apply(self, args); \
+const go = (k, v) => { let r; try { r = it[k](v); } catch (e) { return reject(e); } \
+if (r.done) resolve(r.value); else Promise.resolve(r.value).then((x) => go('next', x), (e) => go('throw', e)); }; \
+go('next'); }) };
 ";
 
 // Run `program` under node; stdout on a clean exit, the first error line

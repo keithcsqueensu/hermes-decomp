@@ -12,35 +12,188 @@ use super::closure_definitions::{collect_existing_names, make_unique_name};
 //
 // Returns the total number of variables renamed across all functions.
 pub fn rename_closures_from_definitions(all_ir: &mut BTreeMap<u32, Vec<Statement>>) -> usize {
+    use crate::ir::SlotRef;
+    use std::collections::{BTreeSet, HashMap, HashSet};
+
+    // Phase A, per body: the names its definitions suggest. A name that is a
+    // plain local of the body is renamed there and then. One the body uses for
+    // exactly one environment slot names the slot, in every body that uses it
+    // (phase B): renamed here alone, the body that happened to store into the
+    // slot (`closure_1 = constants.getConstants()` in a getter) printed one
+    // name and the owner and other readers another (I1; 5 403 slots on
+    // Discord, and the readers' name undeclared).
+    let mut slot_names: BTreeMap<SlotRef, (bool, u32, String)> = BTreeMap::new();
     let mut total = 0;
     let mut keys: Vec<_> = all_ir.keys().copied().collect();
     keys.sort();
     for key in keys {
-        if let Some(stmts) = all_ir.get_mut(&key) {
-            total += rename_closures_from_definitions_single(stmts);
+        let Some(stmts) = all_ir.get_mut(&key) else {
+            continue;
+        };
+        let mut used_names: HashSet<String> = HashSet::new();
+        collect_existing_names(stmts, &mut used_names);
+        let mut renames: BTreeMap<String, String> = BTreeMap::new();
+        scan_closure_defs(stmts, &mut renames, &mut used_names);
+        if renames.is_empty() {
+            continue;
+        }
+        let mut uses: HashMap<String, (BTreeSet<SlotRef>, bool)> = HashMap::new();
+        for (n, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
+            let u = uses.entry(n.to_string()).or_default();
+            match slot {
+                Some(slot) => {
+                    u.0.insert(slot);
+                }
+                None => u.1 = true,
+            }
+        }
+        let mut local: BTreeMap<String, String> = BTreeMap::new();
+        for (old, new) in renames {
+            match uses.get(&old) {
+                Some((slots, false)) if slots.len() == 1 => {
+                    let slot = *slots.iter().next().unwrap();
+                    // The owner's own definition first, then the lowest body.
+                    let rank = (slot.owner != key, key);
+                    let better = slot_names
+                        .get(&slot)
+                        .is_none_or(|(o, f, _)| rank < (*o, *f));
+                    if better {
+                        slot_names.insert(slot, (rank.0, key, new));
+                    }
+                }
+                Some((slots, _)) if !slots.is_empty() => {}
+                _ => {
+                    local.insert(old, new);
+                }
+            }
+        }
+        if !local.is_empty() {
+            total += local.len();
+            crate::analysis::naming::rename_variables_in_stmts(stmts, &local);
+        }
+    }
+    if slot_names.is_empty() {
+        return total;
+    }
+
+    // Phase B: each such slot takes the name in every body that uses it, made
+    // unique across them, by name where the body's old name means nothing else
+    // there (which also reaches a reference that lost its stamp), else by stamp.
+    let mut bodies_of: BTreeMap<SlotRef, BTreeSet<u32>> = BTreeMap::new();
+    let mut names_in: HashMap<u32, HashSet<String>> = HashMap::new();
+    for (&fid, stmts) in all_ir.iter() {
+        let refs = crate::analysis::closure::stamps::var_refs(stmts);
+        if refs
+            .iter()
+            .any(|(_, s)| s.is_some_and(|s| slot_names.contains_key(&s)))
+        {
+            for (n, slot) in &refs {
+                if let Some(slot) = slot.filter(|s| slot_names.contains_key(s)) {
+                    bodies_of.entry(slot).or_default().insert(fid);
+                }
+                names_in.entry(fid).or_default().insert(n.to_string());
+            }
+        }
+    }
+    let mut chosen: BTreeMap<SlotRef, String> = BTreeMap::new();
+    for (slot, (_, _, base)) in &slot_names {
+        let Some(bodies) = bodies_of.get(slot) else {
+            continue;
+        };
+        let taken = |n: &str| bodies.iter().any(|f| names_in[f].contains(n));
+        let mut name = base.clone();
+        let mut k = 2;
+        while taken(&name) {
+            name = format!("{base}{k}");
+            k += 1;
+        }
+        for f in bodies {
+            names_in.get_mut(f).unwrap().insert(name.clone());
+        }
+        chosen.insert(*slot, name);
+    }
+    let mut per_body: BTreeMap<u32, BTreeMap<SlotRef, String>> = BTreeMap::new();
+    for (slot, name) in &chosen {
+        for f in &bodies_of[slot] {
+            per_body.entry(*f).or_default().insert(*slot, name.clone());
+        }
+    }
+    for (fid, slots) in per_body {
+        let Some(stmts) = all_ir.get_mut(&fid) else {
+            continue;
+        };
+        // The body's old name for each slot, and whether it means only that.
+        let mut by_name: BTreeMap<String, String> = BTreeMap::new();
+        let mut by_stamp: BTreeMap<SlotRef, String> = BTreeMap::new();
+        let refs: Vec<(String, Option<SlotRef>)> =
+            crate::analysis::closure::stamps::var_refs(stmts)
+                .into_iter()
+                .map(|(n, s)| (n.to_string(), s))
+                .collect();
+        for (slot, new) in &slots {
+            let olds: BTreeSet<&String> = refs
+                .iter()
+                .filter(|(_, s)| *s == Some(*slot))
+                .map(|(n, _)| n)
+                .collect();
+            for old in olds {
+                let only_this = refs
+                    .iter()
+                    .filter(|(n, _)| n == old)
+                    .all(|(_, s)| s.is_none() || *s == Some(*slot));
+                if only_this && old != new {
+                    by_name.insert(old.clone(), new.clone());
+                } else {
+                    by_stamp.insert(*slot, new.clone());
+                }
+            }
+        }
+        total += by_name.len() + by_stamp.len();
+        if !by_name.is_empty() {
+            crate::analysis::naming::rename_variables_in_stmts(stmts, &by_name);
+        }
+        if !by_stamp.is_empty() {
+            rename_by_stamp(stmts, &by_stamp);
         }
     }
     total
 }
 
-fn rename_closures_from_definitions_single(stmts: &mut [Statement]) -> usize {
-    use std::collections::HashSet;
-
-    // Phase 1: Collect existing names to avoid collisions
-    let mut used_names: HashSet<String> = HashSet::new();
-    collect_existing_names(stmts, &mut used_names);
-
-    // Phase 2: Scan for closure_N definitions and infer names
-    let mut renames: BTreeMap<String, String> = BTreeMap::new();
-    scan_closure_defs(stmts, &mut renames, &mut used_names);
-
-    if renames.is_empty() {
-        return 0;
+// Rename every reference stamped with one of `slots`.
+fn rename_by_stamp(stmts: &mut [Statement], slots: &BTreeMap<crate::ir::SlotRef, String>) {
+    use crate::ir::{MutVisitor, Var};
+    struct R<'s>(&'s BTreeMap<crate::ir::SlotRef, String>);
+    impl R<'_> {
+        fn var(&self, v: &mut Var) {
+            if let Some(n) = v.slot.and_then(|s| self.0.get(&s)) {
+                v.name = n.clone();
+            }
+        }
     }
-
-    let count = renames.len();
-    crate::analysis::naming::rename_variables_in_stmts(stmts, &renames);
-    count
+    impl MutVisitor for R<'_> {
+        fn visit_statement(&mut self, s: &mut Statement) {
+            if let Statement::Let { name, .. } = s {
+                self.var(name);
+            }
+            self.walk_statement(s);
+        }
+        fn visit_expression(&mut self, e: &mut Expression) {
+            if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                self.var(v);
+            }
+            self.walk_expression(e);
+        }
+        fn visit_assign_target(&mut self, t: &mut AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.var(v);
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut r = R(slots);
+    for s in stmts.iter_mut() {
+        r.visit_statement(s);
+    }
 }
 
 fn scan_closure_defs(

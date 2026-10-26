@@ -497,3 +497,34 @@ fn document_create_element_stays_a_call() {
         assert!(matches!(expr, Expression::Call { .. }), "lowered: {expr}");
     }
 }
+
+#[test]
+fn a_store_reading_a_later_assignment_is_not_folded_up() {
+    // `obj = { value: null }; p = globalThis.Promise; obj.value = p.resolve(x)`:
+    // folded, the literal read `p` before it was assigned.
+    let v = |n: &str| Expression::Value(Value::Binding(Binding::Variable(n.into())));
+    let stmts = vec![
+        Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable("obj".into())),
+            value: Expression::Object {
+                properties: vec![ObjectProperty {
+                    key: PropertyKey::Ident("value".to_string()),
+                    value: Expression::constant(Constant::Null),
+                }],
+            },
+        },
+        Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable("p".into())),
+            value: Expression::member(v("globalThis"), "Promise"),
+        },
+        Statement::Assign {
+            target: AssignTarget::Member {
+                object: v("obj"),
+                property: "value".into(),
+            },
+            value: Expression::call(Expression::member(v("p"), "resolve"), vec![v("x")]),
+        },
+    ];
+    let out = fold::fold_prop_assignments(stmts);
+    assert_eq!(out.len(), 3, "the store stays after `p = …`: {out:?}");
+}

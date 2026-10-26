@@ -230,11 +230,28 @@ pub fn rename_closure_variables_cross_function(
             new_name,
             &per_func_renames,
         );
-        per_func_renames
-            .entry(*parent_id)
-            .or_default()
-            .entry(var)
-            .or_insert_with(|| new_name.clone());
+        // A block scope's slot is bound in the body of the function that
+        // built the block: keyed on the scope's own id, which has no body,
+        // the owner was never renamed and kept `let closure_38 = …` while
+        // its readers said `regex5`. That body is renamed by name, so only
+        // when every reference follows (the name stands for this slot alone).
+        let verified = !closure_ctx.is_block_scope(*parent_id)
+            || follow
+                .owner_binding_if_follows(
+                    closure_ctx,
+                    &owner_names,
+                    (*parent_id, *slot),
+                    new_name,
+                    &per_func_renames,
+                )
+                .is_some();
+        if verified {
+            per_func_renames
+                .entry(closure_ctx.scope_function(*parent_id))
+                .or_default()
+                .entry(var)
+                .or_insert_with(|| new_name.clone());
+        }
         if object_key_slots.contains(&(*parent_id, *slot)) {
             if let Some(idx) =
                 param_index_stored_in_slot(*parent_id, *slot, closure_ctx, all_ir, param_names)

@@ -226,12 +226,10 @@ fn rewrite_apply(
         this_arg,
         Expression::Value(Value::Constant(Constant::Undefined))
     );
-    *e = if undefined {
-        Expression::Call {
-            callee: Box::new(func.clone()),
-            arguments: spread,
-        }
-    } else if matches!(func, Expression::Member { object, .. } if **object == *this_arg) {
+    // A plain call, or a method applied to its own object: `f(…)` / `o.m(…)`.
+    let direct =
+        undefined || matches!(func, Expression::Member { object, .. } if **object == *this_arg);
+    *e = if direct {
         Expression::Call {
             callee: Box::new(func.clone()),
             arguments: spread,
@@ -242,9 +240,7 @@ fn rewrite_apply(
             arguments: vec![this_arg.clone(), array.clone()],
         }
     };
-    let applied_array =
-        !undefined && !matches!(func, Expression::Member { object, .. } if **object == *this_arg);
-    (inline && !applied_array).then(|| v.name.clone())
+    (inline && direct).then(|| v.name.clone())
 }
 
 #[cfg(test)]
