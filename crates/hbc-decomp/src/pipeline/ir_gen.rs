@@ -635,6 +635,10 @@ fn plan_env_levels(
         }
         None
     };
+    // S3 (S3_PARKED_ENV_PLAN.md S3.0): for each parked (scope, slot), how the
+    // accesses through an environment loaded out of it resolved. A parking
+    // store is safe to drop only when every read through it resolved.
+    let mut parked_reads: HashMap<(Scope, u32), (u32, u32)> = HashMap::new();
     let mut expected = BTreeMap::new();
     for (f, e) in env {
         let raw: HashMap<u32, u32> = e.access_levels.iter().copied().collect();
@@ -646,8 +650,21 @@ fn plan_env_levels(
                 continue;
             };
             let old = crate::ir::EnvPlan::shifted(shift, raw_level);
+            let parked_key = parked_base(through)
+                .and_then(|(inner, slot)| graph.resolve(*f, inner).map(|s| (s, slot)));
+            let mut tally = |ok: bool| {
+                if let Some(key) = parked_key {
+                    let e = parked_reads.entry(key).or_default();
+                    if ok {
+                        e.0 += 1;
+                    } else {
+                        e.1 += 1;
+                    }
+                }
+            };
             let Some(s) = graph.resolve(*f, through) else {
                 count(&format!("access: unresolved, {}", through.kind()));
+                tally(false);
                 continue;
             };
             match (level_for(*f, s), to_ref(s)) {
@@ -655,14 +672,37 @@ fn plan_env_levels(
                     levels.insert(*off, l);
                     expected.insert((*f, *off), r);
                     count("access: level changed");
+                    count(&format!("access: resolved, {}", through.kind()));
+                    tally(true);
                 }
-                (Some(_), Some(_)) => count("access: level kept"),
-                _ => count("access: resolved, not on the chain"),
+                (Some(_), Some(_)) => {
+                    count("access: level kept");
+                    count(&format!("access: resolved, {}", through.kind()));
+                    tally(true);
+                }
+                _ => {
+                    count("access: resolved, not on the chain");
+                    tally(false);
+                }
             }
         }
         if !levels.is_empty() {
             ctx.env_plans
                 .insert(*f, crate::ir::EnvPlan { levels, shift });
+        }
+    }
+    // Each parking store, by whether the reads through what it parks resolved.
+    for (f, e) in env {
+        for (through, slot, _) in &e.facts.parked {
+            let class = match graph
+                .resolve(*f, through)
+                .and_then(|s| parked_reads.get(&(s, *slot)))
+            {
+                None => "parking: store, never read",
+                Some(&(_, 0)) => "parking: store, every read resolved",
+                Some(_) => "parking: store, a read unresolved",
+            };
+            count(class);
         }
     }
     let planned: Vec<u32> = ctx.env_plans.keys().copied().collect();
@@ -674,6 +714,16 @@ fn plan_env_levels(
     census.insert("conflicts: functions".to_string(), creation as u32);
     census.insert("conflicts: slots".to_string(), parked as u32);
     (census, expected)
+}
+
+// The parked slot an access goes through: `InSlot(E, s)` directly, or under
+// a walk up from it (`Up(InSlot(E, s), n)`).
+fn parked_base(env: &crate::ir::env_values::Env) -> Option<(&crate::ir::env_values::Env, u32)> {
+    match env {
+        crate::ir::env_values::Env::InSlot(inner, slot) => Some((inner, *slot)),
+        crate::ir::env_values::Env::Up(inner, _) => parked_base(inner),
+        _ => None,
+    }
 }
 
 // Whether each planned level, read the way everything downstream reads it

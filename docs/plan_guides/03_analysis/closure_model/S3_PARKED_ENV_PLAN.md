@@ -67,8 +67,27 @@ per module (with the `worse:` names classified), E1, gates.
   variable, and a generator doing the same. It records the case end to end; listed known until
   S3.1–S3.2 make it pass.
 
-Exit: the four numbers per bundle in this file (resolved, fell back, parking stores, parking
-loads); the fixture recorded.
+Exit: the numbers per bundle in this file; the fixture recorded.
+
+**Status: done (2026-10-25).** The scope-graph census line (`RUST_LOG=slots=debug`) now splits
+resolved accesses by kind and classes every parking store by the reads through what it parks.
+The output is unchanged (Expensify byte-identical; Discord differs by 8 lines where two
+`regExpN` names swap, an ordering nondeterminism seen before this change).
+
+| | Expensify | Discord |
+|---|---|---|
+| slot-held accesses, resolved / unresolved | 6,936 / 18 | 28,558 / 39 |
+| up from a slot, resolved / unresolved | 1,797 / 44 | 6,680 / 70 |
+| closure accesses unresolved | 2,657 | 2,935 |
+| unknown (paths disagree, `GetClosureEnvironment`) | 606 | 3,981 |
+| resolved, not on the chain | 1,762 | 1,992 |
+| parking stores, every read resolved | 987 | 3,666 |
+| parking stores, a read unresolved | 12 | 15 |
+| parking stores, never read | 6 | 41 |
+| parking-like lines in the output (`closure_N = tmpN` / `= cN`) | 1,768 | 4,475 |
+
+S3.1's condition holds for 99% of parking stores (3,666 of 3,722 on Discord). The 41 never read
+can go too. Fixture parked_scopes (v98, v99) is listed known.
 
 ### S3.1 — Stop printing the parking (medium; the main win)
 
