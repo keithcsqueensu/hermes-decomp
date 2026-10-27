@@ -53,8 +53,6 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("lang_templates", 96, "other: `HermesBuiltin.getTemplateObject` (tagged templates) is printed unfolded"),
     ("lang_templates", 98, "other: `HermesBuiltin.getTemplateObject` (tagged templates) is printed unfolded"),
     ("lang_templates", 99, "other: `HermesBuiltin.getTemplateObject` (tagged templates) is printed unfolded"),
-    ("parked_scopes", 98, "env: S3, the raw machines park their scopes in the wrapper's slots and later steps read through them; the parking prints as stores of undefined registers and a parked variable is read undeclared (S3_PARKED_ENV_PLAN.md S3.1, S3.2)"),
-    ("parked_scopes", 99, "env: S3, the raw machines park their scopes in the wrapper's slots and later steps read through them; the parking prints as stores of undefined registers and a parked variable is read undeclared (S3_PARKED_ENV_PLAN.md S3.1, S3.2)"),
     ("class_super", 98, "other: hermesc inlines the constructor at `new Own(4)`, so its private-field installs print outside the class, a syntax error; never seen in the four bundles (privateTwice 0). class_super_call covers the explicit `super(a, 1)` itself"),
     ("class_super", 99, "other: hermesc inlines the constructor at `new Own(4)`, so its private-field installs print outside the class, a syntax error; never seen in the four bundles (privateTwice 0). class_super_call covers the explicit `super(a, 1)` itself"),
 ];

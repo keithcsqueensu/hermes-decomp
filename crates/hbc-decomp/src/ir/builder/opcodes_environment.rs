@@ -126,6 +126,15 @@ pub fn handle_store_to_environment(
             env_map.set_source_slot(value_reg, level, slot);
         }
     }
+    // An environment parked in a slot whose every read the scope graph
+    // resolved: nothing to print.
+    if env_map
+        .plan
+        .as_ref()
+        .is_some_and(|p| p.drops_store(env_map.at))
+    {
+        return Some(FlowResult::Noop);
+    }
 
     let value = reg_expr(&inst.operands, 2)?;
 

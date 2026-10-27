@@ -446,42 +446,64 @@ impl PipelineContext {
                 closure_ctx.async_functions.remove(&inner);
             }
         }
+        // The environment a machine builds on its first step is parked in its
+        // wrapper's slot and lives as long as the generator: its slots (a loop
+        // counter across yields) are the wrapper's variables. Declared in the
+        // step, they restarted each call. Its scope hangs below the step in
+        // the parent chain, and a block scope's slots are declared where the
+        // block is built, so the slots are stamped as the wrapper's own, in a
+        // range past any real one (`STEP_ENV_SLOTS`), wherever they are
+        // referenced: the step, and every closure the step creates with that
+        // scope (S3_PARKED_ENV_PLAN.md S3.2). The wrapper binds each one.
+        let mut moved_to: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
         for &(fid, inner) in raw {
             if async_originals.contains_key(&fid) {
                 continue;
             }
-            // The environment the machine builds on its first step is kept in
-            // the wrapper's and lives as long as the generator: its slots (a
-            // loop counter across yields) are the wrapper's variables, which
-            // the step reads; declared in the step they restarted each call.
-            // Its later steps reach that environment through the wrapper's
-            // slot, a load the stamps cannot follow, so those references are
-            // plain names, and the scope hangs below the step, never above
-            // it. Each slot the step uses becomes a variable of the wrapper,
-            // the step's parent: its references are stamped with a slot of
-            // the wrapper's past any real one, which the wrapper binds, so the
-            // step takes the name for the wrapper's and does not declare it.
-            let moved = closure_ctx.rehome_block_scopes(inner, fid);
-            let mut bound: BTreeMap<crate::ir::SlotRef, String> = BTreeMap::new();
-            let mut restamp: BTreeMap<crate::ir::SlotRef, crate::ir::SlotRef> = BTreeMap::new();
-            if let Some(step) = all_ir.get(&inner) {
-                for (name, slot) in crate::analysis::closure::stamps::var_refs(step) {
-                    if let Some(slot) = slot.filter(|s| moved.contains(&s.owner)) {
-                        let scope = moved.iter().position(|m| *m == slot.owner).unwrap_or(0) as u32;
-                        let held = crate::ir::SlotRef {
-                            owner: fid,
-                            slot: STEP_ENV_SLOTS | scope << 16 | (slot.slot & 0xFFFF),
-                        };
-                        restamp.insert(slot, held);
-                        bound.entry(held).or_insert_with(|| name.to_string());
-                    }
-                }
+            for (k, scope) in closure_ctx
+                .rehome_block_scopes(inner, fid)
+                .into_iter()
+                .enumerate()
+            {
+                moved_to.insert(scope, (fid, k as u32));
             }
-            if let Some(step) = all_ir.get_mut(&inner) {
-                Restamp(&restamp).visit_statement_list(step);
-            }
+            closure_ctx.generator_functions.remove(&inner);
+            closure_ctx.async_functions.remove(&inner);
+            closure_ctx.async_functions.remove(&fid);
             if let Some(body) = all_ir.get_mut(&fid) {
-                let lets = bound.into_iter().map(|(slot, name)| Statement::Let {
+                Create(inner).visit_statement_list(body);
+            }
+        }
+        if moved_to.is_empty() {
+            return;
+        }
+        let mut restamp: BTreeMap<SlotRef, SlotRef> = BTreeMap::new();
+        let mut bound: BTreeMap<u32, BTreeMap<SlotRef, String>> = BTreeMap::new();
+        for stmts in all_ir.values() {
+            for (name, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
+                let Some(slot) = slot else { continue };
+                let Some(&(fid, k)) = moved_to.get(&slot.owner) else {
+                    continue;
+                };
+                let held = SlotRef {
+                    owner: fid,
+                    slot: STEP_ENV_SLOTS | k << 16 | (slot.slot & 0xFFFF),
+                };
+                restamp.insert(slot, held);
+                bound
+                    .entry(fid)
+                    .or_default()
+                    .entry(held)
+                    .or_insert_with(|| name.to_string());
+            }
+        }
+        let mut r = Restamp(&restamp);
+        for stmts in all_ir.values_mut() {
+            r.visit_statement_list(stmts);
+        }
+        for (fid, slots) in bound {
+            if let Some(body) = all_ir.get_mut(&fid) {
+                let lets = slots.into_iter().map(|(slot, name)| Statement::Let {
                     name: crate::ir::Var {
                         name,
                         slot: Some(slot),
@@ -490,12 +512,6 @@ impl PipelineContext {
                     kind: crate::ir::VarKind::Let,
                 });
                 body.splice(0..0, lets);
-            }
-            closure_ctx.generator_functions.remove(&inner);
-            closure_ctx.async_functions.remove(&inner);
-            closure_ctx.async_functions.remove(&fid);
-            if let Some(body) = all_ir.get_mut(&fid) {
-                Create(inner).visit_statement_list(body);
             }
         }
     }
@@ -641,66 +657,103 @@ impl PipelineContext {
     // the passes after it like any slot, and the name can be its wrapper's
     // parameter's: the machine copies the parameter in, and both take the
     // name the code gives the value (`captureDetails`), or a slot of the
-    // wrapper's own or another machine slot can share it. Declared in the
-    // wrapper as well, it is a second `let` of the name, a syntax error (all
-    // but one of Discord's 49 unparsable modules). Such a variable takes a
-    // fresh name, everywhere its stamp is.
+    // wrapper's own or another machine slot can share it, and so can a
+    // parameter of the step or a local of a closure the step creates.
+    // Declared in the wrapper as well, it is a second `let` of the name, a
+    // syntax error (all but one of Discord's 49 unparsable modules), or
+    // shadowed where it is read. Such a variable takes a fresh name,
+    // everywhere its stamp is.
     fn separate_step_env_names(
         all_ir: &mut BTreeMap<u32, Vec<Statement>>,
         param_names: &BTreeMap<u32, Vec<Option<String>>>,
     ) {
         use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, SlotRef, Value, Var};
-        let mut renames: BTreeMap<SlotRef, String> = BTreeMap::new();
+        use std::collections::{BTreeSet, HashSet};
+        let is_step_env = |s: &SlotRef| s.slot & STEP_ENV_SLOTS == STEP_ENV_SLOTS;
+        // Every body that references a machine slot, with its references:
+        // the wrapper, the step and the closures the step creates. A clash in
+        // any of them counts, the step's own parameters included (a loop
+        // counter named `value` beside the step's `value` parameter was
+        // shadowed by it inside the step).
         let none = Vec::new();
+        let mut refs_of: BTreeMap<u32, Vec<(String, Option<SlotRef>)>> = BTreeMap::new();
+        let mut bodies_of: BTreeMap<SlotRef, BTreeSet<u32>> = BTreeMap::new();
         for (&fid, body) in all_ir.iter() {
-            let is_step_env = |slot: Option<SlotRef>| {
-                slot.filter(|s| s.owner == fid && s.slot & STEP_ENV_SLOTS == STEP_ENV_SLOTS)
-            };
-            if !body.iter().any(
-                |st| matches!(st, Statement::Let { name, .. } if is_step_env(name.slot).is_some()),
-            ) {
-                continue;
+            let refs: Vec<(String, Option<SlotRef>)> =
+                crate::analysis::closure::stamps::var_refs(body)
+                    .into_iter()
+                    .map(|(n, s)| (n.to_string(), s))
+                    .collect();
+            let mut any = false;
+            for (_, s) in &refs {
+                if let Some(s) = s.filter(is_step_env) {
+                    bodies_of.entry(s).or_default().insert(fid);
+                    any = true;
+                }
             }
-            let params: std::collections::HashSet<&str> = param_names
-                .get(&fid)
+            if any {
+                refs_of.insert(fid, refs);
+            }
+        }
+        let params = |f: u32| -> HashSet<&str> {
+            param_names
+                .get(&f)
                 .unwrap_or(&none)
                 .iter()
                 .flatten()
                 .map(String::as_str)
-                .collect();
-            let refs = crate::analysis::closure::stamps::var_refs(body);
-            let mut used: std::collections::HashSet<String> =
-                refs.iter().map(|(n, _)| n.to_string()).collect();
-            used.extend(params.iter().map(|p| p.to_string()));
-            let mut kept: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                .collect()
+        };
+        let mut renames: BTreeMap<SlotRef, String> = BTreeMap::new();
+        for (&fid, body) in all_ir.iter() {
+            let mut kept: HashSet<String> = HashSet::new();
             for stmt in body {
                 let Statement::Let { name, .. } = stmt else {
                     continue;
                 };
-                let Some(slot) = is_step_env(name.slot) else {
+                let Some(slot) = name.slot.filter(|s| s.owner == fid && is_step_env(s)) else {
                     continue;
                 };
-                // Another variable of the wrapper under this name: a
-                // parameter, a slot of its own (`userId = 0`, declared by
-                // codegen later), or another machine slot already named so.
-                let clash = params.contains(name.name.as_str())
-                    || kept.contains(name.name.as_str())
-                    || refs
-                        .iter()
-                        .any(|(n, s)| *n == name.name.as_str() && *s != Some(slot));
+                let mut bodies = bodies_of.get(&slot).cloned().unwrap_or_default();
+                bodies.insert(fid);
+                // Another variable under this name where the slot is used: a
+                // parameter, a slot of the wrapper's own (`userId = 0`,
+                // declared by codegen later), a local, or another machine
+                // slot already named so.
+                let n = name.name.as_str();
+                // Same-name references with another stamp count only in the
+                // wrapper's own body: in the step they are often this very
+                // variable reached through an identity the re-stamping does
+                // not cover, and renaming the machine's references away
+                // from them split it (`x = "…" + x` read one and wrote the
+                // other). The parameters of every body using the slot count.
+                let clash = kept.contains(n)
+                    || bodies.iter().any(|&b| params(b).contains(n))
+                    || refs_of
+                        .get(&fid)
+                        .is_some_and(|r| r.iter().any(|(x, s)| x == n && *s != Some(slot)));
                 if !clash {
-                    kept.insert(name.name.as_str());
+                    kept.insert(n.to_string());
                     continue;
                 }
-                let mut n = 2;
+                let mut used: HashSet<String> = HashSet::new();
+                for &b in &bodies {
+                    used.extend(params(b).into_iter().map(str::to_string));
+                    if let Some(r) = refs_of.get(&b) {
+                        used.extend(r.iter().map(|(x, _)| x.clone()));
+                    }
+                }
+                used.extend(kept.iter().cloned());
+                used.extend(renames.values().cloned());
+                let mut k = 2;
                 let fresh = loop {
-                    let candidate = format!("{}{n}", name.name);
+                    let candidate = format!("{n}{k}");
                     if !used.contains(&candidate) {
                         break candidate;
                     }
-                    n += 1;
+                    k += 1;
                 };
-                used.insert(fresh.clone());
+                kept.insert(fresh.clone());
                 renames.insert(slot, fresh);
             }
         }

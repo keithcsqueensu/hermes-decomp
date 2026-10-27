@@ -7,7 +7,7 @@ use crate::ir::{Constant, Expression, MutVisitor, Statement, Value, VarKind};
 use crate::util::sanitize_identifier;
 
 use super::detect::{loader_aliases, loader_call, loader_uses};
-use super::kinds::{HoistKey, LoaderKind, RESERVED_BINDINGS};
+use super::kinds::{HoistKey, LoaderKind, LOADER_NAMES, RESERVED_BINDINGS};
 use super::lazy::{collect_descriptor_getter_ids, is_pure_lazy_getter_body, lazy_getter_ids};
 use super::names::{
     allocate_binding_name, binding_name_value, collect_existing_binding_names, is_reserved_binding,
@@ -126,7 +126,9 @@ fn hoist_one_module(
             continue;
         }
         for (id, kind, callee) in loader_uses(stmts, &aliases, deps) {
-            eager.entry((id, kind)).or_insert(callee);
+            eager
+                .entry((id, kind))
+                .or_insert_with(|| module_scope_loader(callee, kind));
         }
     }
 
@@ -248,5 +250,54 @@ impl MutVisitor for LoaderRewriter<'_> {
             }
         }
         self.walk_expression(e);
+    }
+}
+
+// The loader as the module's top level can call it. A call through a local
+// alias of it (`let tmp31 = require;` in a component, kept because a nested
+// function happened to use a `tmp31` of its own) was hoisted with the alias as
+// its callee, which the module's top level does not have: `const TextInput2 =
+// tmp31(6286)` beside an undeclared `tmp31`. The alias stands for the loader
+// itself, so the hoisted call uses the loader's own name.
+fn module_scope_loader(callee: Expression, kind: LoaderKind) -> Expression {
+    let Expression::Value(Value::Binding(crate::ir::Binding::Variable(v))) = &callee else {
+        return callee;
+    };
+    if LOADER_NAMES.contains(&v.name.as_str()) {
+        return callee;
+    }
+    match LOADER_NAMES
+        .iter()
+        .find(|n| LoaderKind::from_seed(n) == Some(kind))
+    {
+        Some(name) => {
+            Expression::Value(Value::Binding(crate::ir::Binding::Variable((*name).into())))
+        }
+        None => callee,
+    }
+}
+
+#[cfg(test)]
+mod loader_alias_tests {
+    use super::*;
+
+    fn var(n: &str) -> Expression {
+        Expression::Value(Value::Binding(crate::ir::Binding::Variable(n.into())))
+    }
+
+    #[test]
+    fn a_call_through_a_local_alias_is_hoisted_with_the_loader() {
+        assert_eq!(
+            module_scope_loader(var("tmp31"), LoaderKind::Require),
+            var("require")
+        );
+        assert_eq!(
+            module_scope_loader(var("tmp3"), LoaderKind::ImportDefault),
+            var("importDefault")
+        );
+        assert_eq!(
+            module_scope_loader(var("require"), LoaderKind::Require),
+            var("require")
+        );
     }
 }

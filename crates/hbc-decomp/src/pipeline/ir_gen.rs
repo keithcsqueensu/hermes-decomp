@@ -664,6 +664,14 @@ fn plan_env_levels(
             };
             let Some(s) = graph.resolve(*f, through) else {
                 count(&format!("access: unresolved, {}", through.kind()));
+                // Why, for a closure access: the first link up its chain
+                // the graph does not have (S3.3).
+                if let crate::ir::env_values::Env::Closure(n) = through {
+                    count(&format!(
+                        "unresolved closure: {}",
+                        graph.why_unresolved(*f, *n)
+                    ));
+                }
                 tally(false);
                 continue;
             };
@@ -687,26 +695,58 @@ fn plan_env_levels(
             }
         }
         if !levels.is_empty() {
-            ctx.env_plans
-                .insert(*f, crate::ir::EnvPlan { levels, shift });
+            ctx.env_plans.insert(
+                *f,
+                crate::ir::EnvPlan {
+                    levels,
+                    shift,
+                    drop_stores: Default::default(),
+                },
+            );
         }
     }
-    // Each parking store, by whether the reads through what it parks resolved.
+    // Each parking store, by whether the reads through what it parks
+    // resolved. One whose reads all resolved, or that nobody reads, is
+    // dropped from the output (S3.1); the parked scope must be the graph's
+    // one answer for that slot, or another creator's reads could need it.
+    let mut drops: BTreeMap<u32, std::collections::BTreeSet<u32>> = BTreeMap::new();
     for (f, e) in env {
-        for (through, slot, _) in &e.facts.parked {
-            let class = match graph
-                .resolve(*f, through)
-                .and_then(|s| parked_reads.get(&(s, *slot)))
-            {
-                None => "parking: store, never read",
+        for ((through, slot, _), at) in e.facts.parked.iter().zip(&e.facts.parked_at) {
+            let scope = graph.resolve(*f, through);
+            let class = match scope.and_then(|s| parked_reads.get(&(s, *slot))) {
+                None if scope.is_some() => "parking: store, never read",
+                None => "parking: store, slot unresolved",
                 Some(&(_, 0)) => "parking: store, every read resolved",
                 Some(_) => "parking: store, a read unresolved",
             };
             count(class);
+            if matches!(
+                class,
+                "parking: store, never read" | "parking: store, every read resolved"
+            ) {
+                drops.entry(*f).or_default().insert(*at);
+            }
         }
     }
+    // A plan that only drops stores moves no level: the function is rebuilt
+    // unshifted (shift 0) and keeps its environment offset, so the shift
+    // after the build (`shift_env_levels`) applies to it exactly as to a
+    // function built without a plan, and dropping the stores is the only
+    // difference between the two builds.
+    let mut drop_only: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for (f, set) in drops {
+        let plan = ctx.env_plans.entry(f).or_insert_with(|| {
+            drop_only.insert(f);
+            crate::ir::EnvPlan {
+                levels: BTreeMap::new(),
+                shift: 0,
+                drop_stores: Default::default(),
+            }
+        });
+        plan.drop_stores = set;
+    }
     let planned: Vec<u32> = ctx.env_plans.keys().copied().collect();
-    for f in &planned {
+    for f in planned.iter().filter(|f| !drop_only.contains(f)) {
         ctx.env_offsets.remove(f);
     }
     census.insert("functions planned".to_string(), planned.len() as u32);

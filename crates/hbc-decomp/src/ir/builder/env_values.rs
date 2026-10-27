@@ -113,6 +113,8 @@ pub struct EnvFacts {
     pub created: Vec<(u32, Option<Env>)>,
     // An environment value stored into a slot: (through, slot, value).
     pub parked: Vec<(Env, u32, Env)>,
+    // The offset of each `parked` store, at the same index.
+    pub parked_at: Vec<u32>,
     // (child function, environment it was created with).
     pub closures: Vec<(u32, Env)>,
     // Loads and stores: (offset, through, slot, is_store).
@@ -287,6 +289,7 @@ impl Step<'_> {
                     if let Some(v) = reg(inst, 2).and_then(|r| state.get(&r)) {
                         if !matches!(v, Env::InSlot(..) | Env::Unknown) {
                             f.parked.push((through, slot, v.clone()));
+                            f.parked_at.push(inst.offset);
                         }
                     }
                 }

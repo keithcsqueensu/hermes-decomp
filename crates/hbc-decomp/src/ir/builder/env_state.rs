@@ -27,6 +27,12 @@ const MAX_LEVEL: u32 = 255;
 pub struct EnvPlan {
     pub levels: BTreeMap<u32, u32>,
     pub shift: u32,
+    // Stores that park an environment in a slot, by offset, whose every read
+    // the scope graph resolved (S3_PARKED_ENV_PLAN.md S3.1): the reads are
+    // addressed by level, so the store links nothing, and an environment has
+    // no JavaScript form (it printed as `closure_0$2 = tmp`).
+    #[serde(default)]
+    pub drop_stores: std::collections::BTreeSet<u32>,
 }
 
 impl EnvPlan {
@@ -37,6 +43,10 @@ impl EnvPlan {
         } else {
             raw
         }
+    }
+
+    pub fn drops_store(&self, at: u32) -> bool {
+        self.drop_stores.contains(&at)
     }
 
     fn level(&self, at: u32, raw: u32) -> u32 {

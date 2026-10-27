@@ -104,6 +104,34 @@ attempt's failure, now a check); I3; the wrappers' pointless declarations gone.
 
 Exit: parking gone wherever the graph resolved it, no literal or access lost, gates.
 
+**Status: done (2026-10-26).** `EnvPlan.drop_stores` carries the parking stores whose every
+read resolved, or that nothing reads; the builder emits nothing for them. A function whose plan
+only drops stores is rebuilt with shift 0 and keeps its environment offset, so it takes the
+unplanned build's path apart from the drops.
+
+| | Expensify | Discord |
+|---|---|---|
+| undeclared | 25,061 → 24,830 | 18,788 → 17,938 |
+| undeclared `tmp` / `tmp2` | 398 / 245 → 200 / 224 | 993 / 219 → 275 / 167 |
+| I1 / I2 / I3 | 2,173 / 1,627 / 285 → 2,175 / 1,615 / 356 | 7,593 / 2,772 / 369 → 7,564 / 2,779 / 440 |
+| string literals | 511,216 → 515,334 | 835,581 → 843,301 |
+| unparsable modules | 0 → 0 | 3 → 4 |
+
+v96 is byte-identical. The literal check found two real problems, both fixed: renumbered
+temporaries made the inliner keep a component's `let tmp31 = require` (its keep set is by name,
+and a nested raw machine now had a `tmp31` of its own), and the import hoister then hoisted
+`tmp31(6286)` to the module's top level; it now hoists a call through a loader alias with the
+loader's own name, which is also where the literal total's rise comes from (more calls become
+imports). The modules left with fewer literals lose none: a duplicate `new Logger("…")` gone
+(it was constructed twice), or a property store folded into a literal or a destructuring.
+
+Left: I3 Unused rises (Expensify 119 → 191, Discord 89 → 160), bare `let`s of wrapper slots that
+only ever held an environment; the loads that read one back still exist until dead-code removal.
+Dropping those loads needs the facts to say which load offsets bring an environment into a
+register. And the fourth unparsable Discord module (`streamKey`) is the pre-existing class of a
+raw wrapper declaring a slot under its parameter's name (`action_type = undefined` clobbering the
+parameter on the first step), not parking.
+
 ### S3.2 — The machine's scope from the graph (medium)
 
 - The scope a machine creates and parks is a node of the scope graph. Make its function the
@@ -119,6 +147,23 @@ on Expensify and Discord (the machine variables' naming moves to the normal path
 
 Exit: no synthetic slot ranges left for machines; gates.
 
+**Status: done differently; the exit above is not met.** The graph-only route does not work as
+written: a block scope's slots are declared where the block is built, which for a machine's
+scope is inside the step, the one place it must not be (it would restart every call). Making
+the scope the wrapper's therefore still means stamping its slots as the wrapper's own, which is
+what the `STEP_ENV_SLOTS` re-stamping does. It stays, with its gaps fixed:
+- every body is re-stamped, in one pass over all raw machines, not only the step: a closure the
+  step creates with the machine's scope read a placeholder nothing declared (`closure_2` in
+  parked_scopes);
+- `separate_step_env_names` checks every body that uses the slot, parameters included: the loop
+  counter was named `value`, the step's own parameter, which shadowed it inside the step.
+
+What remains is maintained code, not removed: the synthetic slot range, the wrapper's stamped
+`let`s and the rename-on-clash step. Replacing them needs declaration placement to know a
+parked scope outlives its block (a scope class "lives as long as its parking slot's owner"),
+which is a change to `insert_body_declarations` and the identity checker, not to the graph.
+Recorded as follow-up **S3.2b**; `COLLAPSED_SLOTS` is the same case.
+
 ### S3.3 — Resolve the remainder (medium, open-ended; do by size)
 
 From V98_ENV_PLAN §4 E4's follow-ups and S3.0's split:
@@ -133,6 +178,32 @@ From V98_ENV_PLAN §4 E4's follow-ups and S3.0's split:
 
 Measure each: the fallback count from S3.0, I3 Undeclared, undeclared placeholders (Discord
 3,780).
+
+**Investigation (2026-10-26, Expensify, `HD_ENV_DUMP`).** The census now names the first missing
+link of each unresolved closure access (`unresolved closure: …`): creators that reach different
+scopes 2,274, a function no fact creates 149, a created scope whose parent is unresolved 145,
+created with too many scopes 89 (of 2,657). 2,198 of them are level 1, spread over 1,079
+functions (the top 10 hold 223), so this is a shape, not a few hot functions. By the shape of
+the function's creation sites:
+
+| level-1 accesses | functions | creation sites |
+|---|---|---|
+| 1,745 (79%) | 749 | several creator functions, each with its own scope (F64569 by F13681 and F13682, adjacent copies) |
+| 339 (15%) | 158 | one creator, sibling block scopes on one parent (hermesc emitted the block twice: F0 creates F64502 at @1337, @1365 and @1393, all on @897) |
+| 84 (4%) | 39 | the creator's own environment unresolved (a knock-on) |
+| 26 (1%) | 17 | one creator, its own scope and a block scope |
+
+Consequences for the items above:
+- **Sibling copies first (15%, cheap, safe).** The closure context already keys a block scope by
+  (creating function, builder level), not by site, so the sibling copies are one block scope to
+  everything downstream. Resolve a level when every scope the graph reaches there maps to the same
+  `ScopeRef` (needs a set-valued `chain`), instead of requiring one graph scope.
+- **Several creators (79%) is not "pick one".** They are different variables at run time; every
+  creator renders the shared function's body inline, so what has to agree is the *name* of the
+  slot in each creator. The work is a naming constraint (one name for slot k across all of a
+  shared function's creation scopes) plus an access addressed by that name, not a level.
+- `TooMany` (89) and the knock-ons shrink once the two above are in; measure again before
+  touching them.
 
 Exit: every remaining fallback counted and explained; the threshold agreed before this stage.
 
