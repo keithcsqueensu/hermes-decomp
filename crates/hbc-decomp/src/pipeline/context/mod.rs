@@ -74,6 +74,8 @@ pub struct PipelineContext {
     // copies, and creator -> (function -> its copy there).
     pub(super) variant_origin: BTreeMap<u32, u32>,
     pub(super) holder_variants: BTreeMap<u32, BTreeMap<(u32, u32), u32>>,
+    // creator -> what the shared bodies it renders write (shared_bodies.rs).
+    pub(super) copy_writes: BTreeMap<u32, BTreeMap<String, usize>>,
 }
 
 impl PipelineContext {
@@ -217,6 +219,7 @@ impl PipelineContext {
             cascade_names,
             variant_origin: BTreeMap::new(),
             holder_variants: BTreeMap::new(),
+            copy_writes: BTreeMap::new(),
         };
         // Precompute the ancestor env-slot names once (top-down, O(n)); both the
         // bulk render path and the per-function path read this instead of rebuilding.

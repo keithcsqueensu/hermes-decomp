@@ -714,10 +714,25 @@ fn plan_env_levels(
                 // Why, for a closure access: the first link up its chain
                 // the graph does not have (S3.3).
                 if let crate::ir::env_values::Env::Closure(n) = through {
-                    count(&format!(
-                        "unresolved closure: {}",
-                        graph.why_unresolved(*f, *n)
-                    ));
+                    let why = graph.why_unresolved(*f, *n);
+                    count(&format!("unresolved closure: {why}"));
+                    // Whether the scope read is a creation scope of a shared
+                    // function the access sits in (itself at level 1, an
+                    // enclosing function higher up): each of those creators
+                    // reads its own copy of the body, so the graph's missing
+                    // single answer is served at render (shared_bodies.rs).
+                    let mut cur = Some(*f);
+                    let mut shared = false;
+                    for _ in 1..=*n {
+                        let Some(g) = cur else { break };
+                        if ctx.shared_creations.contains_key(&g) {
+                            shared = true;
+                            break;
+                        }
+                        cur = ctx.scope_parents.get(&g).map(|&(p, _)| p);
+                    }
+                    let place = if shared { "a shared body" } else { "elsewhere" };
+                    count(&format!("unresolved closure in {place}: {why}"));
                 }
                 tally(false);
                 continue;

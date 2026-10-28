@@ -259,8 +259,63 @@ Consequences for the items above (corrected 2026-10-27, after trying the first):
   `trace2`, `trace`). Against the previous commit: undeclared Expensify 25,185 -> 24,455,
   Discord 17,663 -> 17,048 (both below S3.2); I2 Expensify 1,637 -> 1,346, Discord
   2,786 -> 2,556; no string literal or property lost; Discord's four unparsable modules
-  unchanged. I3 Unused rose (192 -> 209, 161 -> 180): to read.
-- `TooMany` (20 now) and the knock-ons: measure again after the naming constraint.
+  unchanged. I3 Unused rose (192 -> 209, 161 -> 180): read below, the checker's view.
+- **Follow-ups to item 1 (2026-10-28).**
+  - *A copy's writes and the creator's `const`.* A creator renamed apart for a copy declared
+    the slot `const` while its copy assigned it (`const c12_2 = 0` in Expensify's inlined
+    `parallel`, whose callback does `c12_2 = 0`): a TypeError when the callback runs, invisible
+    to the undeclared count and the parse check. `prepare_render_bodies` declares every body
+    before `shared_body_variants` makes the copies, so the creator never saw them.
+    `scripts/measure/const_assign.mjs` now counts `const`s the program writes. The copies'
+    writes per creator (`Variants::writes`, cached as `copy_writes`) relax the creator's
+    `const`s after the copies exist, and feed a module factory's declarations. Consts written:
+    Expensify 59 (`c0b19ea`) -> 76 (`bf1cf9c`) -> 36, Discord 264 -> 297 -> 219; every case
+    `bf1cf9c` added is gone. The 219 left are older; the largest group (`obj`, 208 writes on
+    Discord) is a method's own temporary printed without a declaration, so it assigns a
+    module `const` of that name (`obj = { isLooping }` in `timingImpl`): not an S3 cause.
+  - *A copy stamps the scope it reads.* `RenameSlots` restamps a renamed reference as the
+    copy's creation scope, not the scope the body was named against.
+  - *Same creator, unnamed slot.* "A slot the creator never names keeps the body's name" is
+    wrong when the creator also holds the scope the body was named against: the body's name
+    is that copy's binding in the same function, and a stamp lost by a fold (`const items1 =
+    [run, run]`) hid it. Such a slot now gets a fresh, undeclared name (Expensify 128 slots,
+    Discord 129): undeclared 24,455 -> 24,612 and 17,048 -> 17,124, each a silent wrong read
+    made loud.
+  - *The I3 rise was the checker's view.* The identity check saw the bodies before the copies,
+    so a creator's declaration read only by its copy counted Unused. It now sees the copies
+    (`RenderedBody::copy_of`), each below the body that creates it, with every creator of a
+    shared function as its parent; the Shadowed walk ends at the function that builds a block
+    scope. On original functions: Unused Expensify 177, Discord 154 (below `c0b19ea`'s 192 and
+    161), Shadowed 81 and 738 as before. The copies add their own rows (Shadowed 143 / 204,
+    Unused 23 / 157, Undeclared 14 / 5): a copy repeats what its original prints, and the
+    output there is unchanged since `c0b19ea` (Discord's `function regex` prints its
+    `let closure_2_12;` in every build).
+  - *The object literal above its fills (pre-S3.3).* `fold_slot_index_fills` hoisted closures
+    into the literal at `NewObjectWithBuffer`, above the stores to the slots they capture. A
+    literal holding a closure folded past an environment store now moves down to its last
+    fill, when nothing in between is more than a binding the values do not read. `inlined_copies`
+    prints the three stores, then the literal. v96 identical.
+  - No string literal or property lost (Expensify's module 602 drops a dead duplicate of a
+    literal the `return` repeats); Discord's four unparsable modules unchanged.
+- **The remainder, counted (S3.3's exit).** Every unresolved closure access by where it sits
+  (census `unresolved closure in …`), Expensify / Discord:
+
+  | | in a shared body | elsewhere |
+  |---|---|---|
+  | creators that reach different scopes | 2,272 / 2,478 | 2 / 2 |
+  | a created scope whose parent is unresolved | 114 / 154 | 31 / 14 |
+  | a function no fact creates | 0 / 0 | 149 / 189 |
+  | created with too many scopes (`TooMany`) | 0 / 0 | 89 / 98 |
+
+  "In a shared body": the scope read is a creation scope of a shared function the access sits
+  in. Level-1 reads there are served by the per-creator copies. **Reads two levels up are
+  not** (the 114 / 154): the graph cannot give `start`'s scope one parent, so the level model
+  stamps the read with an unrelated scope and nothing renames it. Fixture
+  `inlined_nested_reads` (KNOWN) records it: the callback reads `global`'s `sum` and `items`
+  instead of the copy's `done` and `arr`, a silent wrong answer, and the `done` store is lost
+  (the same loss shows in a `shortOut`-shaped case, every build since S3.2). The fix is S3.4's
+  explicit unknown (loud), then a copy-aware chain for those reads. `TooMany`, "no fact
+  creates" and the 2 elsewhere are unchanged and are S3.3 items 1 and 3.
 
 Exit: every remaining fallback counted and explained; the threshold agreed before this stage.
 

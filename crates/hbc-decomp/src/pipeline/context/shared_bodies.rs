@@ -44,6 +44,11 @@ pub(super) struct Variants {
     pub origin: BTreeMap<u32, u32>,
     // creator -> ((shared function, creation scope) -> its copy there).
     pub by_holder: BTreeMap<u32, BTreeMap<(u32, u32), u32>>,
+    // creator -> what the shared bodies it renders write, as
+    // `extra_writes_from_nested_bodies` counts it: a creator that is not the
+    // body's parent, or that reads a copy under its own names, would
+    // otherwise declare a slot the body assigns as `const`.
+    pub writes: BTreeMap<u32, BTreeMap<String, usize>>,
 }
 
 // The scope id a creation scope reference stands for, when it still exists.
@@ -263,6 +268,10 @@ impl PipelineContext {
             }
             for &(g, owner) in &owners {
                 if owner == rep {
+                    // Reads the body as named; it need not be its parent.
+                    let bodies: Vec<&[Statement]> =
+                        family.iter().map(|id| prepared[id].1.as_slice()).collect();
+                    add_writes(&mut out.writes, g, &bodies);
                     continue;
                 }
                 let creator: &[Statement] = match prepared.get(&g) {
@@ -326,23 +335,44 @@ impl PipelineContext {
                                 &mut census,
                             )
                         }
+                        // The creator also holds the scope the body was named
+                        // against: the body's name is that copy's binding, in
+                        // this very function, whatever the stamps kept.
+                        None if owners.contains(&(g, rep)) => unreadable(
+                            old,
+                            "slot: never named by the creator, which holds the named copy too",
+                            &mut census,
+                        ),
                         None => old.clone(),
                     };
                     rename.insert(*slot, new);
                 }
                 if rename.iter().all(|(slot, new)| &wanted[slot] == new) {
+                    let bodies: Vec<&[Statement]> =
+                        family.iter().map(|id| prepared[id].1.as_slice()).collect();
+                    add_writes(&mut out.writes, g, &bodies);
                     *census.entry("creator: same names").or_default() += 1;
                     continue;
                 }
                 let mut memo: HashMap<u32, Option<u32>> = HashMap::new();
                 let mut made: Vec<(u32, u32, Body)> = Vec::new();
                 let v = copy_renamed(
-                    f, rep, &rename, prepared, &family, &mut memo, &mut next, &mut made,
+                    f,
+                    (rep, owner),
+                    &rename,
+                    prepared,
+                    &family,
+                    &mut memo,
+                    &mut next,
+                    &mut made,
                 );
                 let Some(v) = v else {
                     *census.entry("creator: nothing to rename").or_default() += 1;
                     continue;
                 };
+                let bodies: Vec<&[Statement]> =
+                    made.iter().map(|(_, _, b)| b.1.as_slice()).collect();
+                add_writes(&mut out.writes, g, &bodies);
                 for (id, of, body) in made {
                     out.origin.insert(id, of);
                     prepared.insert(id, body);
@@ -364,6 +394,37 @@ impl PipelineContext {
         }
         log::debug!(target: "slots", "shared bodies: {census:?}");
         out
+    }
+}
+
+// Turns each `const` in `stmts` that `writes` names into a `let`: the
+// creator's copies of a shared body assign it.
+pub(super) fn relax_written_consts(stmts: &mut [Statement], writes: &BTreeMap<String, usize>) {
+    struct Relax<'a>(&'a BTreeMap<String, usize>);
+    impl MutVisitor for Relax<'_> {
+        fn visit_statement(&mut self, s: &mut Statement) {
+            if let Statement::Let { name, kind, .. } = s {
+                if *kind == crate::ir::VarKind::Const && self.0.contains_key(&name.name) {
+                    *kind = crate::ir::VarKind::Let;
+                }
+            }
+            self.walk_statement(s);
+        }
+    }
+    let mut r = Relax(writes);
+    for s in stmts.iter_mut() {
+        r.visit_statement(s);
+    }
+}
+
+fn add_writes(
+    writes: &mut BTreeMap<u32, BTreeMap<String, usize>>,
+    g: u32,
+    bodies: &[&[Statement]],
+) {
+    let into = writes.entry(g).or_default();
+    for (name, n) in crate::transforms::extra_writes_from_nested_bodies(bodies) {
+        *into.entry(name).or_default() += n;
     }
 }
 
@@ -389,7 +450,7 @@ fn descendants(
     seen
 }
 
-fn created(stmts: &[Statement]) -> Vec<u32> {
+pub(super) fn created(stmts: &[Statement]) -> Vec<u32> {
     struct Ids(Vec<u32>);
     impl<'a> Visitor<'a> for Ids {
         fn visit_expression(&mut self, e: &'a Expression) {
@@ -462,7 +523,7 @@ fn owner_names(stmts: &[Statement], owner: u32) -> BTreeMap<u32, BTreeSet<String
 #[allow(clippy::too_many_arguments)]
 fn copy_renamed(
     id: u32,
-    rep: u32,
+    (rep, owner): (u32, u32),
     rename: &BTreeMap<u32, String>,
     prepared: &BTreeMap<u32, Body>,
     family: &BTreeSet<u32>,
@@ -479,6 +540,7 @@ fn copy_renamed(
     let mut stmts = stmts.clone();
     let mut r = RenameSlots {
         rep,
+        owner,
         rename,
         changed: false,
     };
@@ -487,7 +549,9 @@ fn copy_renamed(
     let mut children: BTreeMap<u32, u32> = BTreeMap::new();
     for c in created(&stmts) {
         if family.contains(&c) && !children.contains_key(&c) {
-            if let Some(v) = copy_renamed(c, rep, rename, prepared, family, memo, next, made) {
+            if let Some(v) =
+                copy_renamed(c, (rep, owner), rename, prepared, family, memo, next, made)
+            {
                 children.insert(c, v);
             }
         }
@@ -506,8 +570,11 @@ fn copy_renamed(
     Some(v)
 }
 
+// Renames `rep`'s slots and stamps them as `owner`'s: the copy reads the
+// creation scope it is created on, not the one the body was named against.
 struct RenameSlots<'a> {
     rep: u32,
+    owner: u32,
     rename: &'a BTreeMap<u32, String>,
     changed: bool,
 }
@@ -520,6 +587,10 @@ impl RenameSlots<'_> {
                     v.name = new.clone();
                     self.changed = true;
                 }
+                v.slot = Some(SlotRef {
+                    owner: self.owner,
+                    slot: s.slot,
+                });
             }
         }
     }
@@ -694,15 +765,52 @@ mod tests {
         let mut next = FIRST_VARIANT_ID;
         let mut made = Vec::new();
         let v = copy_renamed(
-            3, 2, &rename, &prepared, &family, &mut memo, &mut next, &mut made,
+            3,
+            (2, 7),
+            &rename,
+            &prepared,
+            &family,
+            &mut memo,
+            &mut next,
+            &mut made,
         );
         assert!(v.is_some());
         let copied: BTreeMap<u32, u32> = made.iter().map(|(id, of, _)| (*of, *id)).collect();
         assert_eq!(copied.keys().copied().collect::<Vec<_>>(), vec![3, 4]);
         let body3 = &made.iter().find(|(_, of, _)| *of == 3).unwrap().2 .1;
-        let names: Vec<&str> = slot_refs(body3).into_iter().map(|(n, _)| n).collect();
+        let refs = slot_refs(body3);
+        let names: Vec<&str> = refs.iter().map(|(n, _)| *n).collect();
         assert_eq!(names, vec!["closure_1"]);
+        assert_eq!(
+            refs[0].1,
+            Some(SlotRef { owner: 7, slot: 1 }),
+            "stamped as the copy's scope"
+        );
         assert_eq!(created(body3), vec![copied[&4], 5]);
+    }
+
+    // A creator declared before its copies existed: the slot a copy assigns
+    // becomes `let`, the rest stay as declared.
+    #[test]
+    fn a_const_a_copy_assigns_becomes_let() {
+        let decl = |n: &str| Statement::Let {
+            name: n.into(),
+            value: Expression::Value(Value::Constant(crate::ir::Constant::Integer(0))),
+            kind: crate::ir::VarKind::Const,
+        };
+        let mut stmts = vec![decl("count2"), decl("other")];
+        relax_written_consts(&mut stmts, &BTreeMap::from([("count2".to_string(), 2)]));
+        let kinds: Vec<_> = stmts
+            .iter()
+            .map(|s| match s {
+                Statement::Let { kind, .. } => *kind,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![crate::ir::VarKind::Let, crate::ir::VarKind::Const]
+        );
     }
 
     #[test]
@@ -716,7 +824,14 @@ mod tests {
         let rename = BTreeMap::from([(1, "sum".to_string())]);
         let (mut memo, mut next, mut made) = (HashMap::new(), FIRST_VARIANT_ID, Vec::new());
         let v = copy_renamed(
-            3, 2, &rename, &prepared, &family, &mut memo, &mut next, &mut made,
+            3,
+            (2, 7),
+            &rename,
+            &prepared,
+            &family,
+            &mut memo,
+            &mut next,
+            &mut made,
         );
         assert_eq!(v, None);
         assert!(made.is_empty());

@@ -128,7 +128,13 @@ impl PipelineContext {
             .iter()
             .filter_map(|id| self.all_ir.get(id).map(|s| s.as_slice()))
             .collect();
-        transforms::extra_writes_from_nested_bodies(&bodies)
+        let mut extra = transforms::extra_writes_from_nested_bodies(&bodies);
+        // The shared bodies this function creates, as it renders them (a
+        // module factory; `build_all_inline_bodies` relaxes the others).
+        for (name, n) in self.copy_writes.get(&function_id).into_iter().flatten() {
+            *extra.entry(name.clone()).or_default() += n;
+        }
+        extra
     }
 
     // Generate decompiled code for a single function using cached analysis.

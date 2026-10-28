@@ -35,6 +35,9 @@ pub struct RenderedBody<'a> {
     // `let` for the rest), so a slot the module or its functions write is
     // declared whatever the IR says.
     pub module: bool,
+    // A copy of a shared body made for one creator (shared_bodies.rs): the
+    // function it copies, whose scopes it has, and the body it is created in.
+    pub copy_of: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +121,7 @@ fn bindings(ctx: &ClosureContext, func: u32, body: &RenderedBody) -> HashMap<Str
             }
         });
     }
+    let func = body.copy_of.map_or(func, |(origin, _)| origin);
     for name in ctx.declared_function_names(func) {
         out.entry(name).or_default().local = true;
     }
@@ -184,6 +188,15 @@ pub fn check_slot_identity(
     ctx: &ClosureContext,
 ) -> Violations {
     let mut v = Violations::default();
+    // A copy has the scopes of the function it copies, and sits in the body
+    // that creates it.
+    let origin = |f: u32| bodies.get(&f).and_then(|b| b.copy_of).map_or(f, |(o, _)| o);
+    let parent_of = |f: u32| -> Option<u32> {
+        match bodies.get(&f).and_then(|b| b.copy_of) {
+            Some((_, p)) => Some(p),
+            None => ctx.parent_function.get(&f).copied(),
+        }
+    };
 
     // Per body: every name referenced, with the slots it is stamped with and
     // whether it is also referenced unstamped.
@@ -232,7 +245,7 @@ pub fn check_slot_identity(
 
     // I2.
     for (&func, per) in &uses {
-        let own = own_scopes(ctx, func);
+        let own = own_scopes(ctx, origin(func));
         let my = &binds[&func];
         for (name, u) in per {
             let mut slots = u.slots.iter();
@@ -276,10 +289,15 @@ pub fn check_slot_identity(
                     });
                 }
                 // The scopes between the body and the owner.
-                let mut cur = ctx.parent_function.get(&func).copied();
+                let mut cur = parent_of(func);
                 let mut seen = HashSet::from([func]);
                 while let Some(scope) = cur {
-                    if scope == slot.owner || !seen.insert(scope) {
+                    // A block's slot is bound in the function that builds
+                    // the block: the walk ends there, not past it.
+                    if scope == slot.owner
+                        || scope == ctx.scope_function(slot.owner)
+                        || !seen.insert(scope)
+                    {
                         break;
                     }
                     let shadows = binds
@@ -297,7 +315,7 @@ pub fn check_slot_identity(
                         });
                         break;
                     }
-                    cur = ctx.parent_function.get(&scope).copied();
+                    cur = parent_of(scope);
                 }
             }
         }
@@ -311,11 +329,25 @@ pub fn check_slot_identity(
             .or_default()
             .push(child);
     }
+    // Every creator of a shared function renders it (or its copy) below.
+    for (&f, creators) in &ctx.shared_creations {
+        for &g in creators.keys() {
+            children.entry(g).or_default().push(f);
+        }
+    }
+    for (&f, b) in bodies {
+        if let Some((_, p)) = b.copy_of {
+            children.entry(p).or_default().push(f);
+            // A nested function the copy did not need to copy keeps its id,
+            // and its parent link still names the original.
+            children.entry(f).or_default().extend(created_ids(b.stmts));
+        }
+    }
     // Whether a function below `func` reads `name` as `func`'s binding: a
     // reference stamped with another scope's slot is a different variable that
     // merely shares the spelling, so it does not keep the declaration alive.
     let read_below = |func: u32, name: &str| -> bool {
-        let own = own_scopes(ctx, func);
+        let own = own_scopes(ctx, origin(func));
         let mut stack: Vec<u32> = children.get(&func).cloned().unwrap_or_default();
         let mut seen = HashSet::new();
         while let Some(f) = stack.pop() {
@@ -353,7 +385,7 @@ pub fn check_slot_identity(
         false
     };
     for (&func, body) in bodies {
-        let own = own_scopes(ctx, func);
+        let own = own_scopes(ctx, origin(func));
         let my = &binds[&func];
         let per = &uses[&func];
         for (name, u) in per {
@@ -371,7 +403,14 @@ pub fn check_slot_identity(
         }
         // Only an ancestor's slot is a capture: statements inlined from another
         // function keep its stamps, and its slot is a local here.
-        let ancestors: HashSet<u32> = ctx.ancestors_of(func).into_iter().collect();
+        let mut ancestors: HashSet<u32> = HashSet::new();
+        let mut cur = parent_of(func);
+        while let Some(p) = cur {
+            if !ancestors.insert(origin(p)) {
+                break;
+            }
+            cur = parent_of(p);
+        }
         for s in body.stmts {
             collect_lets(s, &mut |name, slot| {
                 if slot.is_some_and(|s| !own.contains(&s.owner) && ancestors.contains(&s.owner)) {
@@ -406,6 +445,25 @@ pub fn check_slot_identity(
         }
     }
     v
+}
+
+// The function ids `stmts` creates.
+fn created_ids(stmts: &[Statement]) -> Vec<u32> {
+    use crate::ir::Visitor;
+    struct Ids(Vec<u32>);
+    impl<'a> Visitor<'a> for Ids {
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if let Expression::Function { id, .. } = e {
+                self.0.push(id.0);
+            }
+            self.walk_expression(e);
+        }
+    }
+    let mut ids = Ids(Vec::new());
+    for s in stmts {
+        ids.visit_statement(s);
+    }
+    ids.0
 }
 
 // A one-line summary and, at trace level, the first violations of each kind
@@ -495,6 +553,7 @@ pub fn report_ir(
                     params: &[],
                     stmts,
                     module: false,
+                    copy_of: None,
                 },
             )
         })

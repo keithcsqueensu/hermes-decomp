@@ -35,7 +35,7 @@ use super::DecompileOptionsV2;
 // 8: so does `Statement::Let`.
 // 9: `ClosureContext.env_plans`, `scope_parents`, `block_parents`, `block_function`.
 // 10: `MetroRegistry.wide_ids`, module ids past u32.
-pub const CACHE_VERSION: u32 = 11;
+pub const CACHE_VERSION: u32 = 12;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.
@@ -125,6 +125,7 @@ struct PipelineSnapshot {
     worklet_sources: BTreeMap<String, String>,
     variant_origin: BTreeMap<u32, u32>,
     holder_variants: BTreeMap<u32, BTreeMap<(u32, u32), u32>>,
+    copy_writes: BTreeMap<u32, BTreeMap<String, usize>>,
 }
 
 // The same shape, borrowed. Serialising through it writes the cache without
@@ -140,6 +141,7 @@ struct PipelineSnapshotRef<'a> {
     worklet_sources: &'a BTreeMap<String, String>,
     variant_origin: &'a BTreeMap<u32, u32>,
     holder_variants: &'a BTreeMap<u32, BTreeMap<(u32, u32), u32>>,
+    copy_writes: &'a BTreeMap<u32, BTreeMap<String, usize>>,
 }
 
 impl PipelineContext {
@@ -234,6 +236,7 @@ impl PipelineContext {
             worklet_sources: snap.worklet_sources,
             variant_origin: snap.variant_origin,
             holder_variants: snap.holder_variants,
+            copy_writes: snap.copy_writes,
         };
         // Also derived from closure_ctx; recompute rather than serialize.
         ctx.slot_names = ctx.precompute_slot_names();
@@ -254,6 +257,7 @@ impl PipelineContext {
             worklet_sources: &self.worklet_sources,
             variant_origin: &self.variant_origin,
             holder_variants: &self.holder_variants,
+            copy_writes: &self.copy_writes,
         }
     }
 }
@@ -380,6 +384,7 @@ mod tests {
             worklet_sources: BTreeMap::new(),
             variant_origin: BTreeMap::new(),
             holder_variants: BTreeMap::new(),
+            copy_writes: BTreeMap::new(),
         };
 
         // Serialize the snapshot and read it back.

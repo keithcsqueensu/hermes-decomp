@@ -38,24 +38,40 @@ impl PipelineContext {
     ) -> Option<crate::analysis::closure::identity::Violations> {
         use crate::analysis::closure::identity::{check_slot_identity, RenderedBody};
         let ctx = self.closure_ctx.as_ref()?;
-        let prepared = self.prepare_render_bodies(file);
+        let mut prepared = self.prepare_render_bodies(file);
+        // The copies of shared bodies, as `build_all_inline_bodies` makes
+        // them; each sits in the body that creates it.
+        let variants = self.shared_body_variants(&mut prepared);
         let factories: BTreeMap<u32, (Vec<String>, Vec<Statement>)> = self
             .registry
             .function_to_module
             .keys()
             .filter_map(|&f| self.prepare_factory_body(file, f).map(|b| (f, b)))
             .collect();
+        let mut copy_parent: BTreeMap<u32, u32> = BTreeMap::new();
+        for (&g, (_, stmts)) in prepared.iter().chain(factories.iter()) {
+            for c in super::shared_bodies::created(stmts) {
+                if variants.origin.contains_key(&c) {
+                    copy_parent.insert(c, g);
+                }
+            }
+        }
         let bodies = prepared
             .iter()
             .map(|b| (b, false))
             .chain(factories.iter().map(|b| (b, true)))
             .map(|((&f, (params, stmts)), module)| {
+                let copy_of = variants
+                    .origin
+                    .get(&f)
+                    .and_then(|&o| Some((o, *copy_parent.get(&f)?)));
                 (
                     f,
                     RenderedBody {
                         params,
                         stmts,
                         module,
+                        copy_of,
                     },
                 )
             })
@@ -69,6 +85,14 @@ impl PipelineContext {
         let variants = self.shared_body_variants(&mut prepared);
         self.variant_origin = variants.origin;
         self.holder_variants = variants.by_holder;
+        self.copy_writes = variants.writes;
+        // `prepare_render_bodies` declared each creator before its copies
+        // existed: a variable only a copy assigns was declared `const`.
+        for (g, writes) in &self.copy_writes {
+            if let Some((_, stmts)) = prepared.get_mut(g) {
+                super::shared_bodies::relax_written_consts(stmts, writes);
+            }
+        }
         for (&func, (_, stmts)) in &prepared {
             crate::analysis::closure::stamps::record_render(self.closure_ctx.as_ref(), func, stmts);
         }

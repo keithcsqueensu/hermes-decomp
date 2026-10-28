@@ -306,3 +306,90 @@ fn does_not_fold_non_placeholder_numeric_key() {
     fold_slot_index_fills(&mut stmts);
     assert_eq!(stmts.len(), 2, "non-placeholder must stay: {stmts:?}");
 }
+
+fn closure(id: u32) -> Expression {
+    Expression::Function {
+        id: crate::ir::FunctionId(id),
+        name: None,
+        is_arrow: true,
+        is_async: false,
+        is_generator: false,
+        env: None,
+    }
+}
+
+fn stamped_let(name: &str, slot: u32, value: Expression) -> Statement {
+    Statement::Let {
+        name: crate::ir::Var {
+            name: name.into(),
+            slot: Some(crate::ir::SlotRef { owner: 0, slot }),
+        },
+        value,
+        kind: VarKind::Const,
+    }
+}
+
+fn two_placeholders() -> Statement {
+    Statement::Let {
+        name: "obj".into(),
+        value: Expression::Object {
+            properties: ["a", "b"]
+                .iter()
+                .map(|k| ObjectProperty {
+                    key: PropertyKey::Ident((*k).into()),
+                    value: null(),
+                })
+                .collect(),
+        },
+        kind: VarKind::Const,
+    }
+}
+
+// An inlined factory's copies: each store fills a slot its closure captures.
+// The literal moves below the stores rather than its closures above them.
+#[test]
+fn a_literal_of_closures_moves_below_the_stores_they_capture() {
+    let s = |v: &str| Expression::Value(Value::Constant(Constant::String(v.into())));
+    let mut stmts = vec![
+        two_placeholders(),
+        stamped_let("tagA", 0, s("A")),
+        index_assign("obj", 0, closure(1)),
+        stamped_let("tagB", 1, s("B")),
+        index_assign("obj", 1, closure(1)),
+    ];
+    fold_slot_index_fills(&mut stmts);
+    assert_eq!(stmts.len(), 3, "{stmts:?}");
+    assert!(matches!(&stmts[0], Statement::Let { name, .. } if name.name == "tagA"));
+    assert!(matches!(&stmts[1], Statement::Let { name, .. } if name.name == "tagB"));
+    match &stmts[2] {
+        Statement::Let {
+            value: Expression::Object { properties },
+            ..
+        } => assert!(properties
+            .iter()
+            .all(|p| matches!(p.value, Expression::Function { .. }))),
+        other => panic!("expected the folded literal last, got {other:?}"),
+    }
+}
+
+// A value the literal reads directly is evaluated where the literal stands, so
+// a binding between the literal and its last fill keeps it in place.
+#[test]
+fn a_literal_reading_a_name_bound_before_its_last_fill_stays() {
+    let v = |n: &str| Expression::Value(Value::Binding(Binding::Variable(n.into())));
+    let mut stmts = vec![
+        two_placeholders(),
+        stamped_let("tag", 0, v("x")),
+        index_assign("obj", 0, v("y")),
+        Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable("y".into())),
+            value: v("z"),
+        },
+        index_assign("obj", 1, closure(1)),
+    ];
+    fold_slot_index_fills(&mut stmts);
+    assert!(
+        matches!(&stmts[0], Statement::Let { name, .. } if name.name == "obj"),
+        "{stmts:?}"
+    );
+}

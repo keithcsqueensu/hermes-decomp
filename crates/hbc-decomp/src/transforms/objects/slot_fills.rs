@@ -2,6 +2,7 @@ use super::is_reg_used;
 use crate::ir::{
     stmt_has_side_effects, AssignTarget, Binding, Expression, ObjectProperty, Statement, Value,
 };
+use std::collections::HashMap;
 
 // Fold `obj = { k0:v0, k1:<placeholder>, ... }; obj[N] = val` (a slot-index
 // fill from PutOwnBySlotIdx) into the literal's Nth property. Only replaces a
@@ -24,6 +25,8 @@ pub(super) fn fold_slot_index_fills_here(statements: &mut Vec<Statement>) {
     // Mark consumed fills and drop them all in one pass. Removing each fill inside
     // the loop shifts the tail on every fill, which is O(n^2) on a large function.
     let mut consumed = vec![false; statements.len()];
+    // Literals moved down: the fill each one replaces -> the literal.
+    let mut sinks: HashMap<usize, usize> = HashMap::new();
     let mut i = 0;
     while i < statements.len() {
         let Some((obj, prop_count)) = object_literal_def(&statements[i]) else {
@@ -47,6 +50,14 @@ pub(super) fn fold_slot_index_fills_here(statements: &mut Vec<Statement>) {
         // forward-referencing fill is left in place instead of folded.
         let mut defined_after_regs: Vec<u32> = Vec::new();
         let mut defined_after_vars: Vec<String> = Vec::new();
+        // A closure folded past a store to an environment slot prints above the
+        // variable it captures (`obj = { a: () => tag }; let tag = "A"`). That is
+        // correct, a closure reads its slot when called, but it reads backwards,
+        // so such a literal moves down to its last fill instead when nothing in
+        // between keeps it from moving (`sinkable`).
+        let mut env_write_seen = false;
+        let mut skipped_fill = false;
+        let mut sink_to: Option<usize> = None;
 
         let mut j = i + 1;
         while j < statements.len() {
@@ -55,11 +66,15 @@ pub(super) fn fold_slot_index_fills_here(statements: &mut Vec<Statement>) {
                     // Forward reference: leave this one fill in place (it assigns the
                     // slot after its value exists) but keep folding the object's other
                     // slots, whose clean literal values can still be hoisted safely.
+                    skipped_fill = true;
                     j += 1;
                     continue;
                 }
                 if let Some(properties) = object_properties_mut(&mut statements[i]) {
                     if is_placeholder(&properties[slot].value) {
+                        if env_write_seen && !skipped_fill && has_closure(&val) {
+                            sink_to = Some(j);
+                        }
                         properties[slot].value = val;
                         consumed[j] = true;
                         record_defs(
@@ -82,6 +97,7 @@ pub(super) fn fold_slot_index_fills_here(statements: &mut Vec<Statement>) {
             {
                 break;
             }
+            env_write_seen |= writes_env_slot(&statements[j]);
             record_defs(
                 &statements[j],
                 &mut defined_after_regs,
@@ -89,9 +105,30 @@ pub(super) fn fold_slot_index_fills_here(statements: &mut Vec<Statement>) {
             );
             j += 1;
         }
+        if let Some(k) = sink_to {
+            if sinkable(&statements[i], &statements[i + 1..k], &consumed[i + 1..k]) {
+                sinks.insert(k, i);
+            }
+        }
         i += 1;
     }
-    if consumed.iter().any(|&c| c) {
+    if !sinks.is_empty() {
+        // A sunk literal takes the place of its last fill, which is consumed.
+        let mut moved: HashMap<usize, Statement> = HashMap::new();
+        for (&k, &lit) in &sinks {
+            let s = std::mem::replace(&mut statements[lit], Statement::Comment(String::new()));
+            moved.insert(k, s);
+            consumed[lit] = true;
+        }
+        let old = std::mem::take(statements);
+        for (idx, stmt) in old.into_iter().enumerate() {
+            if let Some(lit) = moved.remove(&idx) {
+                statements.push(lit);
+            } else if !consumed[idx] {
+                statements.push(stmt);
+            }
+        }
+    } else if consumed.iter().any(|&c| c) {
         let mut idx = 0;
         statements.retain(|_| {
             let keep = !consumed[idx];
@@ -412,6 +449,122 @@ fn slot_index_fill(
         Some((n, value.clone()))
     } else {
         None
+    }
+}
+
+// Whether `e` creates a closure.
+fn has_closure(e: &Expression) -> bool {
+    use crate::ir::Visitor;
+    struct C(bool);
+    impl Visitor<'_> for C {
+        fn visit_expression(&mut self, e: &Expression) {
+            if matches!(e, Expression::Function { .. }) {
+                self.0 = true;
+            } else if !self.0 {
+                self.walk_expression(e);
+            }
+        }
+    }
+    let mut c = C(false);
+    c.visit_expression(e);
+    c.0
+}
+
+// Whether `stmt` stores to an environment slot: a closure variable, or a name
+// stamped with its slot.
+fn writes_env_slot(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::Assign {
+            target: AssignTarget::Binding(b),
+            ..
+        } => match b {
+            Binding::ClosureVar { .. } => true,
+            Binding::Variable(v) => v.slot.is_some(),
+            Binding::Register(_) => false,
+        },
+        Statement::Let { name, .. } => name.slot.is_some(),
+        _ => false,
+    }
+}
+
+// Whether the literal `lit` can move below `between`, the statements up to its
+// last fill (`consumed` marks those folded away). Its values are then evaluated
+// later, so each statement left in between must only bind a name, and the
+// values must read none of those names. What a closure captures is not read
+// here: the closure reads it when called, after the stores, which is the point.
+fn sinkable(lit: &Statement, between: &[Statement], consumed: &[bool]) -> bool {
+    use crate::ir::Visitor;
+    let mut bound: Vec<&Binding> = Vec::new();
+    let mut lets: Vec<&str> = Vec::new();
+    for (s, &c) in between.iter().zip(consumed) {
+        if c {
+            continue;
+        }
+        match s {
+            Statement::Assign {
+                target: AssignTarget::Binding(b),
+                ..
+            } => bound.push(b),
+            Statement::Let { name, .. } => lets.push(&name.name),
+            Statement::Comment(_) => {}
+            _ => return false,
+        }
+    }
+    struct R<'a> {
+        bound: &'a [&'a Binding],
+        lets: &'a [&'a str],
+        found: bool,
+    }
+    impl Visitor<'_> for R<'_> {
+        fn visit_expression(&mut self, e: &Expression) {
+            if let Expression::Value(Value::Binding(b)) = e {
+                let hit = match b {
+                    Binding::Register(r) => {
+                        self.bound.iter().any(|x| matches!(x, Binding::Register(y) if y == r))
+                    }
+                    Binding::Variable(v) => {
+                        self.lets.contains(&v.name.as_str())
+                            || self
+                                .bound
+                                .iter()
+                                .any(|x| matches!(x, Binding::Variable(y) if y.name == v.name))
+                    }
+                    Binding::ClosureVar { level, slot } => self.bound.iter().any(|x| {
+                        matches!(x, Binding::ClosureVar { level: l, slot: s } if l == level && s == slot)
+                    }),
+                };
+                self.found |= hit;
+            }
+            if !self.found {
+                self.walk_expression(e);
+            }
+        }
+    }
+    let Some(properties) = object_properties(lit) else {
+        return false;
+    };
+    let mut r = R {
+        bound: &bound,
+        lets: &lets,
+        found: false,
+    };
+    for p in properties {
+        r.visit_expression(&p.value);
+    }
+    !r.found
+}
+
+fn object_properties(stmt: &Statement) -> Option<&Vec<ObjectProperty>> {
+    match stmt {
+        Statement::Assign {
+            value: Expression::Object { properties },
+            ..
+        }
+        | Statement::Let {
+            value: Expression::Object { properties },
+            ..
+        } => Some(properties),
+        _ => None,
     }
 }
 
