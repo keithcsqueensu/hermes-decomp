@@ -4,9 +4,14 @@ use crate::ir::{
 
 use super::esm_cleanup::{inline_hoisted_aliases_and_trim, remove_esm_boilerplate};
 
-fn is_self_assign_value(name: &str, value: &Expression) -> bool {
+fn is_self_assign_value(var: &crate::ir::Var, value: &Expression) -> bool {
+    let name = var.name.as_str();
     match value {
-        Expression::Value(Value::Binding(Binding::Variable(val_name))) => name == val_name,
+        // One spelling, two variables: a store into an environment slot of a
+        // value named after it (`sum = sum` for `slot = local`) is the store.
+        Expression::Value(Value::Binding(Binding::Variable(val))) => {
+            name == val.name && !matches!((var.slot, val.slot), (Some(a), Some(b)) if a != b)
+        }
         Expression::Value(Value::Parameter(idx)) => name == format!("arg{idx}"),
         Expression::Value(Value::Constant(crate::ir::Constant::Bool(b))) => {
             (*b && name == "true") || (!*b && name == "false")
@@ -36,7 +41,129 @@ fn is_self_assign_value(name: &str, value: &Expression) -> bool {
     }
 }
 
+// What one top-level `cleanup_noise` call shares with its recursion.
+#[derive(Default)]
+struct Merge {
+    depth: u32,
+    // Names the whole body writes without a stamp: its own locals.
+    local_writes: std::collections::HashSet<String>,
+    // Stores into a slot dropped as `x = x` where only the target is stamped.
+    dropped: Vec<(String, crate::ir::SlotRef)>,
+}
+
+thread_local! {
+    static MERGE: std::cell::RefCell<Merge> = std::cell::RefCell::new(Merge::default());
+}
+
 pub fn cleanup_noise(stmts: Vec<Statement>) -> Vec<Statement> {
+    MERGE.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.depth == 0 {
+            m.local_writes = unstamped_writes(&stmts);
+        }
+        m.depth += 1;
+    });
+    let mut result = cleanup_noise_here(stmts);
+    let dropped = MERGE.with(|m| {
+        let mut m = m.borrow_mut();
+        m.depth -= 1;
+        if m.depth == 0 {
+            m.local_writes.clear();
+            std::mem::take(&mut m.dropped)
+        } else {
+            Vec::new()
+        }
+    });
+    if !dropped.is_empty() {
+        stamp_merged(&mut result, &dropped);
+    }
+    result
+}
+
+fn unstamped_writes(stmts: &[Statement]) -> std::collections::HashSet<String> {
+    use crate::ir::Visitor;
+    struct W(std::collections::HashSet<String>);
+    impl<'a> Visitor<'a> for W {
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Let { name, .. } = s {
+                if name.slot.is_none() {
+                    self.0.insert(name.name.clone());
+                }
+            }
+            self.walk_statement(s);
+        }
+        fn visit_assign_target(&mut self, t: &'a AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                if v.slot.is_none() {
+                    self.0.insert(v.name.clone());
+                }
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut w = W(std::collections::HashSet::new());
+    for s in stmts {
+        w.visit_statement(s);
+    }
+    w.0
+}
+
+// `slot = local` printed `x = x`: the naming gave a value the name of the slot
+// it is stored into, so the two are one variable from here on. Dropping the
+// store is right only if the local's other references are the slot's too:
+// stamp them, or a later pass takes the unstamped write before the store
+// (`x = x + 1`) for a local of its own and the store is lost for good.
+fn stamp_merged(stmts: &mut [Statement], dropped: &[(String, crate::ir::SlotRef)]) {
+    use crate::ir::MutVisitor;
+    let mut by_name: std::collections::HashMap<&str, Option<crate::ir::SlotRef>> =
+        std::collections::HashMap::new();
+    for (n, s) in dropped {
+        by_name
+            .entry(n.as_str())
+            .and_modify(|e| {
+                if *e != Some(*s) {
+                    *e = None;
+                }
+            })
+            .or_insert(Some(*s));
+    }
+    struct Stamp<'a>(&'a std::collections::HashMap<&'a str, Option<crate::ir::SlotRef>>);
+    impl Stamp<'_> {
+        fn var(&self, v: &mut crate::ir::Var) {
+            if v.slot.is_none() {
+                if let Some(Some(s)) = self.0.get(v.name.as_str()) {
+                    v.slot = Some(*s);
+                }
+            }
+        }
+    }
+    impl MutVisitor for Stamp<'_> {
+        fn visit_statement(&mut self, s: &mut Statement) {
+            if let Statement::Let { name, .. } = s {
+                self.var(name);
+            }
+            self.walk_statement(s);
+        }
+        fn visit_expression(&mut self, e: &mut Expression) {
+            if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                self.var(v);
+            }
+            self.walk_expression(e);
+        }
+        fn visit_assign_target(&mut self, t: &mut AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.var(v);
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut st = Stamp(&by_name);
+    for s in stmts.iter_mut() {
+        st.visit_statement(s);
+    }
+}
+
+fn cleanup_noise_here(stmts: Vec<Statement>) -> Vec<Statement> {
     let mut result = Vec::new();
 
     for (i, stmt) in stmts.iter().enumerate() {
@@ -47,6 +174,23 @@ pub fn cleanup_noise(stmts: Vec<Statement>) -> Vec<Statement> {
                 value,
             } => {
                 if is_self_assign_value(name, value) {
+                    if let (Some(slot), Expression::Value(Value::Binding(Binding::Variable(v)))) =
+                        (name.slot, value)
+                    {
+                        if v.slot.is_none() {
+                            // Only the target is the slot. A value the body
+                            // writes is its local, one variable with the slot
+                            // from here on: stamp it so. One it only reads (a
+                            // captured parameter) is the slot's binding as
+                            // printed, and the store has nothing to add.
+                            MERGE.with(|m| {
+                                let mut m = m.borrow_mut();
+                                if m.local_writes.contains(&v.name) {
+                                    m.dropped.push((name.name.clone(), slot));
+                                }
+                            });
+                        }
+                    }
                     continue;
                 }
                 result.push(stmt.clone());

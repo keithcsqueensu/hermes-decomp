@@ -53,8 +53,8 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("lang_templates", 96, "other: `HermesBuiltin.getTemplateObject` (tagged templates) is printed unfolded"),
     ("lang_templates", 98, "other: `HermesBuiltin.getTemplateObject` (tagged templates) is printed unfolded"),
     ("lang_templates", 99, "other: `HermesBuiltin.getTemplateObject` (tagged templates) is printed unfolded"),
-    ("inlined_nested_reads", 98, "env: the callback reads the copies' scope two levels up through `start`'s, whose parent the graph cannot pick; the level model stamps it as `global`'s own (`sum`, `items`), and the `done` store is lost (S3.4: an explicit unknown)"),
-    ("inlined_nested_reads", 99, "env: the callback reads the copies' scope two levels up through `start`'s, whose parent the graph cannot pick; the level model stamps it as `global`'s own (`sum`, `items`), and the `done` store is lost (S3.4: an explicit unknown)"),
+    ("inlined_recursive", 98, "env: `optional` is created by each creator and by itself; one declaration serves every creation and cannot read each one's `pattern` (the level model's `closure_1_0` is undeclared)"),
+    ("inlined_recursive", 99, "env: `optional` is created by each creator and by itself; one declaration serves every creation and cannot read each one's `pattern` (the level model's `closure_1_0` is undeclared)"),
     ("class_super", 98, "other: hermesc inlines the constructor at `new Own(4)`, so its private-field installs print outside the class, a syntax error; never seen in the four bundles (privateTwice 0). class_super_call covers the explicit `super(a, 1)` itself"),
     ("class_super", 99, "other: hermesc inlines the constructor at `new Own(4)`, so its private-field installs print outside the class, a syntax error; never seen in the four bundles (privateTwice 0). class_super_call covers the explicit `super(a, 1)` itself"),
 ];

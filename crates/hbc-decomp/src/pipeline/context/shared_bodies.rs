@@ -667,7 +667,7 @@ fn point_children(stmts: &mut Vec<Statement>, map: &BTreeMap<u32, u32>) {
 }
 
 // `name` made distinct from everything in `in_use`.
-fn fresh_name(name: &str, in_use: &HashSet<String>) -> String {
+pub(super) fn fresh_name(name: &str, in_use: &HashSet<String>) -> String {
     let sep = if name.ends_with(|c: char| c.is_ascii_digit()) {
         "_"
     } else {

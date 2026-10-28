@@ -200,13 +200,21 @@ impl PipelineContext {
                 .as_ref()
                 .map(|c| &c.parent_function)
                 .unwrap_or(&empty);
-            let empty_set = std::collections::BTreeSet::new();
-            let block_created = closure_ctx
+            // Kept at their sites: a function created on a block environment,
+            // and a shared function (S3.3), whose creators each render their
+            // own copy of the body; one declaration would read one creator's
+            // scope from all of them.
+            let stay: std::collections::BTreeSet<u32> = closure_ctx
                 .as_ref()
-                .map(|c| &c.block_created)
-                .unwrap_or(&empty_set);
-            let hoisted =
-                transforms::hoist_repeated_closures(all_ir, parent_of, factories, block_created);
+                .map(|c| {
+                    c.block_created
+                        .iter()
+                        .chain(c.shared_creations.keys())
+                        .copied()
+                        .collect()
+                })
+                .unwrap_or_default();
+            let hoisted = transforms::hoist_repeated_closures(all_ir, parent_of, factories, &stay);
             log::debug!("[pipeline] hoisted {hoisted} repeated closures");
         }
         crate::analysis::closure::stamps::report("after W16g", all_ir, closure_ctx.as_ref());

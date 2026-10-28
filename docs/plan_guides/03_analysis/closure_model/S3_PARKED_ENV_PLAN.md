@@ -328,6 +328,58 @@ only.
 
 Exit: v96 byte-identical, v98 measured, gates.
 
+**Status (2026-10-28): the closure part done, the slot-held part not started.** What was built
+covers the closure accesses S3.3 counted; `NESTED_ENV_LEVEL_BASE + slot` and `reg_source_slot`
+(slot-held and up-from-a-slot accesses: 18 / 39 and 44 / 70 unresolved) remain.
+
+- **A chain answer for unresolved closure accesses.** A shared function gets its first
+  creation scope as its parent in `scope_parents`, so the installed chain is complete through
+  it. An access the graph left unresolved is then read on that chain where the reading holds
+  for every creator: the shared function's creation scope itself is renamed per copy (S3.3),
+  and a scope past it must be the same from every creation scope. This is what the two-level
+  reads in `inlined_nested_reads` needed (the callback read `global`'s own slots through
+  `add_child`'s link): it passes now. Expensify / Discord: 2,146 / 2,385 accesses read on the
+  chain, all verified by `verify_env_plans`.
+- **An explicit unknown only on evidence.** Where the creation scopes disagree past the shared
+  function, the access gets `UNKNOWN_ENV_LEVEL` and prints `closure_unknown_{slot}`
+  (undeclared, a placeholder to `undeclared.mjs`): 54 / 92. Where the chain merely breaks (a
+  link the graph lacks: "no fact creates", "parent unresolved"), the level model stays: 457 /
+  458. Making those unknown too was tried: undeclared rose by 2,000 / 5,700, since the lexical
+  parent the level model walks is usually right.
+- **A shared function that creates itself keeps no parent** (29 / 53; ts-pattern's `optional`,
+  whose inlined `chainable` creates it again). It is declared once per creator, and one parent
+  moved every declaration to the representative's scope (Discord module 5745 printed one
+  `function optional()` for 32 creators). Fixture `inlined_recursive` (KNOWN) records that a
+  single declaration cannot read each creation's `pattern`.
+- **Shared functions stay at their sites** (`hoist_repeated_closures`, with the block-created
+  ones): with a parent installed, the hoister declared `GameSearchSession`'s methods once at
+  module level, reading the constructor's locals out of scope.
+- **The lost store into a slot** (every build since S3.2, v96 too). The register holding a new
+  value is named after the slot it is stored into, so `slot = value` printed `x = x` and
+  `cleanup_noise` dropped it; a later pass then took the remaining unstamped write for a
+  local (`const sum2 = sum + 1`) and the store was gone. Now, when the target is the slot and
+  the value an unstamped local the body writes, the drop stamps that local's references as the
+  slot (`stamp_merged`): one variable, as printed. A value the body only reads (a captured
+  parameter) is dropped as before. Fixture `inlined_counter` passes (it printed `a1 a2 a3`).
+  On v96 this restores Babel's self-replacing helpers (`exports = getPrototypeOf.bind()` where
+  a separate `exports2` was written): 7,448 changed lines, so the v96 exit is not met by
+  design; undeclared 6,169 -> 6,159.
+- **A capture and a local under one name in one body** (`split_capture_and_local`): the
+  unstamped references of a name the body reads by stamp from an ancestor, writes first and
+  never writes by stamp take a fresh name. And a name the body writes first is never "outer"
+  by name alone (`written_first_vars`).
+- Against `d15c5fa`: undeclared Expensify 24,612 -> 24,065, Discord 17,124 -> 16,129;
+  `const`s written 36 -> 34, 219 -> 195 (most of Discord's are still `obj`: a temporary
+  undeclared in a raw state machine that the split does not reach). String literals and
+  properties up in total (Expensify 519,088 -> 519,083 / 931,990 -> 932,010; Discord 844,953
+  -> 845,009 / 1,280,125 -> 1,280,618); the modules with fewer drop dead temporaries
+  (`let str6 = "0";` in CFB, `let str = "complete";` in `TTFBThresholds`) or a literal printed
+  twice (module 407's `tmp = {...}; let obj = {...}`). I2 CaptureAndLocal Expensify 310 ->
+  2,981: the merged stamps on Babel's `_interopRequireWildcard`, whose output is unchanged.
+  Discord's unparsable modules 4 -> 5: module 7149 joins the known class (a raw wrapper's slot
+  named like its parameter, `let orderId;`); before, the slot was renamed `orderId5` and never
+  assigned.
+
 ## 3. Order and size
 
 S3.0 → S3.1 → S3.2 → S3.3 → S3.4. S3.1 carries most of the visible output gain (the parking

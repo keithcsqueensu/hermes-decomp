@@ -6,7 +6,15 @@
 # the new I1 rows are a parent keeping an unused `let closure_0 = param` alias while
 # its child reads the parameter, and the I2 rows are 11 former I3 undeclared captures
 # a body now declares.
-085c10a82cd273a1c9e9f7b84bc2c8f2571eae4e92a6c9d5226418cd7a73e75e	equinox 11.43.0 (v96)	875	409	7
+085c10a82cd273a1c9e9f7b84bc2c8f2571eae4e92a6c9d5226418cd7a73e75e	equinox 11.43.0 (v96)	1237	2284	7
+# S3.4 (2026-10-28): equinox I1 875 -> 1237, I2 409 -> 2284; coachrx I1 704 -> 791, I2 271
+# -> 361, I3 7 -> 6. A store into a slot of a value named after it (`x = x`) was dropped and
+# the slot never written; the drop now stamps the value as the slot. Babel's self-replacing
+# helpers assign their slot again (`_getRequireWildcardCache = function
+# _getRequireWildcardCache(...)`, where an inner declaration of that name shadowed it), and
+# the checker counts the function expression's own name as a local beside the capture
+# (1,466 of the new I2 rows are `_getRequireWildcardCache`, 274 `_isNativeReflectConstruct`).
+# Undeclared on equinox 6,169 -> 6,159.
 # D3.1, slot naming (2026-10-25): I1 equinox 1055 -> 875, coachrx 1103 -> 704 (definition
 # names go to the slot, in every body using it); I2 equinox 2136 -> 409, coachrx 1624 -> 271
 # (a body's local named like a capture it reads takes a fresh name; a collapsed machine's
@@ -18,4 +26,4 @@
 # (and counted) again. To come down with the slot naming fixes that follow.
 # D3: coachrx I1 2794 -> 2781, I3 29 -> 9; I2 1364 -> 1390 (D2 was already at 1374;
 # the rest are former I3 undeclared captures now declared, as for equinox).
-702c2b611a3366676f28bb6a58f8e3bf57acd1e46a51a08d0ba226ecf01a72bb	coachrx 2.1.223	704	271	7
+702c2b611a3366676f28bb6a58f8e3bf57acd1e46a51a08d0ba226ecf01a72bb	coachrx 2.1.223	791	361	6

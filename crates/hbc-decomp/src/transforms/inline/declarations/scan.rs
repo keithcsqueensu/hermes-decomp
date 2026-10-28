@@ -21,6 +21,18 @@ pub(super) fn free_captured_vars(stmts: &[Statement]) -> std::collections::HashS
         .collect()
 }
 
+// Variables whose first occurrence in the function is a write: the body's own
+// unless a stamp says otherwise.
+pub fn written_first_vars(stmts: &[Statement]) -> std::collections::HashSet<String> {
+    let mut first_seen: BTreeMap<String, bool> = BTreeMap::new();
+    scan_first_use(stmts, &mut first_seen);
+    first_seen
+        .into_iter()
+        .filter(|(_, read_first)| !*read_first)
+        .map(|(name, _)| name)
+        .collect()
+}
+
 // Record, per variable, whether its first occurrence (pre-order, value-before-
 // target for assignments) is a read. Only the first occurrence is kept.
 fn scan_first_use(stmts: &[Statement], first_seen: &mut BTreeMap<String, bool>) {

@@ -14,7 +14,7 @@ pub use captured::{names_used_by_descendants, outer_names_used_by_descendants};
 pub use cleanup::cleanup_noise;
 pub use declarations::{
     extra_writes_from_nested_bodies, insert_declarations, insert_declarations_with_extra_writes,
-    insert_declarations_with_outer, insert_declarations_with_slots,
+    insert_declarations_with_outer, insert_declarations_with_slots, written_first_vars,
 };
 pub use folding::{fold_array_literals, fold_object_literals};
 pub use inline_named::{

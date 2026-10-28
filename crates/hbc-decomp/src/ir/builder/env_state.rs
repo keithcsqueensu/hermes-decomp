@@ -19,6 +19,13 @@ use std::collections::{BTreeMap, HashSet};
 pub const NESTED_ENV_LEVEL_BASE: u32 = 128;
 const MAX_LEVEL: u32 = 255;
 
+// The level of an access the scope graph cannot answer and the installed chain
+// gives no single answer for (S3_PARKED_ENV_PLAN.md S3.4). No chain is this
+// deep and it stays below `NESTED_ENV_LEVEL_BASE`, so no walk resolves it: the
+// access keeps a placeholder name, `closure_unknown_{slot}`, undeclared and
+// counted, instead of whatever scope the level model's walk would reach.
+pub const UNKNOWN_ENV_LEVEL: u32 = 100;
+
 // The levels the whole-program scope graph gives a function's loads and stores
 // (V98_ENV_PLAN.md E4), by instruction offset. An access it leaves out keeps
 // the builder's own level, moved out by `shift` as `ir::shift_env_levels`

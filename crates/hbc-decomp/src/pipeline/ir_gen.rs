@@ -632,6 +632,7 @@ fn plan_env_levels(
             }
         }
     }
+    let mut installed: Vec<u32> = Vec::new();
     for (f, sites) in creations_of {
         let mut by_creator: BTreeMap<u32, std::collections::BTreeSet<ScopeRef>> = BTreeMap::new();
         let mut unresolved = false;
@@ -651,10 +652,64 @@ fn plan_env_levels(
         if by_creator.values().any(|s| s.len() > 1) {
             count("shared: functions with copies in one creator");
         }
+        // S3.4: the chain needs one parent for the function; take its first
+        // creation scope. The body is named against that scope, and every
+        // other creation scope reads a copy renamed onto its own slots, so a
+        // read two levels down through the function lands on a slot the copy
+        // renames, not past the function into whatever `add_child` linked.
+        if let Some(&rep) = by_creator.values().next().and_then(|s| s.iter().next()) {
+            if let std::collections::btree_map::Entry::Vacant(e) = ctx.scope_parents.entry(f) {
+                e.insert(rep);
+                installed.push(f);
+            }
+        }
         ctx.shared_creations.insert(f, by_creator);
         count("shared: functions");
     }
 
+    // The scope `n` hops up the installed chain from `from`.
+    let walk = |from: ScopeRef, n: u32| -> Option<ScopeRef> {
+        let mut cur = from;
+        for _ in 0..n {
+            cur = match cur {
+                (g, None) => *ctx.scope_parents.get(&g)?,
+                (g, Some(level)) => *ctx.block_parents.get(&(g, level))?,
+            };
+        }
+        Some(cur)
+    };
+    // A shared function one of whose creators is itself or sits below it
+    // (ts-pattern's `optional`, whose inlined helper creates it again): it is
+    // declared once per creator, not copied, so a single parent would read one
+    // creator's scope from every declaration.
+    let creates_itself =
+        |g: u32, creators: &BTreeMap<u32, std::collections::BTreeSet<ScopeRef>>| {
+            creators.keys().any(|&c| {
+                let mut cur: ScopeRef = (c, None);
+                for _ in 0..64 {
+                    if cur == (g, None) {
+                        return true;
+                    }
+                    match walk(cur, 1) {
+                        Some(next) => cur = next,
+                        None => return false,
+                    }
+                }
+                false
+            })
+        };
+    // Such a function keeps no parent, and its reads the level model's answer.
+    let selfish: Vec<u32> = installed
+        .iter()
+        .copied()
+        .filter(|g| creates_itself(*g, &ctx.shared_creations[g]))
+        .collect();
+    for g in &selfish {
+        ctx.scope_parents.remove(g);
+    }
+    for _ in &selfish {
+        count("shared: functions that create themselves");
+    }
     // The level that reaches `s` from `f`: its own scopes directly, anything
     // else as the hops up its chain -- the chain of parents installed above,
     // which is the one `slot_owner` will walk, not the graph's own: a level
@@ -681,6 +736,44 @@ fn plan_env_levels(
             }
         }
         None
+    };
+    // The same walk on the chain as it now stands.
+    let walk = |from: ScopeRef, n: u32| -> Option<ScopeRef> {
+        let mut cur = from;
+        for _ in 0..n {
+            cur = match cur {
+                (g, None) => *ctx.scope_parents.get(&g)?,
+                (g, Some(level)) => *ctx.block_parents.get(&(g, level))?,
+            };
+        }
+        Some(cur)
+    };
+    // S3.4: what a closure access the graph left unresolved reads on the
+    // installed chain, when that reading holds for every creator: through a
+    // shared function, the creation scope itself is renamed per copy, and a
+    // scope past it must be the same from every creation scope.
+    // `Err(true)`: the creation scopes disagree, so there is no single answer
+    // and the access is an explicit unknown. `Err(false)`: the chain breaks
+    // (a link the graph does not have), and the level model's walk up the
+    // lexical parents stays, being right more often than not.
+    let chain_answer = |f: u32, n: u32| -> std::result::Result<ScopeRef, bool> {
+        let mut cur: ScopeRef = (f, None);
+        for k in 0..n {
+            if let (g, None) = cur {
+                if let Some(creators) = ctx.shared_creations.get(&g) {
+                    let rest = n - k - 1;
+                    if rest > 0 {
+                        let mut above = creators.values().flatten().map(|&s| walk(s, rest));
+                        let first = above.next().flatten().ok_or(false)?;
+                        if above.any(|a| a != Some(first)) {
+                            return Err(true);
+                        }
+                    }
+                }
+            }
+            cur = walk(cur, 1).ok_or(false)?;
+        }
+        Ok(cur)
     };
     // S3 (S3_PARKED_ENV_PLAN.md S3.0): for each parked (scope, slot), how the
     // accesses through an environment loaded out of it resolved. A parking
@@ -733,6 +826,24 @@ fn plan_env_levels(
                     }
                     let place = if shared { "a shared body" } else { "elsewhere" };
                     count(&format!("unresolved closure in {place}: {why}"));
+                    // S3.4: the chain's answer where it holds for every
+                    // creator, else an explicit unknown rather than whatever
+                    // the level model's walk reaches.
+                    match chain_answer(*f, *n) {
+                        Ok(r) => {
+                            let l = *n;
+                            if l != old {
+                                levels.insert(*off, l);
+                            }
+                            expected.insert((*f, *off), r);
+                            count("unresolved closure: read on the chain");
+                        }
+                        Err(true) => {
+                            levels.insert(*off, crate::ir::UNKNOWN_ENV_LEVEL);
+                            count("unresolved closure: unknown, creation scopes disagree");
+                        }
+                        Err(false) => count("unresolved closure: chain broken, level model"),
+                    }
                 }
                 tally(false);
                 continue;

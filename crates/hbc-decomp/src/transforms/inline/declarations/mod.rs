@@ -6,6 +6,7 @@ mod scan;
 mod writes;
 
 use patterns::collect_pattern_names;
+pub use scan::written_first_vars;
 use scan::{
     collect_scope_info, free_captured_vars, names_assigned_in_nested_bodies_and_used_outside,
     own_slots_escaping_their_block,

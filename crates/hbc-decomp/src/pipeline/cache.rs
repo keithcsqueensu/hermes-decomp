@@ -35,6 +35,7 @@ use super::DecompileOptionsV2;
 // 8: so does `Statement::Let`.
 // 9: `ClosureContext.env_plans`, `scope_parents`, `block_parents`, `block_function`.
 // 10: `MetroRegistry.wide_ids`, module ids past u32.
+// 11: shared-body copies (`variant_origin`, `holder_variants`). 12: `copy_writes`.
 pub const CACHE_VERSION: u32 = 12;
 const MAGIC: [u8; 4] = *b"HDC1";
 

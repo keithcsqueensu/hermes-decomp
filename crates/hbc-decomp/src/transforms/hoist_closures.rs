@@ -34,7 +34,7 @@ pub fn hoist_repeated_closures(
     all_ir: &mut BTreeMap<u32, Vec<Statement>>,
     parent_of: &BTreeMap<u32, u32>,
     factories: &BTreeMap<u32, u32>,
-    block_created: &BTreeSet<u32>,
+    stay_at_sites: &BTreeSet<u32>,
 ) -> usize {
     let mut sites: BTreeMap<u32, Vec<Site>> = BTreeMap::new();
     let mut shapes: BTreeMap<u32, Shape> = BTreeMap::new();
@@ -104,8 +104,9 @@ pub fn hoist_repeated_closures(
         // Created on a block environment: each site reads its own block's
         // bindings, which a declaration outside the block cannot reach. The
         // checks below walk only the functions between a site and the
-        // declaring scope, never the blocks inside one.
-        if block_created.contains(&fid) && !cyclic {
+        // declaring scope, never the blocks inside one. Likewise a shared
+        // function, each of whose creators renders its own copy.
+        if stay_at_sites.contains(&fid) && !cyclic {
             continue;
         }
         // The declaration goes outside the function itself and outside its

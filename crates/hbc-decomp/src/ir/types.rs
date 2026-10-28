@@ -293,7 +293,9 @@ impl Value {
     /// in the same family as local ones (replaces the old `outerN_M` form, which
     /// looked like real source identifiers but never was).
     pub fn closure_var_name(level: u32, slot: u32) -> String {
-        if level == 0 {
+        if level == crate::ir::UNKNOWN_ENV_LEVEL {
+            format!("{}unknown_{slot}", crate::ir::placeholder::PREFIX)
+        } else if level == 0 {
             format!("closure_{slot}")
         } else {
             format!("closure_{level}_{slot}")

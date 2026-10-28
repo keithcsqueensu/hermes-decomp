@@ -25,6 +25,104 @@ use std::sync::Arc;
 use super::super::get_function_params;
 use super::PipelineContext;
 
+// One name for a captured ancestor slot and for a local of this body: the
+// body reads the capture by stamp and writes its own temporary first, under
+// the same spelling (`obj.easingX` of the enclosing `const obj`, and the
+// body's own `obj = { initialValues }`). Declaring the local would cut the
+// capture and leaving it undeclared assigns the ancestor's binding, so the
+// unstamped references take a fresh name; they meant the body's local in the
+// output already. Only where the name is written first and never written by
+// stamp: a store to the capture carries the slot's stamp.
+fn split_capture_and_local(
+    ctx: &crate::analysis::closure::ClosureContext,
+    func_id: u32,
+    stmts: &mut [Statement],
+) {
+    use crate::analysis::closure::stamps::{captured_slot_names, var_refs};
+    use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, Value, Visitor};
+    let caps = captured_slot_names(ctx, func_id, stmts);
+    if caps.is_empty() {
+        return;
+    }
+    let first_written = transforms::written_first_vars(stmts);
+    let mut candidates: Vec<&String> = caps.keys().filter(|n| first_written.contains(*n)).collect();
+    if candidates.is_empty() {
+        return;
+    }
+    struct StampedWrites(HashSet<String>);
+    impl<'a> Visitor<'a> for StampedWrites {
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Let { name, .. } = s {
+                if name.slot.is_some() {
+                    self.0.insert(name.name.clone());
+                }
+            }
+            self.walk_statement(s);
+        }
+        fn visit_assign_target(&mut self, t: &'a AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                if v.slot.is_some() {
+                    self.0.insert(v.name.clone());
+                }
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut sw = StampedWrites(HashSet::new());
+    for s in stmts.iter() {
+        sw.visit_statement(s);
+    }
+    candidates.retain(|n| !sw.0.contains(*n));
+    if candidates.is_empty() {
+        return;
+    }
+    let mut taken: HashSet<String> = var_refs(stmts)
+        .into_iter()
+        .map(|(n, _)| n.to_string())
+        .collect();
+    taken.extend(caps.keys().cloned());
+    let mut renames: HashMap<String, String> = HashMap::new();
+    for n in candidates {
+        let fresh = super::shared_bodies::fresh_name(n, &taken);
+        taken.insert(fresh.clone());
+        renames.insert(n.clone(), fresh);
+    }
+    struct Rename<'a>(&'a HashMap<String, String>);
+    impl Rename<'_> {
+        fn var(&self, v: &mut crate::ir::Var) {
+            if v.slot.is_none() {
+                if let Some(new) = self.0.get(&v.name) {
+                    v.name = new.clone();
+                }
+            }
+        }
+    }
+    impl MutVisitor for Rename<'_> {
+        fn visit_statement(&mut self, s: &mut Statement) {
+            if let Statement::Let { name, .. } = s {
+                self.var(name);
+            }
+            self.walk_statement(s);
+        }
+        fn visit_expression(&mut self, e: &mut Expression) {
+            if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                self.var(v);
+            }
+            self.walk_expression(e);
+        }
+        fn visit_assign_target(&mut self, t: &mut AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.var(v);
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut r = Rename(&renames);
+    for s in stmts.iter_mut() {
+        r.visit_statement(s);
+    }
+}
+
 impl PipelineContext {
     // Build pre-rendered inline function bodies for ALL functions.
     // Multi-pass approach for multi-level nesting support.
@@ -289,6 +387,9 @@ impl PipelineContext {
         stmts: &mut Vec<Statement>,
         params: &[String],
     ) {
+        if let Some(ctx) = self.closure_ctx.as_ref() {
+            split_capture_and_local(ctx, func_id, stmts);
+        }
         let extra = self.extra_writes_for_function(func_id);
         // The names this body stores into an ancestor's slot under, by stamp,
         // where the owner binds them; and the ancestors' slot names (as the
@@ -311,7 +412,19 @@ impl PipelineContext {
                 if let (Some(ancestors), Some(below)) =
                     (ancestors, self.outer_used_by_descendants.get(&func_id))
                 {
-                    outer.extend(ancestors.intersection(below).cloned());
+                    // Matched by name only, so never a name this body writes
+                    // before reading: that is its own local (a store to an
+                    // ancestor's slot carries the slot's stamp and is in
+                    // `outer` above). Left undeclared, the write assigned the
+                    // nearest enclosing binding of the name, often a `const`
+                    // (an async state machine's `obj = { value, done }`).
+                    let mine = transforms::written_first_vars(stmts);
+                    outer.extend(
+                        ancestors
+                            .intersection(below)
+                            .filter(|n| !mine.contains(*n))
+                            .cloned(),
+                    );
                 }
                 outer
             }

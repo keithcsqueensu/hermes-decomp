@@ -107,7 +107,7 @@ const byName = new Map();
 let unparsed = 0;
 let unparsedLines = 0;
 let lowercaseTags = 0;
-const isPlaceholder = (n) => /^closure_\d/.test(n) || /^c\d+$/.test(n);
+const isPlaceholder = (n) => /^closure_(\d|unknown_)/.test(n) || /^c\d+$/.test(n);
 const count = (n, line) => {
   byName.set(n, (byName.get(n) || 0) + 1);
   if (n === show) console.log('at', line);

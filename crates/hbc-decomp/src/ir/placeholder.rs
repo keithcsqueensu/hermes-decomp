@@ -6,6 +6,8 @@
 //   closure_{slot}${k}      the same, made distinct from an enclosing scope's
 //                           `closure_{slot}` (`ClosureContext::allocate_slot_names`)
 //   closure_{level}_{slot}  a slot `level` scopes out that has no entry at all
+//   closure_unknown_{slot}  a slot of a scope the graph and the chain cannot
+//                           name (`UNKNOWN_ENV_LEVEL`, S3.4)
 //   c{slot}                 a slot initialised with a constant (a counter)
 //
 // The spelling says a name *is* a placeholder. It does not say whose slot it is:
@@ -53,6 +55,11 @@ pub fn parse(name: &str) -> Option<Placeholder> {
         None => Some(Placeholder {
             level: 0,
             slot: digits(rest)?,
+            variant: None,
+        }),
+        Some(("unknown", slot)) => Some(Placeholder {
+            level: crate::ir::UNKNOWN_ENV_LEVEL,
+            slot: digits(slot)?,
             variant: None,
         }),
         Some((level, slot)) => Some(Placeholder {

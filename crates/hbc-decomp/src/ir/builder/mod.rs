@@ -14,7 +14,7 @@ mod opcodes_obj;
 mod opcodes_prop;
 mod opcodes_switch;
 
-pub use env_state::{EnvPlan, NESTED_ENV_LEVEL_BASE};
+pub use env_state::{EnvPlan, NESTED_ENV_LEVEL_BASE, UNKNOWN_ENV_LEVEL};
 pub use ir_builder::{IRBuilder, IRBuilderOptions};
 pub use opcodes_obj::EXTENDS_MARKER;
 
