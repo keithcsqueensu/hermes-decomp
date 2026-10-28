@@ -295,6 +295,7 @@ fn an_own_slot_written_in_a_block_is_hoisted_for_a_closure_outside() {
                 is_arrow: true,
                 is_async: false,
                 is_generator: false,
+                env: None,
             }),
             Statement::If {
                 condition: Expression::constant(Constant::Bool(true)),

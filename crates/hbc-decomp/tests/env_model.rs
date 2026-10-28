@@ -53,8 +53,6 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("lang_templates", 96, "other: `HermesBuiltin.getTemplateObject` (tagged templates) is printed unfolded"),
     ("lang_templates", 98, "other: `HermesBuiltin.getTemplateObject` (tagged templates) is printed unfolded"),
     ("lang_templates", 99, "other: `HermesBuiltin.getTemplateObject` (tagged templates) is printed unfolded"),
-    ("inlined_copies", 98, "env: an inlined factory's three copies each hold their own `tag`, but the copies' slots are named apart (`closure_0`) or together (`closure_0$2` for B and C, one binding), the shared inner function reads one of them (S3.3: one name per slot across a shared function's scopes, one binding per copy), and the object literal is folded above the stores that fill them"),
-    ("inlined_copies", 99, "env: an inlined factory's three copies each hold their own `tag`, but the copies' slots are named apart (`closure_0`) or together (`closure_0$2` for B and C, one binding), the shared inner function reads one of them (S3.3: one name per slot across a shared function's scopes, one binding per copy), and the object literal is folded above the stores that fill them"),
     ("class_super", 98, "other: hermesc inlines the constructor at `new Own(4)`, so its private-field installs print outside the class, a syntax error; never seen in the four bundles (privateTwice 0). class_super_call covers the explicit `super(a, 1)` itself"),
     ("class_super", 99, "other: hermesc inlines the constructor at `new Own(4)`, so its private-field installs print outside the class, a syntax error; never seen in the four bundles (privateTwice 0). class_super_call covers the explicit `super(a, 1)` itself"),
 ];

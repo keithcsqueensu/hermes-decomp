@@ -107,6 +107,7 @@ fn collects_getter_ids_from_get_descriptor() {
         is_arrow: true,
         is_async: false,
         is_generator: false,
+        env: None,
     };
     let desc = Expression::Object {
         properties: vec![ObjectProperty {
@@ -127,6 +128,7 @@ fn collects_getter_ids_from_get_descriptor() {
                 is_arrow: true,
                 is_async: false,
                 is_generator: false,
+                env: None,
             },
             kind: VarKind::Const,
         },

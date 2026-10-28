@@ -433,6 +433,7 @@ impl Codegen {
                 is_arrow,
                 is_async,
                 is_generator,
+                ..
             } => {
                 if let Some(rendered) = self.inline_bodies.get(&id.0) {
                     // Re-indent based on current context: first line stays, rest get current indent

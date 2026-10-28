@@ -51,6 +51,7 @@ pub fn handle_create_class(
         is_arrow: false,
         is_async: false,
         is_generator: false,
+        env: None,
     };
     let class_assign = Statement::Assign {
         target: AssignTarget::Binding(Binding::Register(class_reg)),

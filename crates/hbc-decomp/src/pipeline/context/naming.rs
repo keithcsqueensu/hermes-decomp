@@ -924,6 +924,7 @@ mod file_path_naming_tests {
                 is_arrow: false,
                 is_async: false,
                 is_generator: false,
+                env: None,
             },
         };
         assert_eq!(find_file_finished_importing_path(&[assign]), None);

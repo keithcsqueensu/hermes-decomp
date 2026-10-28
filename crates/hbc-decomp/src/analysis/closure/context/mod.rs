@@ -87,12 +87,16 @@ pub struct ClosureContext {
     #[serde(default)]
     pub block_created: BTreeSet<u32>,
     // A function the graph gives several creation scopes, by the function
-    // whose body creates it and the scope it is created on there (S3.3).
-    // Its one body is rendered inside each creator and must read that
-    // creator's names for the slots (`PipelineContext::shared_body_variants`).
+    // whose body creates it and the scopes it is created on there (S3.3).
+    // Its one body is rendered at each creation site and must read that
+    // scope's names for the slots (`PipelineContext::shared_body_variants`).
     #[serde(default)]
-    pub shared_creations: BTreeMap<u32, BTreeMap<u32, (u32, Option<u32>)>>,
+    pub shared_creations: BTreeMap<u32, BTreeMap<u32, BTreeSet<ScopeRef>>>,
 }
+
+// A scope as the context names it: (function, None) for its own environment,
+// (function, Some(builder level)) for a block environment it built.
+pub type ScopeRef = (u32, Option<u32>);
 
 // Synthetic ids count down from the top of the range; a bundle has far fewer
 // than two billion functions, so they never meet a real id.
@@ -463,6 +467,7 @@ mod block_scope_tests {
                     is_arrow: false,
                     is_async: false,
                     is_generator: false,
+                    env: None,
                 },
             },
         ];

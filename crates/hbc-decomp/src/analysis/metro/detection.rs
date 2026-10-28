@@ -330,6 +330,7 @@ mod tests {
             is_arrow: false,
             is_async: false,
             is_generator: false,
+            env: None,
         };
         Statement::Expr(Expression::Call {
             callee: Box::new(Expression::Value(Value::Binding(Binding::Variable(

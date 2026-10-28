@@ -44,6 +44,7 @@ pub fn handle_create_generator(inst: &crate::Instruction) -> Option<FlowResult> 
             is_arrow: false,
             is_async: false,
             is_generator: true,
+            env: None,
         };
         Some(FlowResult::Statement(Statement::Assign {
             target: crate::ir::AssignTarget::Binding(Binding::Register(dst)),

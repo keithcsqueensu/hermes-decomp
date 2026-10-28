@@ -274,6 +274,7 @@ fn strip_redundant_async_helper_expr(
                                     is_arrow: *is_arrow,
                                     is_async: true,
                                     is_generator: false,
+                                    env: None,
                                 }),
                                 arguments: Vec::new(),
                             };
@@ -810,6 +811,7 @@ mod tests {
                 is_arrow: true,
                 is_async: true,
                 is_generator: false,
+                env: None,
             }],
         }
     }

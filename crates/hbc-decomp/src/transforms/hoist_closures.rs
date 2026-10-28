@@ -230,6 +230,7 @@ pub fn hoist_repeated_closures(
                     is_arrow: shape.is_arrow,
                     is_async: shape.is_async,
                     is_generator: shape.is_generator,
+                    env: None,
                 },
                 kind: VarKind::Const,
             });
@@ -504,6 +505,7 @@ impl Collect<'_> {
             is_arrow,
             is_async,
             is_generator,
+            ..
         } = e
         {
             self.sites.entry(id.0).or_default().push(Site {
@@ -578,6 +580,7 @@ mod tests {
             is_arrow: false,
             is_async: false,
             is_generator: false,
+            env: None,
         }
     }
 
@@ -629,6 +632,7 @@ mod tests {
                     is_arrow: true,
                     is_async: false,
                     is_generator: false,
+                    env: None,
                 }],
             })],
         );

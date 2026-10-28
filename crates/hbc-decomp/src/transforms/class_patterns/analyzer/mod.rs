@@ -610,6 +610,7 @@ mod candidate_tests {
             is_arrow: false,
             is_async: false,
             is_generator: false,
+            env: None,
         };
         // r1 = function Widget(){}; r2 = r1.prototype; r2["render"] = function render(){}
         let stmts = vec![

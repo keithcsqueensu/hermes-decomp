@@ -166,8 +166,11 @@ impl PipelineContext {
         // wires are already rendered above) into a single marker comment.
         statements = transforms::collapse_metro_registry(statements);
         // A shared body this function creates is its own copy (S3.3).
-        if let Some(map) = self.holder_variants.get(&function_id) {
-            super::shared_bodies::point_at_copies(&mut statements, map);
+        if let (Some(map), Some(ctx)) = (
+            self.holder_variants.get(&function_id),
+            self.closure_ctx.as_ref(),
+        ) {
+            super::shared_bodies::point_at_copies(ctx, function_id, &mut statements, map);
         }
         transforms::rename_reserved_words(&mut statements);
         transforms::make_sanitized_names_distinct(&mut statements);

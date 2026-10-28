@@ -22,6 +22,7 @@ fn func(id: u32) -> Expression {
         is_arrow: true,
         is_async: false,
         is_generator: false,
+        env: None,
     }
 }
 

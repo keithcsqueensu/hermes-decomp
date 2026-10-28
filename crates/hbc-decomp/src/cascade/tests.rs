@@ -356,6 +356,7 @@ fn application_touches_only_confirmed_functions() {
                 is_arrow: false,
                 is_async: false,
                 is_generator: false,
+                env: None,
             }),
             Statement::Expr(Expression::Function {
                 id: FunctionId(8),
@@ -363,6 +364,7 @@ fn application_touches_only_confirmed_functions() {
                 is_arrow: false,
                 is_async: false,
                 is_generator: false,
+                env: None,
             }),
         ],
     )]);

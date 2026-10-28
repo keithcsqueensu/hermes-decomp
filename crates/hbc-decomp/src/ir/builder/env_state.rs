@@ -168,6 +168,11 @@ impl EnvRegMap {
     /// Level for an env register, defaulting to 0 (current) when unknown.
     /// Unknown is common for Mov/phi-like paths; level 0 is the conservative
     /// historical behaviour.
+    /// The level the builder recorded for `reg`, without the default.
+    pub fn known_level(&self, reg: u32) -> Option<u32> {
+        self.reg_level.get(&reg).copied()
+    }
+
     pub fn level_of(&self, reg: u32) -> u32 {
         self.reg_level.get(&reg).copied().unwrap_or(0)
     }

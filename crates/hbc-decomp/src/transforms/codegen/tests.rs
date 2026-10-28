@@ -154,6 +154,7 @@ fn arrow_after_logical_or_is_parenthesized() {
         is_arrow: true,
         is_async: false,
         is_generator: false,
+        env: None,
     };
     let expr = Expression::Binary {
         op: crate::ir::BinaryOp::LogicalOr,

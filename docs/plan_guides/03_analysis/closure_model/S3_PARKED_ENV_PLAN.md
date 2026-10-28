@@ -243,6 +243,23 @@ Consequences for the items above (corrected 2026-10-27, after trying the first):
   `POSITIVE_INFINITY2`. Left: 341 / 728 creators whose name for a slot they never mention is
   a different variable there (a fresh name would still be undeclared), 359 / 443 with the
   same names already.
+- **Copies in one creator (item 1), as built.** A closure now records the environment it was
+  created on (`Expression::Function::env`, the builder level: 0 own, past 128 a block it built),
+  so each creation site names its scope, and `shared_creations` keeps every scope per creator.
+  Before anything reads names, `separate_copy_names` renames creation-scope slots apart: from
+  each other within one creator (copies are live at once; one name is one binding), and from
+  the shared body's own locals (F0's `warn` copy read the wrapper's own `let warn`). The scope
+  the body was named against keeps its names. Then each (creator, scope) gets its copy. Where a
+  copy cannot take the creator's name, the slot gets a fresh, undeclared name: loud, where the
+  shared body's name would read another scope's binding. A name the creator uses *unstamped* is
+  no evidence of a clash: in F66192 the slot's own store had lost its stamp (`const fn = ...`),
+  and treating it as another variable made 740 / 901 good reads undeclared; only a name the
+  creator stamps as another slot counts (78 / 92). Fixture `inlined_copies` passes at 98/99.
+  F0's six console wrappers each read their own level (`error2`, `info2`, `info`, `warn2`,
+  `trace2`, `trace`). Against the previous commit: undeclared Expensify 25,185 -> 24,455,
+  Discord 17,663 -> 17,048 (both below S3.2); I2 Expensify 1,637 -> 1,346, Discord
+  2,786 -> 2,556; no string literal or property lost; Discord's four unparsable modules
+  unchanged. I3 Unused rose (192 -> 209, 161 -> 180): to read.
 - `TooMany` (20 now) and the knock-ons: measure again after the naming constraint.
 
 Exit: every remaining fallback counted and explained; the threshold agreed before this stage.

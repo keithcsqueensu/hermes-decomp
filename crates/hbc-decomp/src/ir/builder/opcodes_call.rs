@@ -228,6 +228,7 @@ pub fn handle_create_closure(
             is_arrow,
             is_async: false,
             is_generator: false,
+            env: None,
         },
     })
 }
@@ -262,6 +263,7 @@ pub fn handle_create_async_closure(
             is_arrow,
             is_async: true,
             is_generator: false,
+            env: None,
         },
     })
 }
@@ -296,6 +298,7 @@ pub fn handle_create_generator_closure(
             is_arrow,
             is_async: false,
             is_generator: true,
+            env: None,
         },
     })
 }

@@ -57,6 +57,14 @@ pub enum Expression {
         is_arrow: bool,
         is_async: bool,
         is_generator: bool,
+        // The builder level of the environment the closure was created on,
+        // when the builder knew it: 0 for the creating function's own, past
+        // `NESTED_ENV_LEVEL_BASE` for a block environment it built. One
+        // compiled function created on several block environments of one
+        // function (copies of an inlined factory) is told apart by it
+        // (`pipeline::context::shared_bodies`).
+        #[serde(default)]
+        env: Option<u32>,
     },
     // An assignment used as an expression (`a = b` inside a larger expression).
     // The target is an `AssignTarget` and not an `Expression`, so a pass cannot

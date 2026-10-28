@@ -376,6 +376,7 @@ pub fn format_expr(expr: &Expression) -> String {
             is_arrow,
             is_async,
             is_generator,
+            ..
         } => {
             let async_prefix = if *is_async { "async " } else { "" };
             let gen_star = if *is_generator { "*" } else { "" };

@@ -19,7 +19,7 @@ use super::opcodes_load::*;
 use super::opcodes_obj::*;
 use super::opcodes_prop::*;
 use super::opcodes_switch::{handle_string_switch_imm, handle_switch_imm};
-use crate::ir::Statement;
+use crate::ir::{Expression, Statement};
 use crate::{BytecodeFile, BytecodeFormat, Instruction};
 
 pub fn dispatch_instruction(
@@ -52,7 +52,7 @@ pub fn dispatch_instruction(
     if let Some(result) = try_prop_handlers(name, inst, file, resolve_strings) {
         return result;
     }
-    if let Some(result) = try_call_handlers(
+    if let Some(mut result) = try_call_handlers(
         name,
         inst,
         file,
@@ -60,6 +60,14 @@ pub fn dispatch_instruction(
         frame_size,
         format.version,
     ) {
+        // A closure remembers the environment it was created on (operand 1).
+        if let FlowResult::Statement(Statement::Assign {
+            value: Expression::Function { env, .. },
+            ..
+        }) = &mut result
+        {
+            *env = get_reg(&inst.operands, 1).and_then(|r| env_map.known_level(r));
+        }
         return result;
     }
     if let Some(result) = try_obj_handlers(name, inst, file, resolve_strings) {

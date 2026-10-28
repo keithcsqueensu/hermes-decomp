@@ -73,7 +73,7 @@ pub struct PipelineContext {
     // with that creator's names (`shared_bodies`). Copy -> the function it
     // copies, and creator -> (function -> its copy there).
     pub(super) variant_origin: BTreeMap<u32, u32>,
-    pub(super) holder_variants: BTreeMap<u32, BTreeMap<u32, u32>>,
+    pub(super) holder_variants: BTreeMap<u32, BTreeMap<(u32, u32), u32>>,
 }
 
 impl PipelineContext {
@@ -220,6 +220,9 @@ impl PipelineContext {
         };
         // Precompute the ancestor env-slot names once (top-down, O(n)); both the
         // bulk render path and the per-function path read this instead of rebuilding.
+        // Copies of an inlined factory in one function get names of their
+        // own before anything reads the names (S3.3).
+        ctx.separate_copy_names();
         ctx.slot_names = ctx.precompute_slot_names();
         ctx.created_functions = ctx.precompute_created_functions();
         ctx.ancestor_env_slots = ctx.precompute_ancestor_env_slot_names();

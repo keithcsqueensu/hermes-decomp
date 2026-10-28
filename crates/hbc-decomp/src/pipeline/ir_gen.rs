@@ -620,35 +620,39 @@ fn plan_env_levels(
     }
 
     // S3.3: a function created with several scopes, by the function whose
-    // body creates it. Each creator renders the one body, so each needs its
-    // own reading of the body's slots; a creator that makes it on two scopes
-    // (copies of an inlined factory) is not one reading, and is left out.
-    for f in graph.functions_created() {
-        if graph.creations(f).is_none_or(|set| set.len() < 2) {
+    // body creates it and every scope it creates it on there. Each creator
+    // renders the one body, so each scope needs its own reading of the body's
+    // slots: several creators each on one scope, or one creator on several
+    // (copies of an inlined factory).
+    let mut creations_of: HashMap<u32, Vec<(u32, &crate::ir::env_values::Env)>> = HashMap::new();
+    for (g, e) in env {
+        for (child, through) in &e.facts.closures {
+            if graph.creations(*child).is_some_and(|set| set.len() > 1) {
+                creations_of.entry(*child).or_default().push((*g, through));
+            }
+        }
+    }
+    for (f, sites) in creations_of {
+        let mut by_creator: BTreeMap<u32, std::collections::BTreeSet<ScopeRef>> = BTreeMap::new();
+        let mut unresolved = false;
+        for (g, through) in sites {
+            match graph.resolve(g, through).and_then(to_ref) {
+                Some(r) => {
+                    by_creator.entry(g).or_default().insert(r);
+                }
+                None => unresolved = true,
+            }
+        }
+        let scopes: usize = by_creator.values().map(|s| s.len()).sum();
+        if unresolved || scopes < 2 {
+            count("shared: a creation scope unresolved");
             continue;
         }
-        let mut by_creator: BTreeMap<u32, Option<ScopeRef>> = BTreeMap::new();
-        for (g, e) in env {
-            for (child, through) in &e.facts.closures {
-                if *child != f {
-                    continue;
-                }
-                let r = graph.resolve(*g, through).and_then(to_ref);
-                let slot = by_creator.entry(*g).or_insert(r);
-                if *slot != r {
-                    *slot = None;
-                }
-            }
+        if by_creator.values().any(|s| s.len() > 1) {
+            count("shared: functions with copies in one creator");
         }
-        let all: Option<BTreeMap<u32, ScopeRef>> =
-            by_creator.into_iter().map(|(g, r)| Some((g, r?))).collect();
-        match all {
-            Some(m) if m.len() > 1 => {
-                ctx.shared_creations.insert(f, m);
-                count("shared: functions");
-            }
-            _ => count("shared: a creator with two scopes or none"),
-        }
+        ctx.shared_creations.insert(f, by_creator);
+        count("shared: functions");
     }
 
     // The level that reaches `s` from `f`: its own scopes directly, anything

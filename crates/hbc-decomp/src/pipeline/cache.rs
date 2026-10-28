@@ -124,7 +124,7 @@ struct PipelineSnapshot {
     inline_bodies: BTreeMap<u32, String>,
     worklet_sources: BTreeMap<String, String>,
     variant_origin: BTreeMap<u32, u32>,
-    holder_variants: BTreeMap<u32, BTreeMap<u32, u32>>,
+    holder_variants: BTreeMap<u32, BTreeMap<(u32, u32), u32>>,
 }
 
 // The same shape, borrowed. Serialising through it writes the cache without
@@ -139,7 +139,7 @@ struct PipelineSnapshotRef<'a> {
     inline_bodies: &'a BTreeMap<u32, String>,
     worklet_sources: &'a BTreeMap<String, String>,
     variant_origin: &'a BTreeMap<u32, u32>,
-    holder_variants: &'a BTreeMap<u32, BTreeMap<u32, u32>>,
+    holder_variants: &'a BTreeMap<u32, BTreeMap<(u32, u32), u32>>,
 }
 
 impl PipelineContext {

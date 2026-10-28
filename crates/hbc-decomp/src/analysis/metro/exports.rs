@@ -300,6 +300,7 @@ mod tests {
             is_arrow: false,
             is_async: false,
             is_generator: false,
+            env: None,
         }
     }
 
