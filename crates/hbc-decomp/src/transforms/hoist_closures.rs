@@ -34,6 +34,7 @@ pub fn hoist_repeated_closures(
     all_ir: &mut BTreeMap<u32, Vec<Statement>>,
     parent_of: &BTreeMap<u32, u32>,
     factories: &BTreeMap<u32, u32>,
+    block_created: &BTreeSet<u32>,
 ) -> usize {
     let mut sites: BTreeMap<u32, Vec<Site>> = BTreeMap::new();
     let mut shapes: BTreeMap<u32, Shape> = BTreeMap::new();
@@ -98,6 +99,13 @@ pub fn hoist_repeated_closures(
         let named_iife = found.iter().any(|s| s.iife) && shape.name.is_some();
         let cyclic = scc.cyclic.contains(&scc.component[&fid]);
         if found.len() < 2 && !named_iife && !cyclic {
+            continue;
+        }
+        // Created on a block environment: each site reads its own block's
+        // bindings, which a declaration outside the block cannot reach. The
+        // checks below walk only the functions between a site and the
+        // declaring scope, never the blocks inside one.
+        if block_created.contains(&fid) && !cyclic {
             continue;
         }
         // The declaration goes outside the function itself and outside its
@@ -587,7 +595,8 @@ mod tests {
         all_ir.insert(2, vec![iife(9, "getRawTag")]);
         all_ir.insert(3, vec![iife(9, "getRawTag")]);
         let parent_of: BTreeMap<u32, u32> = [(2, 1), (3, 1), (9, 2)].into_iter().collect();
-        let n = hoist_repeated_closures(&mut all_ir, &parent_of, &BTreeMap::new());
+        let n =
+            hoist_repeated_closures(&mut all_ir, &parent_of, &BTreeMap::new(), &BTreeSet::new());
         assert_eq!(n, 1);
         assert!(matches!(
             &all_ir[&1][0],
@@ -624,7 +633,12 @@ mod tests {
             })],
         );
         let before = all_ir.clone();
-        let n = hoist_repeated_closures(&mut all_ir, &BTreeMap::new(), &BTreeMap::new());
+        let n = hoist_repeated_closures(
+            &mut all_ir,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        );
         assert_eq!(n, 0);
         assert_eq!(all_ir, before);
     }
@@ -633,10 +647,47 @@ mod tests {
     fn a_named_iife_in_one_function_is_declared_there() {
         let mut all_ir = BTreeMap::new();
         all_ir.insert(1, vec![iife(9, "sum")]);
-        let n = hoist_repeated_closures(&mut all_ir, &BTreeMap::new(), &BTreeMap::new());
+        let n = hoist_repeated_closures(
+            &mut all_ir,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        );
         assert_eq!(n, 1);
         assert_eq!(all_ir[&1].len(), 2);
         assert!(matches!(&all_ir[&1][0], Statement::Let { name, .. } if name == "sum"));
+    }
+
+    // hermesc inlined a factory twice: each copy builds a block environment
+    // and creates F9 on it. Declared once, F9 would read neither copy's
+    // binding, so both sites keep their closure.
+    #[test]
+    fn a_function_created_on_block_environments_stays_at_its_sites() {
+        let mut all_ir = BTreeMap::new();
+        all_ir.insert(
+            1,
+            vec![
+                Statement::Expr(func(9, "wrap")),
+                Statement::Expr(func(9, "wrap")),
+            ],
+        );
+        let before = all_ir.clone();
+        let block_created: BTreeSet<u32> = [9].into_iter().collect();
+        let n = hoist_repeated_closures(
+            &mut all_ir,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &block_created,
+        );
+        assert_eq!(n, 0);
+        assert_eq!(all_ir, before);
+        let n = hoist_repeated_closures(
+            &mut all_ir,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        );
+        assert_eq!(n, 1);
     }
 
     #[test]
@@ -654,7 +705,8 @@ mod tests {
             }))],
         );
         let parent_of: BTreeMap<u32, u32> = [(9, 1)].into_iter().collect();
-        let n = hoist_repeated_closures(&mut all_ir, &parent_of, &BTreeMap::new());
+        let n =
+            hoist_repeated_closures(&mut all_ir, &parent_of, &BTreeMap::new(), &BTreeSet::new());
         assert_eq!(n, 1);
         assert!(matches!(&all_ir[&1][0], Statement::Let { name, .. } if name == "optional"));
         let body = format!("{:?}", all_ir[&9]);
@@ -672,7 +724,7 @@ mod tests {
         all_ir.insert(8, vec![Statement::Expr(func(9, "optional"))]);
         all_ir.insert(9, vec![Statement::Expr(func(8, "or"))]);
         let parent_of: BTreeMap<u32, u32> = [(8, 1), (9, 8)].into_iter().collect();
-        hoist_repeated_closures(&mut all_ir, &parent_of, &BTreeMap::new());
+        hoist_repeated_closures(&mut all_ir, &parent_of, &BTreeMap::new(), &BTreeSet::new());
         let body8 = format!("{:?}", all_ir[&8]);
         let body9 = format!("{:?}", all_ir[&9]);
         assert!(
@@ -691,7 +743,12 @@ mod tests {
     fn two_helpers_with_one_name_get_distinct_bindings() {
         let mut all_ir = BTreeMap::new();
         all_ir.insert(1, vec![iife(8, "T"), iife(9, "T")]);
-        hoist_repeated_closures(&mut all_ir, &BTreeMap::new(), &BTreeMap::new());
+        hoist_repeated_closures(
+            &mut all_ir,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        );
         let names: Vec<String> = all_ir[&1]
             .iter()
             .filter_map(|s| match s {
@@ -716,7 +773,12 @@ mod tests {
                 iife(9, "sum"),
             ],
         );
-        hoist_repeated_closures(&mut all_ir, &BTreeMap::new(), &BTreeMap::new());
+        hoist_repeated_closures(
+            &mut all_ir,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        );
         assert!(matches!(&all_ir[&1][0], Statement::Let { name, .. } if name == "sum2"));
     }
 }

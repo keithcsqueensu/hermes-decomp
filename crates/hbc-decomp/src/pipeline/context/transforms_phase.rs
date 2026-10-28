@@ -200,7 +200,13 @@ impl PipelineContext {
                 .as_ref()
                 .map(|c| &c.parent_function)
                 .unwrap_or(&empty);
-            let hoisted = transforms::hoist_repeated_closures(all_ir, parent_of, factories);
+            let empty_set = std::collections::BTreeSet::new();
+            let block_created = closure_ctx
+                .as_ref()
+                .map(|c| &c.block_created)
+                .unwrap_or(&empty_set);
+            let hoisted =
+                transforms::hoist_repeated_closures(all_ir, parent_of, factories, block_created);
             log::debug!("[pipeline] hoisted {hoisted} repeated closures");
         }
         crate::analysis::closure::stamps::report("after W16g", all_ir, closure_ctx.as_ref());

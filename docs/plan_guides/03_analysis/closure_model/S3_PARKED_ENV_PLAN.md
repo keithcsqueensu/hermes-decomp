@@ -193,17 +193,35 @@ the function's creation sites:
 | 84 (4%) | 39 | the creator's own environment unresolved (a knock-on) |
 | 26 (1%) | 17 | one creator, its own scope and a block scope |
 
-Consequences for the items above:
-- **Sibling copies first (15%, cheap, safe).** The closure context already keys a block scope by
-  (creating function, builder level), not by site, so the sibling copies are one block scope to
-  everything downstream. Resolve a level when every scope the graph reaches there maps to the same
-  `ScopeRef` (needs a set-valued `chain`), instead of requiring one graph scope.
-- **Several creators (79%) is not "pick one".** They are different variables at run time; every
-  creator renders the shared function's body inline, so what has to agree is the *name* of the
-  slot in each creator. The work is a naming constraint (one name for slot k across all of a
-  shared function's creation scopes) plus an access addressed by that name, not a level.
-- `TooMany` (89) and the knock-ons shrink once the two above are in; measure again before
-  touching them.
+Consequences for the items above (corrected 2026-10-27, after trying the first):
+- **The "sibling copies" are not one scope downstream.** Each copy gets its own builder level
+  (F0's are 131-135), so the closure context does not already merge them. And they are not
+  `finally` copies: hermesc *inlined* a small factory at several calls (F0: `stub(m)` for
+  `console.error`, `info`, `log`, ...; React's `escape(key)` in `mapIntoArray`; Sentry's MCP
+  `wrapMethodHandler` in module 967). A compiled function created on two block scopes of one
+  function does prove the two are copies of one source scope, but the copies are **live at
+  once**, each with its own values. So this bucket is the same problem as "several creators":
+  one shared body, several live environments.
+- **Tried and not landed: merging the copies into one scope** (graph union-find over sites
+  that create one compiled function, saved outside the tree). On Expensify it took unresolved
+  closure accesses 2,657 -> 2,259 and I2 1,615 -> 1,240, but one scope means one variable:
+  where the copies share a block, the later copy assigns the earlier copies' binding. F0's six
+  console wrappers all read one `let trace = obj2.trace`, so every console method logs at the
+  trace level; before, they read an undeclared `error3` and failed loudly. A silent wrong
+  answer for a loud one is not a trade to take.
+- **Landed: W16g never hoists a function created on a block environment.** Its capture check
+  walks only the functions between a site and the declaring scope, never the blocks inside one,
+  so it declared the shared closure once above every copy's binding: `escape`'s arrow, F0's
+  console wrappers (`error: error3, info: error3, ...`), and, with the merge, module 967's
+  wrapper (22 strings and 187 properties lost). `ClosureContext::block_created` holds every
+  function some site creates on a block environment; those stay at their sites.
+- **What remains is the naming constraint**, for both buckets: one name for slot k across all
+  of a shared function's creation scopes, and each copy keeping its own binding (a block per
+  copy, or the factory call put back). Fixture `inlined_copies` (KNOWN) is the reference: the
+  first inlined copy reuses the function's own environment and the others build block scopes,
+  so the inner function reads `closure_1_0`; the object literal is also folded above the stores
+  that fill the copies (both pre-S3.3).
+- `TooMany` (20 now) and the knock-ons: measure again after the naming constraint.
 
 Exit: every remaining fallback counted and explained; the threshold agreed before this stage.
 

@@ -8,7 +8,7 @@ mod merge;
 mod walk;
 
 use super::info::{ClosureInfo, ClosureSlotValue, NameSource};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ClosureContext {
@@ -80,6 +80,12 @@ pub struct ClosureContext {
     // the scope it was built on.
     #[serde(default)]
     pub block_parents: BTreeMap<(u32, u32), (u32, Option<u32>)>,
+    // Functions created on a block environment at some site: each site has
+    // its own environment, live at once (copies of an inlined function, a
+    // `let` per iteration), so the closure reads that block's bindings and
+    // cannot be declared once outside it (`hoist_repeated_closures`).
+    #[serde(default)]
+    pub block_created: BTreeSet<u32>,
 }
 
 // Synthetic ids count down from the top of the range; a bundle has far fewer

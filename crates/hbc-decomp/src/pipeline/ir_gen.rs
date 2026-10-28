@@ -409,6 +409,17 @@ pub fn build_closure_context_from_file(
     // shift them so level L is L hops up the parent chain before anything
     // keys a slot by level.
     ctx.set_env_offsets(&created);
+    for (f, e) in &env {
+        for (child, through) in &e.facts.closures {
+            if matches!(
+                scope_graph.resolve(*f, through),
+                Some(crate::analysis::closure::scope_graph::Scope::Created(..))
+            ) || matches!(through, crate::ir::env_values::Env::Created { .. })
+            {
+                ctx.block_created.insert(*child);
+            }
+        }
+    }
     // Then the scope graph's word wherever it has one (V98_ENV_PLAN.md E4):
     // the parents it resolves, and the levels of the accesses whose scope it
     // places differently. A function whose levels change is built again with
