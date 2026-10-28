@@ -380,6 +380,20 @@ covers the closure accesses S3.3 counted; `NESTED_ENV_LEVEL_BASE + slot` and `re
   named like its parameter, `let orderId;`); before, the slot was renamed `orderId5` and never
   assigned.
 
+**`TooMany` (S3.3 item 1), done by raising the cap (2026-10-28).** A creation set over 16
+scopes was not followed, so the function fell to the level model: one parent link, one
+creator's names in every rendering. hermesc inlines small helpers into every caller, so the
+sets are large: Discord's `dispatchOrResetSocket` callback has 187 creators, and every
+rendering read `obj.type` (another creator's slot 0, here the module's `const obj =
+Dispatcher`) and assigned that `const` (171 of the 178 `obj` writes `const_assign.mjs`
+counted). `up_all` already collapses a set whose parents agree, so `MAX_SET` is now 1024 and
+such a function is an ordinary shared function, one copy per creator. The bucket is gone on
+both bundles (89 / 98 accesses). Against the S3.4 commit: undeclared Expensify 24,065 ->
+22,832, Discord 16,129 -> 15,688; `const`s written Discord 195 -> 41 (`obj` 178 -> 7);
+equinox unchanged; run time unchanged (715 s / 1,386 s); one dead duplicate string dropped.
+Expensify's remaining 113 `sum` writes were there at `d15c5fa` (React DevTools' `getID`
+counter in module 122).
+
 ## 3. Order and size
 
 S3.0 → S3.1 → S3.2 → S3.3 → S3.4. S3.1 carries most of the visible output gain (the parking

@@ -47,7 +47,11 @@ enum Known {
     TooMany,
 }
 
-const MAX_SET: usize = 16;
+// Past this many scopes a set is not followed. Hermes inlines a small
+// function into every caller, so one compiled closure can have hundreds of
+// creators (Discord's `dispatchOrResetSocket` callback: 187); at 16 such a
+// function fell to the level model and read one creator's names in all.
+const MAX_SET: usize = 1024;
 
 #[derive(Debug, Default)]
 pub struct ScopeGraph {
