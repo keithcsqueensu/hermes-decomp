@@ -35,7 +35,7 @@ use super::DecompileOptionsV2;
 // 8: so does `Statement::Let`.
 // 9: `ClosureContext.env_plans`, `scope_parents`, `block_parents`, `block_function`.
 // 10: `MetroRegistry.wide_ids`, module ids past u32.
-pub const CACHE_VERSION: u32 = 10;
+pub const CACHE_VERSION: u32 = 11;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.
@@ -123,6 +123,8 @@ struct PipelineSnapshot {
     global_analysis: GlobalAnalysis,
     inline_bodies: BTreeMap<u32, String>,
     worklet_sources: BTreeMap<String, String>,
+    variant_origin: BTreeMap<u32, u32>,
+    holder_variants: BTreeMap<u32, BTreeMap<u32, u32>>,
 }
 
 // The same shape, borrowed. Serialising through it writes the cache without
@@ -136,6 +138,8 @@ struct PipelineSnapshotRef<'a> {
     global_analysis: &'a GlobalAnalysis,
     inline_bodies: &'a BTreeMap<u32, String>,
     worklet_sources: &'a BTreeMap<String, String>,
+    variant_origin: &'a BTreeMap<u32, u32>,
+    holder_variants: &'a BTreeMap<u32, BTreeMap<u32, u32>>,
 }
 
 impl PipelineContext {
@@ -228,6 +232,8 @@ impl PipelineContext {
             // never reads or writes the cache when one is set.
             cascade_names: BTreeMap::new(),
             worklet_sources: snap.worklet_sources,
+            variant_origin: snap.variant_origin,
+            holder_variants: snap.holder_variants,
         };
         // Also derived from closure_ctx; recompute rather than serialize.
         ctx.slot_names = ctx.precompute_slot_names();
@@ -246,6 +252,8 @@ impl PipelineContext {
             global_analysis: &self.global_analysis,
             inline_bodies: &self.inline_bodies,
             worklet_sources: &self.worklet_sources,
+            variant_origin: &self.variant_origin,
+            holder_variants: &self.holder_variants,
         }
     }
 }
@@ -370,6 +378,8 @@ mod tests {
             // never reads or writes the cache when one is set.
             cascade_names: BTreeMap::new(),
             worklet_sources: BTreeMap::new(),
+            variant_origin: BTreeMap::new(),
+            holder_variants: BTreeMap::new(),
         };
 
         // Serialize the snapshot and read it back.

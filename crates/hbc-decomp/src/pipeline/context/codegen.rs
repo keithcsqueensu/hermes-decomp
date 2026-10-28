@@ -135,7 +135,11 @@ impl PipelineContext {
     // The statements a function renders from: its IR after the parameter names,
     // the cleanups that only make sense on final names, and the collision repairs.
     // Declarations are not inserted yet; that depends on how the body is placed.
-    fn codegen_statements(&self, function_id: u32, statements: &[Statement]) -> Vec<Statement> {
+    pub(super) fn codegen_statements(
+        &self,
+        function_id: u32,
+        statements: &[Statement],
+    ) -> Vec<Statement> {
         let mut statements = statements.to_vec();
 
         // Apply IPA parameter names to the IR
@@ -161,6 +165,10 @@ impl PipelineContext {
         // Fold the long `__d(factory, id, deps)` registration run (the modules it
         // wires are already rendered above) into a single marker comment.
         statements = transforms::collapse_metro_registry(statements);
+        // A shared body this function creates is its own copy (S3.3).
+        if let Some(map) = self.holder_variants.get(&function_id) {
+            super::shared_bodies::point_at_copies(&mut statements, map);
+        }
         transforms::rename_reserved_words(&mut statements);
         transforms::make_sanitized_names_distinct(&mut statements);
         // Same collision as prepare_render_bodies: the parameter rename is

@@ -221,6 +221,28 @@ Consequences for the items above (corrected 2026-10-27, after trying the first):
   first inlined copy reuses the function's own environment and the others build block scopes,
   so the inner function reads `closure_1_0`; the object literal is also folded above the stores
   that fill the copies (both pre-S3.3).
+- **The naming constraint, as built: a copy of the body per creator, not one name per slot.**
+  Forcing one name for slot k across every creator collides wherever a creator already uses
+  that name, and copies that share a block would still share one binding. Instead, at render
+  preparation (`pipeline/context/shared_bodies.rs`), each creator other than the one the body
+  was named against gets a copy of the body, and of the nested functions that read the same
+  scope, with the stamped slot references renamed to that creator's names, under a synthetic
+  function id (`FIRST_VARIANT_ID`); its creation site points at the copy. Each creator keeps
+  its own names and declarations. The creators come from the facts (`shared_creations`: the
+  function whose body creates it, and the scope there), never from the scope's owner. A
+  creator is skipped, and counted, when it names a slot twice, when its name is a different
+  variable in the body, or when the body's name for a slot it never mentions is a different
+  variable in the creator. A creator with two scopes (the inlined copies above) is not one
+  reading and is left for later. Fixture `shared_creators` passes at 98/99 (it read an
+  undeclared `sum` in `left`).
+  Measured against the hoister commit: Expensify undeclared 25,795 -> 25,185 (315 creators
+  copied), Discord 18,306 -> 17,663 (359 copied; below S3.2's 17,938); no string literal or
+  property lost; Discord's four unparsable modules unchanged. Read by hand: Discord's
+  `stringifySafe` `replacer` (created by `createStringifySafeWithLimits` and by its inlined
+  copy in module 48) now reads module 48's `c1 = 100` where it read an undeclared
+  `POSITIVE_INFINITY2`. Left: 341 / 728 creators whose name for a slot they never mention is
+  a different variable there (a fresh name would still be undeclared), 359 / 443 with the
+  same names already.
 - `TooMany` (20 now) and the knock-ons: measure again after the naming constraint.
 
 Exit: every remaining fallback counted and explained; the threshold agreed before this stage.

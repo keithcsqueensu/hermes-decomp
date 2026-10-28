@@ -86,6 +86,12 @@ pub struct ClosureContext {
     // cannot be declared once outside it (`hoist_repeated_closures`).
     #[serde(default)]
     pub block_created: BTreeSet<u32>,
+    // A function the graph gives several creation scopes, by the function
+    // whose body creates it and the scope it is created on there (S3.3).
+    // Its one body is rendered inside each creator and must read that
+    // creator's names for the slots (`PipelineContext::shared_body_variants`).
+    #[serde(default)]
+    pub shared_creations: BTreeMap<u32, BTreeMap<u32, (u32, Option<u32>)>>,
 }
 
 // Synthetic ids count down from the top of the range; a bundle has far fewer

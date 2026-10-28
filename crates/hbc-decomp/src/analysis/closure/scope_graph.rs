@@ -135,6 +135,14 @@ impl ScopeGraph {
         single(self.creation.get(&f))
     }
 
+    // Every scope `f` was created with, when the facts give a set.
+    pub fn creations(&self, f: u32) -> Option<&BTreeSet<Scope>> {
+        match self.creation.get(&f)? {
+            Known::Set(set) => Some(set),
+            Known::TooMany => None,
+        }
+    }
+
     // The scopes `scope`'s environment can be built on.
     fn parents(&self, scope: Scope) -> Option<BTreeSet<Scope>> {
         match scope {

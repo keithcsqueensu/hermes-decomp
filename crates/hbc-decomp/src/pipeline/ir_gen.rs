@@ -619,6 +619,38 @@ fn plan_env_levels(
         }
     }
 
+    // S3.3: a function created with several scopes, by the function whose
+    // body creates it. Each creator renders the one body, so each needs its
+    // own reading of the body's slots; a creator that makes it on two scopes
+    // (copies of an inlined factory) is not one reading, and is left out.
+    for f in graph.functions_created() {
+        if graph.creations(f).is_none_or(|set| set.len() < 2) {
+            continue;
+        }
+        let mut by_creator: BTreeMap<u32, Option<ScopeRef>> = BTreeMap::new();
+        for (g, e) in env {
+            for (child, through) in &e.facts.closures {
+                if *child != f {
+                    continue;
+                }
+                let r = graph.resolve(*g, through).and_then(to_ref);
+                let slot = by_creator.entry(*g).or_insert(r);
+                if *slot != r {
+                    *slot = None;
+                }
+            }
+        }
+        let all: Option<BTreeMap<u32, ScopeRef>> =
+            by_creator.into_iter().map(|(g, r)| Some((g, r?))).collect();
+        match all {
+            Some(m) if m.len() > 1 => {
+                ctx.shared_creations.insert(f, m);
+                count("shared: functions");
+            }
+            _ => count("shared: a creator with two scopes or none"),
+        }
+    }
+
     // The level that reaches `s` from `f`: its own scopes directly, anything
     // else as the hops up its chain -- the chain of parents installed above,
     // which is the one `slot_owner` will walk, not the graph's own: a level

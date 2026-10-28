@@ -65,7 +65,10 @@ impl PipelineContext {
 
     pub(super) fn build_all_inline_bodies(&mut self, file: &BytecodeFile) {
         // Precompute IPA-renamed + cleaned statements once to avoid cloning per rendering pass
-        let prepared = self.prepare_render_bodies(file);
+        let mut prepared = self.prepare_render_bodies(file);
+        let variants = self.shared_body_variants(&mut prepared);
+        self.variant_origin = variants.origin;
+        self.holder_variants = variants.by_holder;
         for (&func, (_, stmts)) in &prepared {
             crate::analysis::closure::stamps::record_render(self.closure_ctx.as_ref(), func, stmts);
         }
@@ -626,6 +629,12 @@ impl PipelineContext {
         body_stmts: &[Statement],
         existing_inline: &Arc<BTreeMap<u32, String>>,
     ) -> String {
+        // A creator's copy of a shared body (S3.3) is that function otherwise.
+        let func_id = self
+            .variant_origin
+            .get(&func_id)
+            .copied()
+            .unwrap_or(func_id);
         {
             // If this is a Reanimated worklet, emit its original source recovered
             // from the embedded `__initData.code` string instead of decompiling

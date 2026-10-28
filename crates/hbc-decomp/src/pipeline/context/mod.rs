@@ -8,6 +8,7 @@ mod generator_wrapper;
 mod ir_build;
 mod naming;
 mod rendering;
+mod shared_bodies;
 mod transforms_phase;
 
 use crate::analysis::ClosureContext;
@@ -68,6 +69,11 @@ pub struct PipelineContext {
     // bytecode's own string table, which is where a confirmed name has to override
     // it: a function Hermes stored no name for renders as `fN`.
     pub(super) cascade_names: BTreeMap<u32, String>,
+    // S3.3: a function several creators render gets a copy per creator, read
+    // with that creator's names (`shared_bodies`). Copy -> the function it
+    // copies, and creator -> (function -> its copy there).
+    pub(super) variant_origin: BTreeMap<u32, u32>,
+    pub(super) holder_variants: BTreeMap<u32, BTreeMap<u32, u32>>,
 }
 
 impl PipelineContext {
@@ -209,6 +215,8 @@ impl PipelineContext {
             outer_used_by_descendants: BTreeMap::new(),
             worklet_sources,
             cascade_names,
+            variant_origin: BTreeMap::new(),
+            holder_variants: BTreeMap::new(),
         };
         // Precompute the ancestor env-slot names once (top-down, O(n)); both the
         // bulk render path and the per-function path read this instead of rebuilding.
