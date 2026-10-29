@@ -845,6 +845,18 @@ fn plan_env_levels(
                         Err(false) => count("unresolved closure: chain broken, level model"),
                     }
                 }
+                // S3.4: an access through an environment loaded out of a
+                // slot that the graph cannot place has no scope to name; the
+                // level model would address a fake block scope keyed by the
+                // slot number alone, shared with every other environment
+                // parked in a slot of that number. An explicit unknown.
+                if matches!(
+                    through,
+                    crate::ir::env_values::Env::InSlot(..) | crate::ir::env_values::Env::Up(..)
+                ) {
+                    levels.insert(*off, crate::ir::UNKNOWN_ENV_LEVEL);
+                    count(&format!("access: unknown, {}", through.kind()));
+                }
                 tally(false);
                 continue;
             };
@@ -863,6 +875,10 @@ fn plan_env_levels(
                 }
                 _ => {
                     count("access: resolved, not on the chain");
+                    count(&format!(
+                        "access: resolved, not on the chain, {}",
+                        through.kind()
+                    ));
                     tally(false);
                 }
             }

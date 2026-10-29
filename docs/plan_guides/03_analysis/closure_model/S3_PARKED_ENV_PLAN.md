@@ -419,6 +419,24 @@ counter in module 122).
   22,823; no string literal or property lost. v96: 273 lines, mostly `const` -> `let`, and six
   imports bound through `let X = X_mod` where a function's own destructuring writes the name.
 
+**S3.4, the slot-held part (2026-10-28).** An access through an environment loaded out of a
+slot that the graph cannot place (slot-held 18 / 39, up from a slot 44 / 70) is now an explicit
+unknown, `closure_unknown_{slot}`, instead of the fake block scope `NESTED_ENV_LEVEL_BASE +
+slot`. Read by hand first, because these sit in async state machines (169 of Discord's 191
+changed hunks under a `createGenerator`) where the re-stamping names a machine's variables:
+the old answers traced were wrong, not merely unproven. The scope keyed by slot number alone
+collided with whatever local carried that placeholder: Expensify's Sentry wrapper read
+`closure_0$3(closure_1$3[10])`, with `closure_0$3 = arg0` the wrapped function, where the
+bytecode reads the module's `require(dependencyMap[10])`; module 930's step read a
+`requestHook` declared and never assigned, and called `closure_0` just after the block
+assigned it the wrapped function. Undeclared Expensify 22,823 -> 22,927, Discord 15,752 ->
+15,911 (each a silent wrong read made loud); v96 unchanged; no string literal or property
+lost. "Resolved, not on the chain" is down to 59 / 40, all closure accesses (the S3.4 chain
+answers took the rest). Still in the code: `reg_source_slot` and the `NESTED_ENV_LEVEL_BASE
++ slot` level, as the builder's raw level for slot-held accesses the plan then overrides
+(resolved ones by level, unresolved ones as unknown); retiring the builder side is S3.2b's
+scope-addressed identity.
+
 ## 3. Order and size
 
 S3.0 → S3.1 → S3.2 → S3.3 → S3.4. S3.1 carries most of the visible output gain (the parking
