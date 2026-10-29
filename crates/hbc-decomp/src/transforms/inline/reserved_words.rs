@@ -249,6 +249,15 @@ fn is_reserved(name: &str) -> bool {
     JS_RESERVED.contains(&name)
 }
 
+// The name `rename_reserved_words` gives `name`.
+pub fn renamed_reserved(name: &str) -> String {
+    if is_reserved(name) {
+        format!("_{name}")
+    } else {
+        name.to_string()
+    }
+}
+
 // Two variables whose names differ only by what `sanitize_identifier` strips
 // print as one identifier: a module named `react-native` gives a variable
 // `react-native`, and a second import of the same library a variable

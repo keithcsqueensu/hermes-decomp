@@ -92,6 +92,13 @@ pub struct ClosureContext {
     // scope's names for the slots (`PipelineContext::shared_body_variants`).
     #[serde(default)]
     pub shared_creations: BTreeMap<u32, BTreeMap<u32, BTreeSet<ScopeRef>>>,
+    // S3.2b: block scopes a raw machine builds on its first step and parks in
+    // its wrapper (`keep_raw_machines`). They live as long as the generator,
+    // so they are the wrapper's (`block_function`), and their slots are its
+    // variables: declared there, captures everywhere below it, never declared
+    // where the block is built (in the step, they restarted every call).
+    #[serde(default)]
+    pub parked_scopes: BTreeSet<u32>,
 }
 
 // A scope as the context names it: (function, None) for its own environment,

@@ -437,6 +437,23 @@ answers took the rest). Still in the code: `reg_source_slot` and the `NESTED_ENV
 (resolved ones by level, unresolved ones as unknown); retiring the builder side is S3.2b's
 scope-addressed identity.
 
+**S3.2b, done (2026-10-29).** A machine's scope is the wrapper's without a synthetic slot range.
+`keep_raw_machines` already rehomed the scope a raw machine parks (`rehome_block_scopes`:
+`block_function` is the wrapper); what kept the re-stamping was that two places took a block
+scope's slots for the block builder's. Now the rehomed scopes, and a collapsed machine's
+function scope (`adopt_collapsed_machines`, which replaces the `COLLAPSED_SLOTS` re-stamp),
+are `ClosureContext::parked_scopes`: their slots keep their own stamps, `own_scopes` counts
+them as the wrapper's, `captured_slot_names` and `owner_binds` take them as captures bound by
+the wrapper in every body below, and the wrapper declares them: one `let` per slot when the
+machine is kept, and at render every name a slot goes by by then (`bind_parked_slots`; a step
+read the wrapper's `c2` as `c1`, which the step had declared and restarted each call), spelled
+as render prep spells it (`var` is `_var`). `separate_step_env_names` finds machine slots by
+parked scope and binds each renamed name once. `STEP_ENV_SLOTS` and `COLLAPSED_SLOTS` are gone.
+Against the S3.4 slot-held commit: undeclared, unparsable modules, consts written, strings and
+properties unchanged on both bundles; I2 Expensify 4,333 -> 4,313, Discord 3,422 -> 3,319;
+v96 454 lines, a collapsed machine's variables declared at the wrapper's top (`let on;` then
+`on = arg0`) where the re-stamped slot printed `const on = arg0`.
+
 ## 3. Order and size
 
 S3.0 → S3.1 → S3.2 → S3.3 → S3.4. S3.1 carries most of the visible output gain (the parking

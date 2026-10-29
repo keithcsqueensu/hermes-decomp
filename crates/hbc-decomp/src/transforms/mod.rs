@@ -49,7 +49,7 @@ pub use inline::{
     insert_declarations_with_outer, insert_declarations_with_slots, make_sanitized_names_distinct,
     rename_reserved_words, simplify_arguments_copy, strip_hermes_this, written_first_vars,
 };
-pub use inline::{names_used_by_descendants, outer_names_used_by_descendants};
+pub use inline::{names_used_by_descendants, outer_names_used_by_descendants, renamed_reserved};
 pub use logic_simplify::simplify_logic_advanced;
 pub use module_hoist::hoist_module_loaders;
 pub use name_inference::infer_names;

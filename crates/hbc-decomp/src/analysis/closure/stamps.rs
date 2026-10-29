@@ -93,6 +93,12 @@ pub fn own_scopes(ctx: &ClosureContext, func: u32) -> HashSet<u32> {
             out.insert(block);
         }
     }
+    // A machine's scope parked in or collapsed into this function (S3.2b).
+    for &scope in &ctx.parked_scopes {
+        if ctx.scope_function(scope) == func {
+            out.insert(scope);
+        }
+    }
     out
 }
 
@@ -143,7 +149,14 @@ pub fn captured_slot_names(
             Some(s) if own_scopes.contains(&s.owner) => {
                 own.insert(name);
             }
-            Some(s) if ancestors.contains(&s.owner) => {
+            // A block scope belongs to the function that holds it: a parked
+            // machine scope is its wrapper's, an ancestor of every body that
+            // reads it.
+            Some(s)
+                if ancestors.contains(&s.owner)
+                    || (ctx.parked_scopes.contains(&s.owner)
+                        && ancestors.contains(&ctx.scope_function(s.owner))) =>
+            {
                 captured.entry(name).or_default().insert(s);
             }
             _ => {}

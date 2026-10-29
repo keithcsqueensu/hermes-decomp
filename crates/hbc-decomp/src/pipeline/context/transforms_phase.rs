@@ -9,11 +9,6 @@ use crate::ir::Statement;
 use crate::transforms;
 use std::collections::BTreeMap;
 
-// Slot numbers of a wrapper standing for its machine's environment
-// (`keep_raw_machines`): above any slot hermesc allocates, below the
-// block-level bits.
-const STEP_ENV_SLOTS: u32 = 0x00E0_0000;
-
 impl PipelineContext {
     pub(super) fn run_transform_pipeline(
         all_ir: &mut BTreeMap<u32, Vec<Statement>>,
@@ -219,7 +214,9 @@ impl PipelineContext {
         }
         crate::analysis::closure::stamps::report("after W16g", all_ir, closure_ctx.as_ref());
 
-        Self::separate_step_env_names(all_ir, &global_analysis.param_names);
+        if let Some(ctx) = closure_ctx.as_ref() {
+            Self::separate_step_env_names(all_ir, ctx, &global_analysis.param_names);
+        }
         if let Some(ctx) = closure_ctx.as_ref() {
             Self::separate_locals_from_captures(all_ir, ctx);
         }
@@ -371,35 +368,7 @@ impl PipelineContext {
         async_originals: &async_detection::Unwrapped,
         raw: &[(u32, u32)],
     ) {
-        use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, SlotRef, Value};
-        struct Restamp<'m>(&'m BTreeMap<SlotRef, SlotRef>);
-        impl Restamp<'_> {
-            fn var(&self, v: &mut crate::ir::Var) {
-                if let Some(to) = v.slot.and_then(|s| self.0.get(&s)) {
-                    v.slot = Some(*to);
-                }
-            }
-        }
-        impl MutVisitor for Restamp<'_> {
-            fn visit_statement(&mut self, s: &mut Statement) {
-                if let Statement::Let { name, .. } = s {
-                    self.var(name);
-                }
-                self.walk_statement(s);
-            }
-            fn visit_expression(&mut self, e: &mut Expression) {
-                if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
-                    self.var(v);
-                }
-                self.walk_expression(e);
-            }
-            fn visit_assign_target(&mut self, t: &mut AssignTarget) {
-                if let AssignTarget::Binding(Binding::Variable(v)) = t {
-                    self.var(v);
-                }
-                self.walk_assign_target(t);
-            }
-        }
+        use crate::ir::{Expression, MutVisitor, SlotRef, Value};
         struct Create(u32);
         impl MutVisitor for Create {
             fn visit_expression(&mut self, e: &mut Expression) {
@@ -463,12 +432,10 @@ impl PipelineContext {
         // The environment a machine builds on its first step is parked in its
         // wrapper's slot and lives as long as the generator: its slots (a loop
         // counter across yields) are the wrapper's variables. Declared in the
-        // step, they restarted each call. Its scope hangs below the step in
-        // the parent chain, and a block scope's slots are declared where the
-        // block is built, so the slots are stamped as the wrapper's own, in a
-        // range past any real one (`STEP_ENV_SLOTS`), wherever they are
-        // referenced: the step, and every closure the step creates with that
-        // scope (S3_PARKED_ENV_PLAN.md S3.2). The wrapper binds each one.
+        // step, they restarted each call. The scope is rehomed to the wrapper
+        // and marked parked (`ClosureContext::parked_scopes`), so its slots
+        // keep their own stamps, are captures in the step and every closure
+        // the step creates, and the wrapper binds each one (S3.2b).
         let mut moved_to: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
         for &(fid, inner) in raw {
             if async_originals.contains_key(&fid) {
@@ -480,6 +447,7 @@ impl PipelineContext {
                 .enumerate()
             {
                 moved_to.insert(scope, (fid, k as u32));
+                closure_ctx.parked_scopes.insert(scope);
             }
             closure_ctx.generator_functions.remove(&inner);
             closure_ctx.async_functions.remove(&inner);
@@ -491,29 +459,21 @@ impl PipelineContext {
         if moved_to.is_empty() {
             return;
         }
-        let mut restamp: BTreeMap<SlotRef, SlotRef> = BTreeMap::new();
+        // One binding per slot here; the other names a slot goes by by the
+        // time it renders are bound then (`bind_parked_slots`).
         let mut bound: BTreeMap<u32, BTreeMap<SlotRef, String>> = BTreeMap::new();
         for stmts in all_ir.values() {
             for (name, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
                 let Some(slot) = slot else { continue };
-                let Some(&(fid, k)) = moved_to.get(&slot.owner) else {
+                let Some(&(fid, _)) = moved_to.get(&slot.owner) else {
                     continue;
                 };
-                let held = SlotRef {
-                    owner: fid,
-                    slot: STEP_ENV_SLOTS | k << 16 | (slot.slot & 0xFFFF),
-                };
-                restamp.insert(slot, held);
                 bound
                     .entry(fid)
                     .or_default()
-                    .entry(held)
+                    .entry(slot)
                     .or_insert_with(|| name.to_string());
             }
-        }
-        let mut r = Restamp(&restamp);
-        for stmts in all_ir.values_mut() {
-            r.visit_statement_list(stmts);
         }
         for (fid, slots) in bound {
             if let Some(body) = all_ir.get_mut(&fid) {
@@ -679,11 +639,12 @@ impl PipelineContext {
     // everywhere its stamp is.
     fn separate_step_env_names(
         all_ir: &mut BTreeMap<u32, Vec<Statement>>,
+        ctx: &ClosureContext,
         param_names: &BTreeMap<u32, Vec<Option<String>>>,
     ) {
         use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, SlotRef, Value, Var};
         use std::collections::{BTreeSet, HashSet};
-        let is_step_env = |s: &SlotRef| s.slot & STEP_ENV_SLOTS == STEP_ENV_SLOTS;
+        let is_step_env = |s: &SlotRef| ctx.parked_scopes.contains(&s.owner);
         // Every body that references a machine slot, with its references:
         // the wrapper, the step and the closures the step creates. A clash in
         // any of them counts, the step's own parameters included (a loop
@@ -725,7 +686,10 @@ impl PipelineContext {
                 let Statement::Let { name, .. } = stmt else {
                     continue;
                 };
-                let Some(slot) = name.slot.filter(|s| s.owner == fid && is_step_env(s)) else {
+                let Some(slot) = name
+                    .slot
+                    .filter(|s| is_step_env(s) && ctx.scope_function(s.owner) == fid)
+                else {
                     continue;
                 };
                 let mut bodies = bodies_of.get(&slot).cloned().unwrap_or_default();
@@ -805,6 +769,17 @@ impl PipelineContext {
         let mut r = Rename(&renames);
         for body in all_ir.values_mut() {
             r.visit_statement_list(body);
+            // A wrapper binds every name a parked slot goes by; renamed
+            // apart, two of them can now be one name: bind it once.
+            let mut seen: HashSet<String> = HashSet::new();
+            body.retain(|s| match s {
+                Statement::Let {
+                    name,
+                    value: Expression::Value(Value::Constant(crate::ir::Constant::Undefined)),
+                    ..
+                } if name.slot.is_some_and(|s| is_step_env(&s)) => seen.insert(name.name.clone()),
+                _ => true,
+            });
         }
     }
 
@@ -896,7 +871,7 @@ impl PipelineContext {
                 collapsed.insert(inner, fid);
             }
         }
-        restamp_collapsed_machines(all_ir, &collapsed);
+        adopt_collapsed_machines(all_ir, &collapsed, closure_ctx);
         // The wrapper collapse above just marked new generators, and W14 marked the
         // wrappers async. Propagate now so a generator whose parent is async is
         // known to be async BEFORE the reconstruction loop below, which is what
@@ -1085,64 +1060,54 @@ impl PipelineContext {
     }
 }
 
-// Slot numbers of a wrapper standing for the function scope of the machine
-// collapsed into it (`restamp_collapsed_machines`): apart from the wrapper's
-// own environment slots and from `STEP_ENV_SLOTS`.
-const COLLAPSED_SLOTS: u32 = 0x00D0_0000;
-
-// After a collapse the machine's body is the wrapper's, but its variables were
+// After a collapse the machine's body is the wrapper's, but its variables are
 // still stamped with the machine as owner, a function with no body now: to the
 // wrapper they read as another function's slots (a local, whatever its
 // closures did), and to the closures made in the body as slots of an owner
 // that binds nothing, so they declared their own (`let session` in an arrow
-// whose write had to reach the async function's `session`). They are the
-// wrapper's: stamped as its slots, in a range of their own.
-fn restamp_collapsed_machines(
+// whose write had to reach the async function's `session`). The machine's
+// scope is the wrapper's, as a raw machine's parked scope is (S3.2b): marked
+// parked, held by the wrapper (`block_function`), its slots keep their stamps
+// and the wrapper binds each one.
+fn adopt_collapsed_machines(
     all_ir: &mut BTreeMap<u32, Vec<crate::ir::Statement>>,
     collapsed: &BTreeMap<u32, u32>,
+    ctx: &mut ClosureContext,
 ) {
-    use crate::ir::{
-        AssignTarget, Binding, Expression, MutVisitor, SlotRef, Statement, Value, Var,
-    };
+    use crate::ir::{Expression, SlotRef, Statement, Value};
     if collapsed.is_empty() {
         return;
     }
-    struct R<'m>(&'m BTreeMap<u32, u32>);
-    impl R<'_> {
-        fn var(&self, v: &mut Var) {
-            if let Some(s) = v.slot {
-                if let Some(&to) = self.0.get(&s.owner) {
-                    v.slot = Some(SlotRef {
-                        owner: to,
-                        slot: COLLAPSED_SLOTS | (s.slot & 0xFFFF),
-                    });
-                }
+    for (&machine, &wrapper) in collapsed {
+        ctx.parked_scopes.insert(machine);
+        ctx.block_function.insert(machine, wrapper);
+    }
+    // One binding per slot here, as for a raw machine's parked scope.
+    let mut bound: BTreeMap<u32, BTreeMap<SlotRef, String>> = BTreeMap::new();
+    for stmts in all_ir.values() {
+        for (name, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
+            let Some(slot) = slot else { continue };
+            if let Some(&wrapper) = collapsed.get(&slot.owner) {
+                bound
+                    .entry(wrapper)
+                    .or_default()
+                    .entry(slot)
+                    .or_insert_with(|| name.to_string());
             }
         }
     }
-    impl MutVisitor for R<'_> {
-        fn visit_statement(&mut self, s: &mut Statement) {
-            if let Statement::Let { name, .. } = s {
-                self.var(name);
-            }
-            self.walk_statement(s);
+    for (wrapper, slots) in bound {
+        if let Some(body) = all_ir.get_mut(&wrapper) {
+            let lets = slots.into_iter().map(|(slot, name)| Statement::Let {
+                name: crate::ir::Var {
+                    name,
+                    slot: Some(slot),
+                },
+                value: Expression::Value(Value::Constant(crate::ir::Constant::Undefined)),
+                kind: crate::ir::VarKind::Let,
+            });
+            body.splice(0..0, lets);
         }
-        fn visit_expression(&mut self, e: &mut Expression) {
-            if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
-                self.var(v);
-            }
-            self.walk_expression(e);
-        }
-        fn visit_assign_target(&mut self, t: &mut AssignTarget) {
-            if let AssignTarget::Binding(Binding::Variable(v)) = t {
-                self.var(v);
-            }
-            self.walk_assign_target(t);
-        }
-    }
-    let mut r = R(collapsed);
-    for body in all_ir.values_mut() {
-        r.visit_statement_list(body);
     }
 }
 

@@ -20,6 +20,7 @@ pub use folding::{fold_array_literals, fold_object_literals};
 pub use inline_named::{
     eliminate_immutable_aliases, inline_named_variables, inline_named_variables_keeping,
 };
+pub use reserved_words::renamed_reserved;
 pub use reserved_words::{make_sanitized_names_distinct, rename_reserved_words};
 pub use strip_this::strip_hermes_this;
 

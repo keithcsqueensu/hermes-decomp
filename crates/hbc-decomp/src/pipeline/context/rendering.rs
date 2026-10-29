@@ -184,6 +184,71 @@ fn split_capture_and_local(
 }
 
 impl PipelineContext {
+    // The slots of a machine's scope parked in or collapsed into this function
+    // (S3.2b), under every name they go by now: `keep_raw_machines` bound the
+    // names the slots had then, and a later pass can name a slot's references
+    // anew (`closure_5`), which nothing else declares, since a body below only
+    // captures it. A name the body declares already, or a parameter, is left.
+    fn bind_parked_slots(&self, func_id: u32, stmts: &mut Vec<Statement>, params: &[String]) {
+        let Some(ctx) = self.closure_ctx.as_ref() else {
+            return;
+        };
+        let owned: Vec<u32> = ctx
+            .parked_scopes
+            .iter()
+            .copied()
+            .filter(|&s| ctx.scope_function(s) == func_id)
+            .collect();
+        if owned.is_empty() {
+            return;
+        }
+        let mut have: HashSet<String> = params.iter().cloned().collect();
+        for s in stmts.iter() {
+            if let Statement::Let { name, .. } = s {
+                have.insert(name.name.clone());
+            }
+        }
+        // A name the body uses for something else is not this slot's to take.
+        for (name, slot) in crate::analysis::closure::stamps::var_refs(stmts) {
+            if !slot.is_some_and(|s| owned.contains(&s.owner)) {
+                have.insert(name.to_string());
+            }
+        }
+        let mut lets = Vec::new();
+        for &scope in &owned {
+            let from = crate::ir::SlotRef {
+                owner: scope,
+                slot: 0,
+            };
+            let to = crate::ir::SlotRef {
+                owner: scope,
+                slot: u32::MAX,
+            };
+            for (&slot, names) in self.slot_names.range(from..=to) {
+                for name in &names.all {
+                    // As render prep spelled it (`var` is `_var` by now).
+                    let name = transforms::renamed_reserved(name);
+                    if crate::util::is_valid_identifier(&name) && have.insert(name.clone()) {
+                        lets.push(Statement::Let {
+                            name: crate::ir::Var {
+                                name: name.clone(),
+                                slot: Some(slot),
+                            },
+                            value: crate::ir::Expression::Value(crate::ir::Value::Constant(
+                                crate::ir::Constant::Undefined,
+                            )),
+                            kind: crate::ir::VarKind::Let,
+                        });
+                    }
+                }
+            }
+        }
+        if !lets.is_empty() {
+            lets.append(stmts);
+            *stmts = lets;
+        }
+    }
+
     // The parameter names a body renders with.
     pub(super) fn render_params(
         &self,
@@ -574,6 +639,7 @@ impl PipelineContext {
             split_capture_and_local(ctx, func_id, stmts);
         }
         self.drop_slot_lets_of_params(func_id, stmts, params);
+        self.bind_parked_slots(func_id, stmts, params);
         let extra = self.extra_writes_for_function(func_id);
         // The names this body stores into an ancestor's slot under, by stamp,
         // where the owner binds them; and the ancestors' slot names (as the
@@ -685,6 +751,11 @@ impl PipelineContext {
         slot: crate::ir::SlotRef,
         name: &str,
     ) -> bool {
+        // A machine's parked or collapsed scope: its wrapper binds every name
+        // the slot goes by (`keep_raw_machines`, `adopt_collapsed_machines`).
+        if ctx.parked_scopes.contains(&slot.owner) {
+            return true;
+        }
         let owner = ctx.scope_function(slot.owner);
         let renders = self.created_functions.contains(&owner)
             || self.registry.function_to_module.contains_key(&owner)
