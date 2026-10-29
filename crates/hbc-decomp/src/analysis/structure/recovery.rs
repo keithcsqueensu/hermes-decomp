@@ -354,34 +354,10 @@ pub(super) fn recover_structure_inner(
             let value = value.clone();
             let cases = cases.clone();
             let default = *default;
-            let mut parts = vec![Structure::Block(block_id, stmts)];
-
-            let mut recovered: BTreeMap<BlockId, Structure> = BTreeMap::new();
-            for (_case_val, target) in &cases {
-                if !recovered.contains_key(target) {
-                    let body = recover_structure(ctx, *target, loop_stack);
-                    recovered.insert(*target, body);
-                }
-            }
-
-            let mut switch_cases = Vec::new();
-            for (case_val, target) in &cases {
-                switch_cases.push((case_val.clone(), recovered[target].clone()));
-            }
-
-            let default_body = if let Some(cached) = recovered.get(&default) {
-                cached.clone()
-            } else {
-                recover_structure(ctx, default, loop_stack)
-            };
-
-            parts.push(Structure::Switch {
-                discriminant: value,
-                cases: switch_cases,
-                default: Box::new(default_body),
-            });
-
-            Structure::Sequence(parts)
+            Structure::Sequence(vec![
+                Structure::Block(block_id, stmts),
+                recover_switch(ctx, block_id, value, &cases, default, loop_stack),
+            ])
         }
         Terminator::None => {
             log::debug!(
@@ -390,6 +366,118 @@ pub(super) fn recover_structure_inner(
             );
             Structure::Block(block_id, stmts)
         }
+    }
+}
+
+// A switch's cases, each recovered once (cases sharing a target share its
+// body), and its default, followed by the block the cases converge on. Held
+// out while the cases are recovered, that block was absorbed by whichever
+// case reached it first and every later case ended without it (a token loop's
+// counter increment in its first case only, the others looping forever).
+pub(super) fn recover_switch(
+    ctx: &mut RecoveryCtx<'_>,
+    header: BlockId,
+    value: Expression,
+    cases: &[(Expression, BlockId)],
+    default: BlockId,
+    loop_stack: &[&LoopInfo],
+) -> Structure {
+    let mut targets: Vec<BlockId> = Vec::new();
+    for t in cases
+        .iter()
+        .map(|(_, t)| *t)
+        .chain(std::iter::once(default))
+    {
+        if !targets.contains(&t) {
+            targets.push(t);
+        }
+    }
+    let merge = find_switch_merge(ctx.cfg, header, &targets)
+        .filter(|m| !ctx.visited.contains(m) && !targets.contains(m));
+    if let Some(m) = merge {
+        ctx.visited.insert(m);
+    }
+    let switch = recover_switch_cases(ctx, value, cases, default, loop_stack);
+    match merge {
+        Some(m) => {
+            ctx.visited.remove(&m);
+            Structure::Sequence(vec![switch, recover_structure(ctx, m, loop_stack)])
+        }
+        None => switch,
+    }
+}
+
+// The block most of a switch's targets reach (two at least) without passing
+// back through the switch, the nearest to its first target on a tie: where the
+// cases rejoin. Targets that end the function reach no such block and do not
+// count against it.
+fn find_switch_merge(cfg: &CFG, header: BlockId, targets: &[BlockId]) -> Option<BlockId> {
+    use std::collections::{HashMap, VecDeque};
+    let reach = |from: BlockId| -> HashMap<BlockId, usize> {
+        let mut dist: HashMap<BlockId, usize> = HashMap::new();
+        let mut queue = VecDeque::from([(from, 0usize)]);
+        while let Some((n, d)) = queue.pop_front() {
+            if n == header || dist.contains_key(&n) {
+                continue;
+            }
+            dist.insert(n, d);
+            if let Some(b) = cfg.get(n) {
+                for s in b.successors() {
+                    queue.push_back((s, d + 1));
+                }
+            }
+        }
+        dist
+    };
+    let sets: Vec<HashMap<BlockId, usize>> = targets.iter().map(|&t| reach(t)).collect();
+    let mut count: BTreeMap<BlockId, (usize, usize)> = BTreeMap::new();
+    for (i, set) in sets.iter().enumerate() {
+        for (&b, &d) in set {
+            let e = count.entry(b).or_insert((0, usize::MAX));
+            e.0 += 1;
+            if i == 0 || e.1 == usize::MAX {
+                e.1 = e.1.min(d);
+            }
+        }
+    }
+    count
+        .into_iter()
+        .filter(|(_, (n, _))| *n >= 2)
+        .max_by(|a, b| {
+            a.1 .0
+                .cmp(&b.1 .0)
+                .then(b.1 .1.cmp(&a.1 .1))
+                .then(b.0.cmp(&a.0))
+        })
+        .map(|(b, _)| b)
+}
+
+fn recover_switch_cases(
+    ctx: &mut RecoveryCtx<'_>,
+    value: Expression,
+    cases: &[(Expression, BlockId)],
+    default: BlockId,
+    loop_stack: &[&LoopInfo],
+) -> Structure {
+    let mut recovered: BTreeMap<BlockId, Structure> = BTreeMap::new();
+    for (_case_val, target) in cases {
+        if !recovered.contains_key(target) {
+            let body = recover_structure(ctx, *target, loop_stack);
+            recovered.insert(*target, body);
+        }
+    }
+    let switch_cases = cases
+        .iter()
+        .map(|(case_val, target)| (case_val.clone(), recovered[target].clone()))
+        .collect();
+    let default_body = match recovered.get(&default) {
+        Some(cached) => cached.clone(),
+        None => recover_structure(ctx, default, loop_stack),
+    };
+    Structure::Switch {
+        discriminant: value,
+        cases: switch_cases,
+        default: Box::new(default_body),
     }
 }
 

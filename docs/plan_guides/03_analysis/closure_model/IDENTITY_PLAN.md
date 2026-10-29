@@ -254,6 +254,17 @@ scopes): read from the record, they kept placeholders where the late walk found 
 (`closure_6` for `byteLength`), so the walk keeps them too until A2, and the output is
 byte-identical (Expensify up to the `styles` flip above, since fixed).
 
+Found tracing those rows (2026-10-29): most W6 stamps the walk could not place were in
+closures whose creating code the output had lost. A loop whose header is a switch (a token
+loop over v98's `StringSwitchImm`, an async state machine dispatching on its state, React's
+rotated child walk) was structured as its header block alone, and everything only the switch
+reached was dropped (graphql's `parseNumberSkeleton`: 2 statements of 464 instructions).
+Such a header is now `label: while (true) { header; switch }`, its exit taken from the latch;
+and every switch's cases leave the block they converge on to after the switch, where the case
+recovered first used to absorb it and the others ended without it, or carry a copy. Expensify
++26,893 lines, Discord +8,984, strings +2,844 and +902; no module loses a string literal
+(Orphan Functions aside) and the property drops read are copies folded into one tail.
+
 What A1 leaves for A2, by count: W6 stamps the walk overrides (Expensify 20, Discord 92),
 names by scope that differ (15, 85), recorded owners the late walk overrides (112, 559), and
 placed accesses whose block scope was never built (4, 12). A2 is done when all four are 0 and

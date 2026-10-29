@@ -50,7 +50,7 @@ pub fn detect_loops(cfg: &CFG) -> Vec<LoopInfo> {
         }
 
         // Find loop exit (successor of header not in body, or branch target out of body)
-        let exit = find_loop_exit(cfg, header, &body);
+        let exit = find_loop_exit(cfg, header, &body, &edges);
 
         // Determine if this is a do-while (condition at end)
         let is_do_while = edges.iter().any(|(from, to)| {
@@ -85,7 +85,27 @@ fn collect_loop_body(cfg: &CFG, node: BlockId, header: BlockId, body: &mut BTree
     }
 }
 
-fn find_loop_exit(cfg: &CFG, header: BlockId, body: &BTreeSet<BlockId>) -> Option<BlockId> {
+fn find_loop_exit(
+    cfg: &CFG,
+    header: BlockId,
+    body: &BTreeSet<BlockId>,
+    back_edges: &[(BlockId, BlockId)],
+) -> Option<BlockId> {
+    // A header that dispatches on a switch leaves the loop only through the
+    // cases that end the function (a `throw` for an unknown token); the loop's
+    // own test sits at the back edge, so its way out is the exit.
+    if matches!(
+        cfg.get(header).map(|b| &b.terminator),
+        Some(Terminator::Switch { .. })
+    ) {
+        for (from, _) in back_edges {
+            if let Some(block) = cfg.get(*from) {
+                if let Some(succ) = block.successors().into_iter().find(|s| !body.contains(s)) {
+                    return Some(succ);
+                }
+            }
+        }
+    }
     if let Some(block) = cfg.get(header) {
         for succ in block.successors() {
             if !body.contains(&succ) {

@@ -189,6 +189,51 @@ pub(super) fn recover_loop(
                 Structure::Sequence(vec![Structure::Block(loop_info.header, header_stmts), next])
             }
         }
+        // A loop whose header dispatches on a switch (a `for` over tokens whose
+        // body is a `switch` on each one, v98's `StringSwitchImm`): the header
+        // and its switch are the body of `while (true)`. Everything reachable
+        // only through the switch used to be dropped with it (graphql's
+        // `parseNumberSkeleton` kept two statements of 464 instructions).
+        // Inside the switch an unlabeled `break` leaves the switch, not the
+        // loop, so the cases are recovered under one more stack frame that
+        // matches no block: every exit from the loop then names its label.
+        Terminator::Switch {
+            value,
+            cases,
+            default,
+        } => {
+            let marker = LoopInfo {
+                header: BlockId(u32::MAX),
+                body: Default::default(),
+                exit: None,
+                back_edges: Vec::new(),
+                is_do_while: false,
+            };
+            let mut inner = new_stack.clone();
+            inner.push(&marker);
+            let switch = super::recovery::recover_switch(
+                ctx,
+                loop_info.header,
+                value.clone(),
+                cases,
+                *default,
+                &inner,
+            );
+            let body = Structure::Sequence(vec![
+                Structure::Block(loop_info.header, header_stmts),
+                switch,
+            ]);
+            let mut parts = vec![make_loop(
+                body,
+                Expression::constant(crate::ir::Constant::Bool(true)),
+            )];
+            if let Some(exit) = loop_info.exit {
+                if !ctx.visited.contains(&exit) {
+                    parts.push(recover_structure(ctx, exit, loop_stack));
+                }
+            }
+            Structure::Sequence(parts)
+        }
         _ => Structure::Block(loop_info.header, header_stmts),
     }
 }
