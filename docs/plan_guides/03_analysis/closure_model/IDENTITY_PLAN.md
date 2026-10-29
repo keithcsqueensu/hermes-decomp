@@ -312,9 +312,43 @@ With scopes addressed directly, remove what only existed to make levels land:
   placement learns that a parked scope lives as long as the owner of the slot it is parked in.
   `STEP_ENV_SLOTS` and the stamped `let`s go.
 
-Exit: no `NESTED_ENV_LEVEL_BASE` slot identity, no `STEP_ENV_SLOTS`; `parked_scopes`,
-`inlined_nested_reads`, `inlined_recursive` measured; v96 identical; v98 changes read class by
-class.
+Split into stages (2026-10-29), each with its own counts; any v96 change is read line by
+line (A2a's first fix changed 18: names gained, two `let`s dropped whose name the enclosing
+scope now declares, and one hook callback's capture now read as its dependency list already
+named it, `str` for `totalRequired`, a slot whose name is wrong in both):
+
+- **A2a — the four counts at 0.** Each row traced to its cause, not overridden: so far every
+  one has been lost code (the switch and class fixes above) or a context change after W6.
+  Recorded owners: generator collapse moves a block scope from the step to its wrapper
+  (`rehome_block_scopes`), and the walk from the step at that builder level found nothing
+  while the record held the right scope. The context keeps where each rehomed scope came
+  from (`rehomed_block_scopes`) and the walk reads it. Naming then reached those slots by
+  their scope and refused `byteLength`: the clash check walked up from the reader to the
+  owner, and a block scope is never on the reader's chain, so the walk ran on to the module
+  root. It now stops at the scope's function too. Recorded owners the walk overrides: 0 on
+  all three bundles (Expensify 112, Discord 559 before). Names gained where the clash had
+  refused them (`refs`, `regex`, `error`, `_Error`; Expensify 2,140 changed lines, Discord
+  5,536, v96 18). Undeclared: v96 1,807 unchanged, Discord 6,725 -> 6,658, Expensify 12,283
+  -> 12,286, the rise in raw machines whose parked slots the wrapper still binds as `c0`
+  where the step's reads now take the usage name (`attachmentID`): wrong before as well
+  (the step's parameter stood in), and A2e's to fix. Consts written unchanged (1, 1, 0).
+  Still open: W6 stamps the walk overrides (Expensify 5, Discord 44), names by scope that
+  differ (4, 38), a block scope never built (Expensify 1).
+- **A2b — the walk no longer consulted for a placed access**, then A1b2 (naming by scope).
+- **A2c — `block_scopes` keyed by creation site**, not `(function, builder level)`.
+  `NESTED_ENV_LEVEL_BASE`, `reg_source_slot` and `rehomed_block_scopes` go with it.
+- **A2d — the shared-parent install goes.** `parent_function` is the lexical tree again; the
+  hoister's shared and self-creating exceptions are re-checked on block-created functions.
+- **A2e — raw machines (S3.2b).** The parked scope is declared for as long as its owner lives;
+  `STEP_ENV_SLOTS` and the stamped `let`s go. Likely split again by machine kind (async,
+  generator). The catch-loop fix above is ordered here: `state_machine_v98` learns a dispatch
+  that is a loop, then the dominator change lands, with raw machines not rising (536 and
+  1,738 before; the dominator change alone made them 581 and 1,919).
+
+Exit: no `NESTED_ENV_LEVEL_BASE` slot identity and no `rehomed_block_scopes`; raw machines
+and `parked_scopes` measured; v96 changes read line by line, v98 changes class by class.
+(`STEP_ENV_SLOTS`, `inlined_nested_reads` and `inlined_recursive`, named here before, went
+with S3.2b's parked scopes.)
 
 ### A3 — An identity for every variable (large; staged by pass family)
 
@@ -333,6 +367,37 @@ the defects above point to:
 5. naming (`var_naming`, W7–W11) and shared bodies (`separate_copy_names`; a copy is a
    renaming of identities per creator scope, not of names).
 
+Before step 1, **A3.0 — the guard**: a debug check that counts, per pass, each `Var` made
+without an identity (178 construction sites outside tests, most in `transforms/inline`,
+`analysis/metro`, `var_naming`, `patterns` and `codegen`), logged with the census. It changes
+no output; its counts are what each step below must bring to zero for its family.
+
+Steps 4 and 5 are each split (2026-10-29):
+
+- **4a — moves keep identities.** `keep_raw_machines` (the `createGenerator(step)` rewrite and
+  the rehome to the wrapper), W16b's collapse (the step's body moved into the wrapper) and
+  W15's unwrap carry every stamp they move. Measured by the dropped-stamp census taken
+  before and after each, which must not move.
+- **4b — the async parameter and its slot copy are two identities.** W15's `url` case: the
+  wrapper's parameter and the slot it is copied into are told apart by identity, so the
+  slot's `let` cannot redeclare the parameter. Measured by the I2 rows on async wrappers.
+- **4c — W16c reconstruction keeps identities.** `state_machine_v98` flattens cases into one
+  body; the variables of each case keep their identity through the flattening, census before
+  and after W16c.
+- **4d — `separate_step_env_names` goes.** With 4a–4c, a parked slot's clash is two identities
+  under one name, and the general clash rule (step 5) renames it. Undeclared and unparsable
+  counts must not rise on either v98 bundle.
+- **5a — renaming by identity.** `rename_variables_in_stmts` gains an identity-keyed form, and
+  the naming passes move to it one at a time, each its own commit with the counts: W10
+  `closure_definitions`, W11 definition-site naming, W11b `ancestor_inherit`, W11c
+  `capture_sync`, then the IPA and metro renames. A pass converted renames the slot, never
+  the spelling, so a body's own local of the same name stays as it was.
+- **5b — shared bodies by identity.** A copy of a shared body maps identities per creator
+  scope; `separate_copy_names` and the rename half of `shared_body_variants` go. I1 at the
+  shared-body floor.
+- **5c — the leftovers.** Every pass still renaming by spelling, from the guard's counts, each
+  converted or shown to rename only locals it created.
+
 During the transition a debug check reports every `Var` made without an identity, per pass;
 the count must reach zero before A4.
 
@@ -348,6 +413,25 @@ shared-body copies exist: an identity visible in a nested scope reserves its nam
 local never shadows a capture it sits beside, and a parameter's copy and a different slot get
 different names because they are different identities. Declarations and their kinds come from
 writes per identity across every body that renders it, copies included.
+
+Staged (2026-10-29) so that no step changes names before it has been measured in the dark:
+
+- **A4a — shadow allocator.** Naming passes record each candidate per identity alongside the
+  rename they still make; the allocator runs after the shared-body copies and its names are
+  compared with the printed ones, not applied. The counts are the differences by class
+  (a capture shadowed, two identities under one name, a weaker name chosen), read before
+  anything is switched.
+- **A4b — slots named by the allocator.** Environment slots take the allocator's names; locals
+  keep theirs. Unparsable and undeclared counts must not rise on any bundle.
+- **A4c — locals named by the allocator.** The register-born identities (F23) too; the
+  naming passes stop renaming text.
+- **A4d — declarations by identity.** Writes counted per identity across every body that
+  renders it, copies included, decide `let` or `const` and where: `copy_writes` /
+  `relax_written_consts`, `extra_writes_from_nested_bodies`, `split_capture_and_local`,
+  `drop_slot_lets_of_params` and the outer `written_first_vars` go, each with the const and
+  undeclared counts.
+- **A4e — the rest of §1's patches**: `stamp_merged`, the hoister's `stay_at_sites` (with
+  A2d's re-check), each deleted with the fixture of its defect class passing.
 
 Exit: the patches listed in §1 deleted; consts written 0 and unparsable modules 0 on both
 bundles (Discord's `_fireSurveyAction` included); I1 and I2 at their floors with the

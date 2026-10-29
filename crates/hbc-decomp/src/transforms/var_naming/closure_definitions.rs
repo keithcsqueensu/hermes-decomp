@@ -177,8 +177,13 @@ pub fn rename_closure_variables_cross_function(
         let new_name = slot_names[&key].clone();
         // body -> the name it uses for this slot now, if it uses it
         let mut chain: BTreeMap<u32, Option<String>> = BTreeMap::new();
+        // A block scope's slots are read from the function that holds it
+        // as well as from below the scope, so the walk up from a reader
+        // ends at either: past them it reached bodies the slot is not in
+        // and refused names they use (a generator step's `byteLength`).
+        let home = closure_ctx.scope_function(owner);
         chain.insert(
-            closure_ctx.scope_function(owner),
+            home,
             Some(owner_var(closure_ctx, &owner_names, owner, slot)),
         );
         for &(reader, old) in readers.get(&key).map(|v| v.as_slice()).unwrap_or(&[]) {
@@ -186,7 +191,7 @@ pub fn rename_closure_variables_cross_function(
             let mut seen = HashSet::from([reader]);
             let mut g = reader;
             while let Some(&p) = closure_ctx.parent_function.get(&g) {
-                if p == owner || !seen.insert(p) {
+                if g == home || p == owner || p == home || !seen.insert(p) {
                     break;
                 }
                 chain.entry(closure_ctx.scope_function(p)).or_insert(None);

@@ -36,6 +36,11 @@ pub struct ClosureContext {
     // `CreateFunctionEnvironment`) has that outer scope as its parent.
     #[serde(default)]
     pub block_function: BTreeMap<u32, u32>,
+    // (function, builder level) -> a block scope that function built and
+    // `rehome_block_scopes` moved to a generator's wrapper. Its slots are
+    // still read at that level from the bodies that were created inside it.
+    #[serde(default)]
+    pub rehomed_block_scopes: BTreeMap<(u32, u32), u32>,
     // function -> (baked capture name -> (level, slot) it came from). A
     // capture whose ancestor slot had no name when it was baked prints as
     // `closure_N`, which says nothing about the level; the late inherit pass
@@ -158,6 +163,7 @@ impl ClosureContext {
             }
             self.block_scopes.remove(&(from, level));
             self.block_scopes.insert((to, level), id);
+            self.rehomed_block_scopes.insert((from, level), id);
             self.block_function.insert(id, to);
             out.push(id);
         }
@@ -217,7 +223,11 @@ impl ClosureContext {
             return Some(func);
         }
         if level >= crate::ir::NESTED_ENV_LEVEL_BASE {
-            return self.block_scopes.get(&(func, level)).copied();
+            return self
+                .block_scopes
+                .get(&(func, level))
+                .or_else(|| self.rehomed_block_scopes.get(&(func, level)))
+                .copied();
         }
         self.ancestor_at(func, level)
     }
@@ -561,6 +571,19 @@ mod block_scope_tests {
             "MessageQueue"
         );
         assert_eq!(own.get_slot_name(0), "global");
+    }
+
+    #[test]
+    fn a_rehomed_block_scope_still_owns_the_reads_made_at_its_level() {
+        // Step 2 built a block env at its builder level; the generator collapse
+        // moves it to wrapper 1. A name baked at that level in 2 still means it.
+        let block = NESTED_ENV_LEVEL_BASE + 1;
+        let mut ctx = ClosureContext::new();
+        ctx.add_child(1, 2);
+        let scope = ctx.block_scope(2, block);
+        assert_eq!(ctx.rehome_block_scopes(2, 1), vec![scope]);
+        assert_eq!(ctx.slot_owner(1, block), Some(scope));
+        assert_eq!(ctx.slot_owner(2, block), Some(scope));
     }
 }
 

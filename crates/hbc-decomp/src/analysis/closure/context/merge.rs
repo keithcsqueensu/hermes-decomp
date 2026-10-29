@@ -175,6 +175,7 @@ impl ClosureContext {
             self.parent_function.remove(scope);
         }
         self.block_scopes.clear();
+        self.rehomed_block_scopes.clear();
         self.block_level.clear();
         self.block_function.clear();
         let mut deferred: Vec<(u32, u32, u32, ClosureSlotValue)> = Vec::new();
