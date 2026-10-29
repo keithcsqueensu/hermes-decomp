@@ -122,10 +122,72 @@ fn bindings(ctx: &ClosureContext, func: u32, body: &RenderedBody) -> HashMap<Str
         });
     }
     let func = body.copy_of.map_or(func, |(origin, _)| origin);
+    let own = own_scopes(ctx, func);
+    let expressions = function_expression_names(body.stmts, &own);
     for name in ctx.declared_function_names(func) {
+        // Only a declaration binds a function's name in the enclosing body;
+        // an expression's name is visible inside it alone. Babel's
+        // self-replacing helpers assign named expressions to the module's
+        // variable (`_getRequireWildcardCache = function
+        // _getRequireWildcardCache(...)`) or to a local of another name
+        // (`_isNativeReflectConstruct2 = function _isNativeReflectConstruct`),
+        // which counted as a local beside the capture (IDENTITY_PLAN.md A0).
+        if expressions.contains(&name) {
+            continue;
+        }
         out.entry(name).or_default().local = true;
     }
     out
+}
+
+// Names of functions `stmts` creates only as expressions: the value of an
+// assignment or binding to a variable of another name, or to an enclosing
+// scope's slot of the same name. A function bound to a variable of its own
+// name in this body is the declaration shape and is left out.
+fn function_expression_names(stmts: &[Statement], own: &HashSet<u32>) -> HashSet<String> {
+    use crate::ir::{AssignTarget, Binding, Visitor};
+    struct V<'a> {
+        own: &'a HashSet<u32>,
+        expr: HashSet<String>,
+        decl: HashSet<String>,
+    }
+    impl V<'_> {
+        fn note(&mut self, target: &crate::ir::Var, f: &str) {
+            let outer = target.slot.is_some_and(|s| !self.own.contains(&s.owner));
+            if target.name == f && !outer {
+                self.decl.insert(f.to_string());
+            } else {
+                self.expr.insert(f.to_string());
+            }
+        }
+    }
+    impl<'a> Visitor<'a> for V<'_> {
+        fn visit_statement(&mut self, s: &'a Statement) {
+            match s {
+                Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Variable(v)),
+                    value: Expression::Function { name: Some(f), .. },
+                } => self.note(v, f),
+                Statement::Let {
+                    name: v,
+                    value: Expression::Function { name: Some(f), .. },
+                    ..
+                } => self.note(v, f),
+                _ => {}
+            }
+            self.walk_statement(s);
+        }
+    }
+    let mut v = V {
+        own,
+        expr: HashSet::new(),
+        decl: HashSet::new(),
+    };
+    for s in stmts {
+        v.visit_statement(s);
+    }
+    v.expr.retain(|n| !v.decl.contains(n));
+    v.expr
 }
 
 #[derive(Debug, Default)]
