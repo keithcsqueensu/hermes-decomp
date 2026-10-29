@@ -141,16 +141,24 @@ impl<'a> ClassAnalyzer<'a> {
     // was left beside the new `class Y2`. Keep a class only on evidence: methods,
     // a superclass, a `prototype` use, or a constructor that reads like one
     // (`_classCallCheck`, `new.target`, any `this`). Otherwise its statements stay.
+    //
+    // Nor is one whose constructor this list does not define: the class
+    // statement replaces the constructor's definition, so without it there is
+    // nothing to replace, and the statement only declares the name again.
+    // `lodash.range = function` in a block of `runInContext` became `class
+    // lodash { static range ... }` inside that block, shadowing the real one
+    // and dropping the assignment.
     fn drop_unproven_classes(&mut self, candidates: &HashSet<String>) {
         let unproven: Vec<String> = self
             .classes
             .iter()
             .filter(|(key, b)| {
-                b.methods.is_empty()
-                    && b.super_class.is_none()
-                    && !candidates.contains(key.as_str())
-                    && !candidates.contains(&b.name)
-                    && !constructor_reads_like_a_class(b.constructor_body.as_deref())
+                b.constructor.is_none()
+                    || (b.methods.is_empty()
+                        && b.super_class.is_none()
+                        && !candidates.contains(key.as_str())
+                        && !candidates.contains(&b.name)
+                        && !constructor_reads_like_a_class(b.constructor_body.as_deref()))
             })
             .map(|(key, _)| key.clone())
             .collect();
@@ -731,5 +739,123 @@ mod merge_tests {
         let kept = &analyzer.classes["Performance"];
         assert_eq!(kept.methods.len(), 1);
         assert_eq!(analyzer.class_indices["Performance"], vec![3, 9]);
+    }
+}
+
+#[cfg(test)]
+mod nesting_tests {
+    use super::*;
+
+    fn with_analyzer(run: impl FnOnce(&mut ClassAnalyzer<'_>)) {
+        let create = crate::write::CreateOptions {
+            version: 98,
+            ..Default::default()
+        };
+        let bytes = crate::write::create_minimal(&create).expect("minimal file");
+        let file = crate::BytecodeFile::parse_auto(&bytes).expect("parse");
+        let format = crate::BytecodeFormat::for_version(file.header.version).expect("format");
+        let options = crate::DecompileOptionsV2::default();
+        let mut analyzer = ClassAnalyzer::new(&file, &format, &options, None);
+        run(&mut analyzer);
+    }
+
+    fn func(id: u32, name: &str) -> Expression {
+        Expression::Function {
+            id: crate::ir::FunctionId(id),
+            name: Some(name.to_string()),
+            is_arrow: false,
+            is_async: false,
+            is_generator: false,
+            env: None,
+        }
+    }
+
+    fn reg(n: u32) -> Expression {
+        Expression::Value(Value::Binding(Binding::Register(n)))
+    }
+
+    fn call(name: &str) -> Statement {
+        Statement::Expr(Expression::call(
+            Expression::Value(Value::Binding(Binding::Variable(name.into()))),
+            vec![],
+        ))
+    }
+
+    fn has_call(stmts: &[Statement], name: &str) -> bool {
+        format!("{stmts:?}").contains(&format!("\"{name}\""))
+    }
+
+    // The class consumes statements 0 to 2 of the outer list; the nested
+    // list's statements 0 to 2 are another list's and stay (lodash lost its
+    // `lodash.prototype[name] = function` installs to classes declared inside
+    // the loop that makes them).
+    #[test]
+    fn a_nested_list_keeps_the_statements_an_outer_class_consumed_by_index() {
+        with_analyzer(|analyzer| {
+            let stmts = vec![
+                Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Register(1)),
+                    value: func(900, "Widget"),
+                },
+                Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Register(2)),
+                    value: Expression::member(reg(1), "prototype"),
+                },
+                Statement::Assign {
+                    target: AssignTarget::Index {
+                        object: reg(2),
+                        key: Expression::Value(Value::Constant(Constant::String("render".into()))),
+                    },
+                    value: func(901, "render"),
+                },
+                Statement::While {
+                    condition: Expression::Value(Value::Constant(Constant::Bool(true))),
+                    body: vec![call("first"), call("second"), call("third")],
+                },
+            ];
+            let out = analyzer.analyze(stmts);
+            let classes = out
+                .iter()
+                .filter(|s| matches!(s, Statement::Class { .. }))
+                .count();
+            assert_eq!(classes, 1, "{out:?}");
+            let Some(Statement::While { body, .. }) =
+                out.iter().find(|s| matches!(s, Statement::While { .. }))
+            else {
+                panic!("the loop is gone: {out:?}");
+            };
+            assert_eq!(body.len(), 3, "{body:?}");
+            for name in ["first", "second", "third"] {
+                assert!(has_call(body, name), "{name} is gone: {body:?}");
+            }
+        });
+    }
+
+    // `Lodash.range = function range` and `Lodash.prototype.chain = ...` with
+    // no `Lodash` constructor in the list are assignments to a class defined
+    // elsewhere, not a class.
+    #[test]
+    fn a_static_member_without_its_constructor_stays_an_assignment() {
+        with_analyzer(|analyzer| {
+            let lodash = || Expression::Value(Value::Binding(Binding::Variable("Lodash".into())));
+            let stmts = vec![
+                Statement::Assign {
+                    target: AssignTarget::Member {
+                        object: lodash(),
+                        property: "range".into(),
+                    },
+                    value: func(902, "range"),
+                },
+                Statement::Assign {
+                    target: AssignTarget::Member {
+                        object: Expression::member(lodash(), "prototype"),
+                        property: "chain".into(),
+                    },
+                    value: func(903, "chain"),
+                },
+            ];
+            let out = analyzer.analyze(stmts.clone());
+            assert_eq!(out, stmts);
+        });
     }
 }

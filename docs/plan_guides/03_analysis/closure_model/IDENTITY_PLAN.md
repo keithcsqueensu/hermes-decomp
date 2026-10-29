@@ -265,6 +265,17 @@ recovered first used to absorb it and the others ended without it, or carry a co
 +26,893 lines, Discord +8,984, strings +2,844 and +902; no module loses a string literal
 (Orphan Functions aside) and the property drops read are copies folded into one tail.
 
+A third, the same way: class reconstruction analyzed nested statement lists with the state of
+the enclosing list, which it keys by statement index. A nested statement whose index the
+enclosing list's class had consumed was dropped, and that class declared again in its place
+(lodash's `runInContext` lost its `lodash.prototype[name] = function` installs to `class
+Hash`, `ListCache` and `MapCache` inside the loop that makes them; Discord's lodash module
+held 36 `class lodash`, moment's 354 `class hooks`). Each nested list is analyzed on its own
+now, and a class whose constructor the list does not define is not made (it only declared the
+name again, `lodash.range = function` becoming `class lodash { static range }` in a block).
+Discord -403,687 lines, Expensify -9,688, v96 -12,557, every one a copy: no module loses a
+distinct string literal.
+
 Not fixed yet, found the same way: a loop whose body holds a `try/catch` that rejoins it is
 not found at all (React's `while (child !== null) { switch (child.tag) { ... try ... } }`
 prints as an `if`, event-target-shim's listener walk loses its loop). `compute_dominators`

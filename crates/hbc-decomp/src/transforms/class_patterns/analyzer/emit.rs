@@ -191,6 +191,26 @@ impl<'a> ClassAnalyzer<'a> {
         }
     }
 
+    // A nested statement list, analyzed on its own: the analyzer's state is
+    // keyed by statement index, and the list's indices are not the enclosing
+    // list's. Shared, an index consumed in the enclosing list consumed the
+    // nested statement of the same index, and the class anchored there was
+    // emitted in its place (lodash's `runInContext` lost its
+    // `lodash.prototype[name] = function` installs to `class Hash`,
+    // `ListCache` and `MapCache` declared inside the loop that makes them).
+    fn analyze_nested(&mut self, stmts: Vec<Statement>) -> Vec<Statement> {
+        let classes = std::mem::take(&mut self.classes);
+        let consumed = std::mem::take(&mut self.consumed);
+        let class_indices = std::mem::take(&mut self.class_indices);
+        let proto_aliases = std::mem::take(&mut self.proto_aliases);
+        let out = self.analyze(stmts);
+        self.classes = classes;
+        self.consumed = consumed;
+        self.class_indices = class_indices;
+        self.proto_aliases = proto_aliases;
+        out
+    }
+
     pub(super) fn transform_recursive(&mut self, stmt: Statement) -> Statement {
         match stmt {
             Statement::If {
@@ -199,12 +219,12 @@ impl<'a> ClassAnalyzer<'a> {
                 else_body,
             } => Statement::If {
                 condition,
-                then_body: self.analyze(then_body),
-                else_body: self.analyze(else_body),
+                then_body: self.analyze_nested(then_body),
+                else_body: self.analyze_nested(else_body),
             },
             Statement::While { condition, body } => Statement::While {
                 condition,
-                body: self.analyze(body),
+                body: self.analyze_nested(body),
             },
             Statement::For {
                 init,
@@ -215,7 +235,7 @@ impl<'a> ClassAnalyzer<'a> {
                 init,
                 condition,
                 update,
-                body: self.analyze(body),
+                body: self.analyze_nested(body),
             },
             Statement::ForOf {
                 variable,
@@ -224,7 +244,7 @@ impl<'a> ClassAnalyzer<'a> {
             } => Statement::ForOf {
                 variable,
                 iterable,
-                body: self.analyze(body),
+                body: self.analyze_nested(body),
             },
             Statement::ForIn {
                 variable,
@@ -233,19 +253,19 @@ impl<'a> ClassAnalyzer<'a> {
             } => Statement::ForIn {
                 variable,
                 object,
-                body: self.analyze(body),
+                body: self.analyze_nested(body),
             },
-            Statement::Block(inner) => Statement::Block(self.analyze(inner)),
+            Statement::Block(inner) => Statement::Block(self.analyze_nested(inner)),
             Statement::TryCatch {
                 try_body,
                 catch_param,
                 catch_body,
                 finally_body,
             } => Statement::TryCatch {
-                try_body: self.analyze(try_body),
+                try_body: self.analyze_nested(try_body),
                 catch_param,
-                catch_body: self.analyze(catch_body),
-                finally_body: self.analyze(finally_body),
+                catch_body: self.analyze_nested(catch_body),
+                finally_body: self.analyze_nested(finally_body),
             },
             other => other,
         }
