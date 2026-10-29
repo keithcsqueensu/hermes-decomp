@@ -7,15 +7,23 @@
 # green. So the parse check runs here too, against a recorded ceiling per
 # bundle rather than against zero, and fails on the way up.
 #
-# Usage: bash scripts/build/gates.sh [--quick]
-#   --quick  skip the parse check, which has to decompile whole bundles
+# Usage: bash scripts/build/gates.sh [--quick] [--bundles]
+#   --quick    skip the parse check and the output ratchets, which decompile
+#              whole bundles
+#   --bundles  run the output ratchets on the large bundles too
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 QUICK=0
-[ "${1:-}" = "--quick" ] && QUICK=1
+BUNDLES=
+for arg in "$@"; do
+  case "$arg" in
+    --quick) QUICK=1 ;;
+    --bundles) BUNDLES=--bundles ;;
+  esac
+done
 
 DECOMP="${DECOMP:-$ROOT/target/release/hermes-decomp}"
 BASELINE="$ROOT/scripts/build/syntax_baseline.tsv"
@@ -81,6 +89,12 @@ else
       rm -f "$out"
     done < "$BASELINE"
   fi
+
+  # A value that is wrong but defined passes the parse check; these count the
+  # classes the identity work met (IDENTITY_PLAN.md §3).
+  step "output ratchets"
+  bash "$ROOT/scripts/build/output_ratchets.sh" $BUNDLES
+  report "output ratchets" $?
 fi
 
 printf '\n'
