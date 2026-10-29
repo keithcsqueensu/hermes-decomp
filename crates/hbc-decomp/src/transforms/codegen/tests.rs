@@ -482,3 +482,47 @@ fn loose_callees_and_member_objects_keep_their_parentheses() {
     };
     assert_eq!(codegen.generate_expr(&made), "new (a.b())()");
 }
+
+#[test]
+fn test_esm_keeps_a_local_interop_helper_still_called() {
+    let var = |n: &str| {
+        Expression::Value(crate::ir::Value::Binding(crate::ir::Binding::Variable(
+            n.into(),
+        )))
+    };
+    let helper = || {
+        Statement::let_stmt(
+            "_interopRequireDefault",
+            Expression::Function {
+                id: crate::ir::FunctionId(7),
+                name: Some("_interopRequireDefault".into()),
+                is_arrow: false,
+                is_async: false,
+                is_generator: false,
+                env: None,
+            },
+        )
+    };
+    let render = |stmts: Vec<Statement>| {
+        let mut codegen = Codegen::new(CodegenOptions::new()).with_esm_mode(BTreeMap::new());
+        codegen.generate_esm_module(&stmts, 1, None)
+    };
+    // The call stays (its argument is no `require`), so the helper does too.
+    let kept = render(vec![
+        helper(),
+        Statement::let_stmt(
+            "devAssert",
+            Expression::call(var("_interopRequireDefault"), vec![var("devAssert2")]),
+        ),
+    ]);
+    assert!(
+        kept.matches("_interopRequireDefault").count() >= 2,
+        "the helper's definition was dropped: {kept}"
+    );
+    // Nothing calls it: still skipped.
+    let dropped = render(vec![helper()]);
+    assert!(
+        !dropped.contains("_interopRequireDefault"),
+        "an unused helper was kept: {dropped}"
+    );
+}

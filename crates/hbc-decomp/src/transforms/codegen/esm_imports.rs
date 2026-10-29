@@ -259,7 +259,7 @@ fn fold_duplicate_defaults(
     (out, extras)
 }
 
-fn contains_whole_word_in(parts: &[String], word: &str) -> bool {
+pub(super) fn contains_whole_word_in(parts: &[String], word: &str) -> bool {
     parts.iter().any(|p| {
         let replaced = super::replace_whole_word(p, word, "\0");
         replaced != *p

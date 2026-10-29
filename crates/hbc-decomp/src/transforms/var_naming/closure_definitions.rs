@@ -828,10 +828,56 @@ fn apply_object_key_literals(
         fill_param_name(param_names, *fid, *idx, key);
     }
 
+    // A slot is renamed in every body that reads it, or not at all: renamed in
+    // the owner alone, `exports.originalConsoleMethods = obj` left the
+    // closures reading `obj`, which nothing bound any more.
+    let stamped = stamped_slot_refs(all_ir);
+    let mut names: BTreeMap<u32, std::collections::HashSet<String>> = BTreeMap::new();
+    let mut readers: BTreeMap<(u32, u32), Vec<Reader>> = BTreeMap::new();
+    let mut refused = std::collections::HashSet::new();
+    for ((owner, slot), key) in slot_keys.iter_mut() {
+        let Some(k) = key.as_ref() else { continue };
+        match slot_readers(
+            all_ir,
+            closure_ctx,
+            &stamped,
+            &mut names,
+            (*owner, *slot),
+            k,
+        ) {
+            Some(r) => {
+                readers.insert((*owner, *slot), r);
+            }
+            None => {
+                *key = None;
+                refused.insert((*owner, *slot));
+            }
+        }
+    }
+    var_keys.retain(|(fid, var), _| {
+        resolve_var_to_slot(*fid, var, closure_ctx).is_none_or(|s| !refused.contains(&s))
+    });
+
     let mut total = 0;
     let mut per_func: BTreeMap<u32, BTreeMap<String, String>> = BTreeMap::new();
+    let mut by_stamp: BTreeMap<u32, Vec<(crate::ir::SlotRef, String)>> = BTreeMap::new();
     for ((owner, slot), key) in &slot_keys {
         let Some(key) = key else { continue };
+        for r in readers.get(&(*owner, *slot)).into_iter().flatten() {
+            if r.by_stamp {
+                let s = crate::ir::SlotRef {
+                    owner: *owner,
+                    slot: *slot,
+                };
+                by_stamp.entry(r.func).or_default().push((s, key.clone()));
+            } else {
+                per_func
+                    .entry(r.func)
+                    .or_default()
+                    .entry(r.old.clone())
+                    .or_insert_with(|| key.clone());
+            }
+        }
         if let Some(idx) =
             param_index_stored_in_slot(*owner, *slot, closure_ctx, all_ir, param_names)
         {
@@ -859,6 +905,12 @@ fn apply_object_key_literals(
         per_func.entry(fid).or_default().entry(var).or_insert(key);
     }
 
+    for (fid, slots) in &by_stamp {
+        if let Some(stmts) = all_ir.get_mut(fid) {
+            total += slots.len();
+            rename_stamped(stmts, slots);
+        }
+    }
     let mut keys: Vec<u32> = per_func.keys().copied().collect();
     keys.sort();
     for fid in keys {
@@ -869,6 +921,146 @@ fn apply_object_key_literals(
         }
     }
     total
+}
+
+// A body other than the owner's that reads a slot, and the name it reads it
+// by. When the body also uses that name for another variable, only the
+// references stamped with the slot are renamed (`by_stamp`): a module's `obj`
+// read beside a closure's own `obj`.
+struct Reader {
+    func: u32,
+    old: String,
+    by_stamp: bool,
+}
+
+// The bodies other than the owner's that read the slot, when each can take
+// `key`: none is a class method (no per-function rename reaches one), none
+// reads that name unstamped without writing it (a read that may mean the slot
+// or not), and neither they nor the bodies between them and the owner already
+// use `key` for something else.
+fn slot_readers(
+    all_ir: &BTreeMap<u32, Vec<Statement>>,
+    closure_ctx: &ClosureContext,
+    stamped: &BTreeMap<crate::ir::SlotRef, std::collections::BTreeSet<(u32, String)>>,
+    names: &mut BTreeMap<u32, std::collections::HashSet<String>>,
+    (owner, slot): (u32, u32),
+    key: &str,
+) -> Option<Vec<Reader>> {
+    let owner_fn = closure_ctx.scope_function(owner);
+    let this = crate::ir::SlotRef { owner, slot };
+    let refs = stamped.get(&this);
+    let mut out = Vec::new();
+    let mut bodies = std::collections::BTreeSet::new();
+    for (f, old) in refs.into_iter().flatten() {
+        if *f == owner_fn {
+            continue;
+        }
+        if *f == IN_CLASS {
+            return None;
+        }
+        let others: Vec<Option<crate::ir::SlotRef>> = all_ir
+            .get(f)
+            .map(|stmts| {
+                crate::analysis::closure::stamps::var_refs(stmts)
+                    .into_iter()
+                    .filter(|(n, s)| n == old && *s != Some(this))
+                    .map(|(_, s)| s)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if others.contains(&None) && !writes_unstamped(&all_ir[f], old) {
+            return None;
+        }
+        if old != key {
+            out.push(Reader {
+                func: *f,
+                old: old.clone(),
+                by_stamp: !others.is_empty(),
+            });
+        }
+        bodies.insert(*f);
+        let mut seen = std::collections::HashSet::from([*f]);
+        let mut g = *f;
+        while let Some(&p) = closure_ctx.parent_function.get(&g) {
+            if p == owner_fn || !seen.insert(p) {
+                break;
+            }
+            bodies.insert(p);
+            g = p;
+        }
+    }
+    let clash = bodies.iter().any(|f| {
+        let reads_as_key = refs.into_iter().flatten().any(|(r, n)| r == f && n == key);
+        !reads_as_key
+            && names
+                .entry(*f)
+                .or_insert_with(|| all_ir.get(f).map(|s| names_in(s)).unwrap_or_default())
+                .contains(key)
+    });
+    (!clash).then_some(out)
+}
+
+// Whether `stmts` assign `name` unstamped: a local of the body's own, which an
+// unstamped read of that name means too (a slot read that lost its stamp
+// would be shadowed by it already).
+fn writes_unstamped(stmts: &[Statement], name: &str) -> bool {
+    struct W<'n>(&'n str, bool);
+    impl<'a> Visitor<'a> for W<'_> {
+        fn visit_assign_target(&mut self, t: &'a AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.1 |= v.slot.is_none() && v.name == self.0;
+            }
+            self.walk_assign_target(t);
+        }
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Let { name, .. } = s {
+                self.1 |= name.slot.is_none() && name.name == self.0;
+            }
+            self.walk_statement(s);
+        }
+    }
+    let mut w = W(name, false);
+    for s in stmts {
+        w.visit_statement(s);
+    }
+    w.1
+}
+
+// Rename each reference stamped with one of `slots` to its new name.
+fn rename_stamped(stmts: &mut [Statement], slots: &[(crate::ir::SlotRef, String)]) {
+    use crate::ir::MutVisitor;
+    struct R<'a>(&'a [(crate::ir::SlotRef, String)]);
+    impl R<'_> {
+        fn rename(&self, v: &mut crate::ir::Var) {
+            if let Some((_, new)) = self.0.iter().find(|(s, _)| v.slot == Some(*s)) {
+                v.name = new.clone();
+            }
+        }
+    }
+    impl MutVisitor for R<'_> {
+        fn visit_statement(&mut self, s: &mut Statement) {
+            if let Statement::Let { name, .. } = s {
+                self.rename(name);
+            }
+            self.walk_statement(s);
+        }
+        fn visit_assign_target(&mut self, t: &mut AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.rename(v);
+            }
+            self.walk_assign_target(t);
+        }
+        fn visit_expression(&mut self, e: &mut Expression) {
+            if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                self.rename(v);
+            }
+            self.walk_expression(e);
+        }
+    }
+    let mut r = R(slots);
+    for s in stmts {
+        r.visit_statement(s);
+    }
 }
 
 #[derive(Default)]
@@ -1375,6 +1567,64 @@ mod tests {
         assert!(
             child.contains("login") && !child.contains("Variable(\"lib\")"),
             "lib must be renamed to login, got {child}"
+        );
+    }
+
+    #[test]
+    fn an_object_key_renames_the_slot_in_every_reader() {
+        // `exports.originalConsoleMethods = obj` in the owner names its slot;
+        // the child reading the slot, by stamp, follows (the module oracle's
+        // never-assigned `obj`).
+        let mut ctx = ClosureContext::new();
+        ctx.add_child(1, 2);
+        let mut info = ClosureInfo::new();
+        info.store_slot(0, ClosureSlotValue::Variable("obj".into()));
+        ctx.add_closure_info(1, info);
+        let stamped = || {
+            Expression::Value(Value::Binding(Binding::Variable(crate::ir::Var {
+                name: "obj".into(),
+                slot: Some(crate::ir::SlotRef { owner: 1, slot: 0 }),
+            })))
+        };
+        let mut all_ir = BTreeMap::new();
+        all_ir.insert(
+            1,
+            vec![Statement::Assign {
+                target: AssignTarget::Member {
+                    object: var("exports"),
+                    property: "originalConsoleMethods".into(),
+                },
+                value: stamped(),
+            }],
+        );
+        // The child also has a local `obj` of its own, which stays.
+        all_ir.insert(
+            2,
+            vec![
+                Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Variable("obj".into())),
+                    value: Expression::Object { properties: vec![] },
+                },
+                Statement::Return(Some(Expression::member(stamped(), "log"))),
+            ],
+        );
+        let mut param_names = BTreeMap::new();
+        rename_closure_variables_cross_function(&mut all_ir, &mut ctx, &mut param_names);
+        let child = &all_ir[&2];
+        assert_eq!(
+            child[1],
+            Statement::Return(Some(Expression::member(
+                Expression::Value(Value::Binding(Binding::Variable(crate::ir::Var {
+                    name: "originalConsoleMethods".into(),
+                    slot: Some(crate::ir::SlotRef { owner: 1, slot: 0 }),
+                }))),
+                "log"
+            )))
+        );
+        assert!(
+            matches!(&child[0], Statement::Assign { target: AssignTarget::Binding(Binding::Variable(v)), .. } if v.name == "obj"),
+            "the child's own `obj` was renamed: {:?}",
+            child[0]
         );
     }
 

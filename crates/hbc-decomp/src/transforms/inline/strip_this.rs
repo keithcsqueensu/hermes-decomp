@@ -105,14 +105,16 @@ fn strip_list(stmts: &mut [Statement]) {
 // read is used twice), and its receiver is real, not the `undefined` a plain
 // call passes. Stripped like one, it printed `push(x)`, a call with no `this`.
 // It becomes `push.call(push, items, x)`, which the `.call` rule below brings
-// to `push.call(items, x)`.
+// to `push.call(items, x)`. The receiver may be a copy of the object, assigned
+// once (`tmp = items; forEach = items.forEach; forEach(tmp, cb)`: the read was
+// hoisted above a branch whose arms both call it).
 fn keep_method_receivers(stmts: &mut [Statement]) {
     use crate::ir::{Binding, MutVisitor, Visitor};
     use std::collections::HashMap;
 
-    // Each binding assigned exactly once, with the object of the member read
-    // it was assigned, if that is what it was.
-    struct Defs(HashMap<Binding, (usize, Option<Expression>)>);
+    // Each binding with the number of its assignments and the value of the
+    // first: the object of a member read, or the binding a copy reads.
+    struct Defs(HashMap<Binding, (usize, Option<Expression>, Option<Binding>)>);
     impl<'a> Visitor<'a> for Defs {
         fn visit_statement(&mut self, s: &'a Statement) {
             match s {
@@ -134,7 +136,11 @@ fn keep_method_receivers(stmts: &mut [Statement]) {
                 Expression::Member { object, .. } => Some(object.as_ref().clone()),
                 _ => None,
             };
-            let e = self.0.entry(b).or_insert((0, object));
+            let copy = match value {
+                Expression::Value(Value::Binding(c)) => Some(c.clone()),
+                _ => None,
+            };
+            let e = self.0.entry(b).or_insert((0, object, copy));
             e.0 += 1;
         }
     }
@@ -142,15 +148,47 @@ fn keep_method_receivers(stmts: &mut [Statement]) {
     for s in stmts.iter() {
         defs.visit_statement(s);
     }
+    let copies: HashMap<Binding, Binding> = defs
+        .0
+        .iter()
+        .filter_map(|(b, (n, _, copy))| {
+            (*n == 1)
+                .then_some(())
+                .and(copy.clone().map(|c| (b.clone(), c)))
+        })
+        .collect();
     let methods: HashMap<Binding, Expression> = defs
         .0
         .into_iter()
-        .filter_map(|(b, (n, object))| (n == 1).then_some(()).and(object.map(|o| (b, o))))
+        .filter_map(|(b, (n, object, _))| (n == 1).then_some(()).and(object.map(|o| (b, o))))
         .collect();
     if methods.is_empty() {
         return;
     }
-    struct Keep<'m>(&'m HashMap<Binding, Expression>);
+    // The same value: equal, or bindings that copy one binding.
+    fn same(copies: &HashMap<Binding, Binding>, a: &Expression, b: &Expression) -> bool {
+        fn root<'c>(
+            copies: &'c HashMap<Binding, Binding>,
+            e: &'c Expression,
+        ) -> Option<&'c Binding> {
+            let Expression::Value(Value::Binding(b)) = e else {
+                return None;
+            };
+            let mut b = b;
+            for _ in 0..8 {
+                match copies.get(b) {
+                    Some(next) => b = next,
+                    None => break,
+                }
+            }
+            Some(b)
+        }
+        a == b || root(copies, a).is_some_and(|r| root(copies, b) == Some(r))
+    }
+    struct Keep<'m>(
+        &'m HashMap<Binding, Expression>,
+        &'m HashMap<Binding, Binding>,
+    );
     impl MutVisitor for Keep<'_> {
         fn visit_expression(&mut self, e: &mut Expression) {
             self.walk_expression(e);
@@ -162,7 +200,7 @@ fn keep_method_receivers(stmts: &mut [Statement]) {
             };
             if arguments
                 .first()
-                .is_some_and(|first| self.0.get(b) == Some(first))
+                .is_some_and(|first| self.0.get(b).is_some_and(|o| same(self.1, o, first)))
             {
                 let function = callee.as_ref().clone();
                 **callee = Expression::member(function.clone(), "call");
@@ -170,7 +208,7 @@ fn keep_method_receivers(stmts: &mut [Statement]) {
             }
         }
     }
-    let mut keep = Keep(&methods);
+    let mut keep = Keep(&methods, &copies);
     for s in stmts.iter_mut() {
         keep.visit_statement(s);
     }
@@ -415,6 +453,19 @@ mod tests {
         let (callee, args) = parts(&body[1]);
         assert_eq!(callee, Expression::member(var("push"), "call"));
         assert_eq!(args, vec![var("items"), var("x")]);
+    }
+
+    #[test]
+    fn a_receiver_copied_from_the_object_is_kept() {
+        let mut body = vec![
+            assign("tmp", var("items")),
+            assign("forEach", Expression::member(var("items"), "forEach")),
+            call(var("forEach"), vec![var("tmp"), var("cb")]),
+        ];
+        strip_hermes_this(&mut body);
+        let (callee, args) = parts(&body[2]);
+        assert_eq!(callee, Expression::member(var("forEach"), "call"));
+        assert_eq!(args, vec![var("tmp"), var("cb")]);
     }
 
     #[test]

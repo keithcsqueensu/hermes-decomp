@@ -6,7 +6,10 @@
 # the new I1 rows are a parent keeping an unused `let closure_0 = param` alias while
 # its child reads the parameter, and the I2 rows are 11 former I3 undeclared captures
 # a body now declares.
-085c10a82cd273a1c9e9f7b84bc2c8f2571eae4e92a6c9d5226418cd7a73e75e	equinox 11.43.0 (v96)	1237	425	7
+085c10a82cd273a1c9e9f7b84bc2c8f2571eae4e92a6c9d5226418cd7a73e75e	equinox 11.43.0 (v96)	883	410	6
+# Oracle fixes (2026-10-29): I1 1237 -> 883, I2 425 -> 410, I3 7 -> 6. A slot named from an
+# object key (W10) is renamed in every body that reads it, not in its owner alone, so the
+# owner's binding and its captures stop spelling one slot two ways.
 # A0 (2026-10-29): I2 equinox 2284 -> 425, coachrx 361 -> 316; coachrx I1 791 -> 789. Only a
 # declaration binds a function's name in the enclosing body; the checker counted every named
 # function the body creates, so Babel's self-replacing helpers (named expressions assigned to the

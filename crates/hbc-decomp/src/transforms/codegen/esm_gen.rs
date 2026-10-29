@@ -223,6 +223,7 @@ impl Codegen {
         let mut declared_aliases: HashSet<String> = HashSet::new();
         let mut exports = Vec::new();
 
+        let mut skipped_helpers: Vec<(String, String)> = Vec::new();
         for (i, stmt) in statements.iter().enumerate() {
             // Skip statements consumed by re-export pattern
             if reexport_skip_stmts.contains(&i) {
@@ -282,8 +283,24 @@ impl Codegen {
                     // the first one declares and the rest assign.
                     body_stmts.push(alias_line_once(line, &mut declared_aliases));
                 }
-                EsmClassification::Skip => {}
+                EsmClassification::Skip => {
+                    if let Some(name) = interop_helper_name(stmt) {
+                        skipped_helpers.push((name, self.generate_stmt(stmt)));
+                    }
+                }
                 EsmClassification::Body => body_stmts.push(self.generate_stmt(stmt)),
+            }
+        }
+        // A local interop helper is skipped because its calls become imports
+        // (`x = _interopRequireDefault(require(N))`); a call left in the body
+        // (`devAssert = _interopRequireDefault(devAssert2)`, the import already
+        // taken apart) still needs it. It reads nothing of the module's, so it
+        // goes first.
+        for (name, line) in skipped_helpers.into_iter().rev() {
+            if super::esm_imports::contains_whole_word_in(&body_stmts, &name)
+                || super::esm_imports::contains_whole_word_in(&exports, &name)
+            {
+                body_stmts.insert(0, line);
             }
         }
 
@@ -751,6 +768,19 @@ fn declared_name(line: &str) -> Option<&str> {
 
 /// `export { prop as name } from "module";`, spelled the short way when the
 /// exported name already matches the property.
+// The binding a local interop helper's definition assigns.
+fn interop_helper_name(stmt: &Statement) -> Option<String> {
+    let (name, value) = match stmt {
+        Statement::Let { name, value, .. } => (name, value),
+        Statement::Assign {
+            target: crate::ir::AssignTarget::Binding(crate::ir::Binding::Variable(name)),
+            value,
+        } => (name, value),
+        _ => return None,
+    };
+    Codegen::is_interop_wrapper_def(value).then(|| name.name.clone())
+}
+
 fn format_reexport(prop: &str, name: &str, module: &str) -> String {
     if prop == name {
         format!("export {{ {name} }} from \"{module}\";")

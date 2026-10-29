@@ -135,6 +135,30 @@ runs them only through a transform the harness does not have yet. Next for the h
 transform, value snapshots that read property descriptors instead of calling getters, and
 v98 bundles (the same patch, `hvm` v98).
 
+Second pass (2026-10-29), three findings fixed:
+- **A method read apart from its call kept its receiver only when the receiver was the read's
+  object itself.** Read once above a branch, the receiver is a copy (`tmp = items; forEach =
+  items.forEach; forEach(tmp, cb)`), and the call printed without it, as did Babel's private
+  field helpers (`set(self, obj)` for `weakMap.set`). `keep_method_receivers` looks through
+  once-assigned copies: `forEach.call(items, cb)`, `set.call(weakMap, self, obj)`.
+- **A slot named from an object key was renamed in its owner only** (W10,
+  `apply_object_key_literals`): `exports.originalConsoleMethods = obj` made the owner's
+  binding `originalConsoleMethods` while the closures reading the slot kept `obj`, declared by
+  nobody but `let obj;`. Each reader is renamed with it, by stamp where the reader has a local
+  of the same name; when one cannot follow (a class method, a reader that reads the name
+  unstamped without writing it, or the key already used on the way) the slot keeps its name
+  everywhere. Equinox: 76 refusals by a name in use, 15 by class methods.
+- **A local interop helper was dropped while a call to it stayed** (graphql-js's
+  `_interopRequireDefault(devAssert2)`, the import already taken apart): the definition is kept
+  when the module still names it. Undeclared on Equinox 3,361 -> 1,827.
+
+Run on the same sample: decompiled throws 7 -> 3. The four modules fixed now stop in a
+dependency, on defects found by going further: a class whose `prototype` is assigned
+(`TokenStream.prototype = ...`, read-only on a class, module 4940), and Babel's `toPrimitive`
+calling `obj.default` on an interop import (module 12). Also seen, in both versions:
+`startTransition`'s `ReactSharedInternals.T = currentTransition` folded into the new object's
+literal (`obj2 = { T: obj2 }`).
+
 ## 4. Stages
 
 Each stage is measured like an S3 stage: v96 byte-identical unless the stage says otherwise
@@ -173,15 +197,28 @@ passes call `slot_owner` on whatever `ClosureVar` they meet (`var_naming/*`, met
 `ir_gen`). Today every planned access already resolves to its planned scope through the
 installed chain (`verify_env_plans` checks each one), so the indirection costs nothing in
 output; what A1 buys is structural (statements move between bodies without level shifts, and
-A2 can drop the level machinery). Split it:
-- **A1a** `EnvPlan` carries the scope id of each planned access, and the builder emits
-  `Binding::Slot { scope, slot }` for it; every pass that treats `ClosureVar` specially before
-  W6 treats `Slot` alike (16 files), and W6 stamps it directly. Naming still goes through the
-  level-keyed `ClosureInfo`, by the level the plan gave (kept beside the scope). Exit: byte-
-  identical output, census of accesses by scope.
-- **A1b** `ClosureInfo` keyed by `(scope, slot)`: the walk collects slots per scope, naming
-  allocates per scope, the nine `slot_owner` callers read the stamp. Exit: byte-identical
-  output; `encode_level_slot` and `slot_owner(func, level)` used only by the planless path.
+A2 can drop the level machinery). Split it into steps that each leave the output
+byte-identical, so a step that changes one byte has found something:
+- **A1a1, the plan records scopes.** `ClosureContext::access_scopes` keeps the scope id of each
+  access the plan places (resolved and chain-answered; unknown stays unknown), by function and
+  offset. Not in `EnvPlan`: a plan makes its function rebuild, and most placed accesses keep
+  their level. Data only; the census counts each against what its level reaches through
+  `slot_owner`.
+- **A1a2, the builder emits the scope.** `Binding::ClosureVar` gains `scope: Option<u32>`, set
+  for a planned access (the level kept for naming), `None` on the planless path. A field rather
+  than a second variant: patterns written with `..` keep working, and only the dozen
+  exhaustive ones change.
+- **A1a3, W6 stamps from the scope.** The resolver stamps a scoped `ClosureVar` directly and
+  counts every disagreement with `slot_owner(func, level)`; the count must be 0 on v96 and v98
+  before the walk's answer is dropped for planned accesses.
+- **A1b1, slots collected per scope.** The closure walk (W1) builds a scope-keyed table beside
+  the level-keyed `ClosureInfo`; naming reads the level table still and the census compares
+  the two (0 disagreements).
+- **A1b2, naming per scope.** Names are allocated from the scope table for planned accesses.
+- **A1b3, the `slot_owner` callers read the stamp,** one pass per commit (`var_naming/*`, metro
+  propagation, `ir_gen`, `capture_sync`, `closure_definitions`), each byte-identical.
+
+Exit of A1: `encode_level_slot` and `slot_owner(func, level)` used only by the planless path.
 
 ### A2 — Retire the level machinery (medium to large)
 
