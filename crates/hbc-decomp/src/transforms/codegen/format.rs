@@ -139,7 +139,7 @@ impl Codegen {
             }
             // Must match `Value::closure_var_name` so load/store of the same
             // captured slot use the same identifier.
-            AssignTarget::Binding(crate::ir::Binding::ClosureVar { level, slot }) => {
+            AssignTarget::Binding(crate::ir::Binding::ClosureVar { level, slot, .. }) => {
                 crate::ir::Value::closure_var_name(*level, *slot)
             }
             AssignTarget::DestructuringArray(elements) => {

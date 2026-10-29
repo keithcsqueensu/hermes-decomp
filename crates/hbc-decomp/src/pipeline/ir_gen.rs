@@ -37,6 +37,7 @@ pub fn generate_ir(
     // The scope graph's levels, as the closure context built this function
     // with them; such a function has no shift.
     builder.env_plan = closure_ctx.and_then(|c| c.env_plans.get(&function_id).cloned());
+    builder.env_scopes = closure_ctx.and_then(|c| c.access_scopes.get(&function_id).cloned());
     let mut cfg = builder.build_function(function_id)?;
     // The same level shift the closure context applied when it was built, so a
     // level means the same scope here as there.
@@ -424,7 +425,7 @@ pub fn build_closure_context_from_file(
     // the parents it resolves, and the levels of the accesses whose scope it
     // places differently. A function whose levels change is built again with
     // them, and that build is final.
-    let (mut census, expected) = plan_env_levels(&mut ctx, &scope_graph, &env);
+    let (mut census, expected, scopes) = plan_env_levels(&mut ctx, &scope_graph, &env);
     let rebuilt: Vec<Option<FunctionIr>> = ctx
         .env_plans
         .iter()
@@ -447,6 +448,7 @@ pub fn build_closure_context_from_file(
         ctx.analyze_function(item.id, &statements);
     }
     verify_env_plans(&ctx, &expected, &mut census);
+    record_access_scopes(&mut ctx, &scopes, &mut census);
     ctx.scope_graph_stats = census;
     if let Ok(path) = std::env::var("HD_ENV_DUMP") {
         dump_env_facts(
@@ -586,7 +588,7 @@ fn plan_env_levels(
     ctx: &mut ClosureContext,
     graph: &crate::analysis::closure::scope_graph::ScopeGraph,
     env: &[(u32, FunctionEnv)],
-) -> (BTreeMap<String, u32>, BTreeMap<(u32, u32), ScopeRef>) {
+) -> (BTreeMap<String, u32>, ExpectedScopes, AccessScopes) {
     use crate::analysis::closure::scope_graph::Scope;
     use std::collections::HashMap;
     let site_level: HashMap<(u32, u32), u32> = env
@@ -780,6 +782,7 @@ fn plan_env_levels(
     // store is safe to drop only when every read through it resolved.
     let mut parked_reads: HashMap<(Scope, u32), (u32, u32)> = HashMap::new();
     let mut expected = BTreeMap::new();
+    let mut scopes = AccessScopes::new();
     for (f, e) in env {
         let raw: HashMap<u32, u32> = e.access_levels.iter().copied().collect();
         let shift = ctx.env_offset(*f);
@@ -836,6 +839,7 @@ fn plan_env_levels(
                                 levels.insert(*off, l);
                             }
                             expected.insert((*f, *off), r);
+                            scopes.insert((*f, *off), (r, l));
                             count("unresolved closure: read on the chain");
                         }
                         Err(true) => {
@@ -864,11 +868,13 @@ fn plan_env_levels(
                 (Some(l), Some(r)) if l != old => {
                     levels.insert(*off, l);
                     expected.insert((*f, *off), r);
+                    scopes.insert((*f, *off), (r, l));
                     count("access: level changed");
                     count(&format!("access: resolved, {}", through.kind()));
                     tally(true);
                 }
-                (Some(_), Some(_)) => {
+                (Some(l), Some(r)) => {
+                    scopes.insert((*f, *off), (r, l));
                     count("access: level kept");
                     count(&format!("access: resolved, {}", through.kind()));
                     tally(true);
@@ -942,7 +948,40 @@ fn plan_env_levels(
     let (creation, parked) = graph.conflicts();
     census.insert("conflicts: functions".to_string(), creation as u32);
     census.insert("conflicts: slots".to_string(), parked as u32);
-    (census, expected)
+    (census, expected, scopes)
+}
+
+// The scope each planned level should reach, by (function, offset)
+// (`verify_env_plans`).
+type ExpectedScopes = BTreeMap<(u32, u32), ScopeRef>;
+
+// Each access the plan places, by (function, offset): its scope and the level
+// it is built with (IDENTITY_PLAN.md A1a1).
+type AccessScopes = BTreeMap<(u32, u32), (ScopeRef, u32)>;
+
+// A1a1: the scope of every access the plan places, kept for the builder to
+// address it by (A1a3), and checked against what its level reaches the way
+// everything downstream reads it (`slot_owner`); the census counts both.
+fn record_access_scopes(
+    ctx: &mut ClosureContext,
+    scopes: &AccessScopes,
+    census: &mut BTreeMap<String, u32>,
+) {
+    for (&(f, off), &(r, level)) in scopes {
+        let class = match ctx.known_scope_id(r) {
+            None => "scopes: block scope never built",
+            Some(id) => {
+                ctx.access_scopes.entry(f).or_default().insert(off, r);
+                if ctx.slot_owner(f, level) == Some(id) {
+                    "scopes: the level agrees"
+                } else {
+                    log::trace!(target: "slots", "access scope: F{f} @{off} level {level} reaches {:?}, not {r:?}", ctx.slot_owner(f, level).map(|id| ctx.scope_ref(id)));
+                    "scopes: the level disagrees"
+                }
+            }
+        };
+        *census.entry(class.to_string()).or_default() += 1;
+    }
 }
 
 // The parked slot an access goes through: `InSlot(E, s)` directly, or under

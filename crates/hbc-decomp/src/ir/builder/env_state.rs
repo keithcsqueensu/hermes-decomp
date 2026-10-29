@@ -87,6 +87,9 @@ pub struct EnvRegMap {
     pub at: u32,
     /// the scope graph's levels for this function, when it has any
     pub plan: Option<EnvPlan>,
+    /// the scope id of each access the scope graph placed, by offset
+    /// (`ClosureContext::access_scopes`, IDENTITY_PLAN.md A1a2)
+    pub scopes: Option<BTreeMap<u32, (u32, Option<u32>)>>,
     /// (offset, level) of every environment claimed past the function's own
     pub sites: Vec<(u32, u32)>,
     /// (offset, level) of every load and store, as the builder alone sees it
@@ -211,6 +214,11 @@ impl EnvRegMap {
             Some(plan) => plan.level(self.at, raw),
             None => raw,
         }
+    }
+
+    // The scope the access being lowered was placed in, if it was.
+    pub fn access_scope(&self) -> crate::ir::ScopeTag {
+        crate::ir::ScopeTag(self.scopes.as_ref().and_then(|s| s.get(&self.at).copied()))
     }
 
     pub fn env_level_of(&self, reg: u32) -> u32 {

@@ -41,6 +41,9 @@ pub struct IRBuilder<'a> {
     // The scope graph's levels for the next function built (V98_ENV_PLAN.md
     // E4); its IR is then final and must not be shifted.
     pub env_plan: Option<super::env_state::EnvPlan>,
+    // The scope of each access the scope graph placed in the next function
+    // built, by offset (IDENTITY_PLAN.md A1a2).
+    pub env_scopes: Option<std::collections::BTreeMap<u32, (u32, Option<u32>)>>,
     // What the last built function claimed and accessed, by offset, with the
     // builder's own levels (`EnvRegMap::sites`, `EnvRegMap::accesses`).
     pub env_sites: Vec<(u32, u32)>,
@@ -63,6 +66,7 @@ impl<'a> IRBuilder<'a> {
             collect_env_facts: false,
             env_facts: Default::default(),
             env_plan: None,
+            env_scopes: None,
             env_sites: Vec::new(),
             env_access_levels: Vec::new(),
         }
@@ -202,6 +206,7 @@ impl<'a> IRBuilder<'a> {
         // Flow-insensitive last-write map: env register → nesting level.
         let mut env_map = EnvRegMap::new();
         env_map.plan = self.env_plan.clone();
+        env_map.scopes = self.env_scopes.clone();
 
         for inst in instructions {
             if let Some(&block_id) = offset_to_block.get(&inst.offset) {

@@ -615,7 +615,9 @@ pub(super) fn slot_write_target(
             }
             (p.level, p.slot)
         }
-        crate::ir::AssignTarget::Binding(Binding::ClosureVar { slot, level }) => (*level, *slot),
+        crate::ir::AssignTarget::Binding(Binding::ClosureVar { slot, level, .. }) => {
+            (*level, *slot)
+        }
         _ => return None,
     };
     if level == 0 {

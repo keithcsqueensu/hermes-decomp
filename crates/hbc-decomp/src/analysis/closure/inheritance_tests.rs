@@ -25,16 +25,13 @@ fn func(id: u32) -> Expression {
 
 fn store_env(slot: u32, level: u32, value: Expression) -> Statement {
     Statement::Assign {
-        target: AssignTarget::Binding(crate::ir::Binding::ClosureVar { level, slot }),
+        target: AssignTarget::Binding(crate::ir::Binding::closure_var(level, slot)),
         value,
     }
 }
 
 fn load_env(level: u32, slot: u32) -> Expression {
-    Expression::Value(Value::Binding(crate::ir::Binding::ClosureVar {
-        level,
-        slot,
-    }))
+    Expression::Value(Value::Binding(crate::ir::Binding::closure_var(level, slot)))
 }
 
 #[test]

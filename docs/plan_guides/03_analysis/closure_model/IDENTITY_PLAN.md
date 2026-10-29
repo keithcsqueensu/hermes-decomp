@@ -211,12 +211,36 @@ byte-identical, so a step that changes one byte has found something:
 - **A1a3, W6 stamps from the scope.** The resolver stamps a scoped `ClosureVar` directly and
   counts every disagreement with `slot_owner(func, level)`; the count must be 0 on v96 and v98
   before the walk's answer is dropped for planned accesses.
-- **A1b1, slots collected per scope.** The closure walk (W1) builds a scope-keyed table beside
-  the level-keyed `ClosureInfo`; naming reads the level table still and the census compares
-  the two (0 disagreements).
-- **A1b2, naming per scope.** Names are allocated from the scope table for planned accesses.
-- **A1b3, the `slot_owner` callers read the stamp,** one pass per commit (`var_naming/*`, metro
-  propagation, `ir_gen`, `capture_sync`, `closure_definitions`), each byte-identical.
+- **A1b1, names by scope.** `function_closures` is already keyed by scope (a function, or a
+  block scope's id); the level-keyed table is only the view `get_closure_info_for` builds per
+  reader. So no second table: W6 computes each scoped access's name from its scope's own
+  entry and the census compares it with the level view's.
+- **A1b2, naming per scope.** Names are taken from the scope's entry for planned accesses,
+  once A1b1 shows no difference.
+- **A1b3, the `slot_owner` callers read the stamp,** one pass per commit (`capture_sync`,
+  `ancestor_inherit` and `resolve_baked` through a recorded owner per baked name; metro
+  propagation and `closure_definitions` parse placeholders and stay on the planless path).
+
+Done (2026-10-29), A1a1 to A1b1:
+- `access_scopes` holds a `ScopeRef`, not an id. Block-scope ids are handed out again on each
+  reanalysis (`reanalyze_all` clears `block_scopes`), so an id taken at plan time named the
+  neighbouring block by W6: 122,992 stamps disagreed on Expensify until the tag carried
+  (function, builder level) and W6 looked the id up.
+- `ScopeTag` compares, hashes and orders as equal, so a tagged and an untagged access to one
+  slot stay one binding to every pass that keys on bindings.
+- Census, W6 stamps by scope: Equinox 406,015 of 406,015 agree with the walk; Expensify
+  758,462 agree, 20 disagree (2,178 unplaced); Discord 1,306,402 agree, 92
+  disagree (9,050 unplaced). Names by scope: Equinox none differ, Expensify 15, Discord 85. Every disagreement is the chain changing after the plan:
+  a body left with no parent (Expensify F98051), a block scope that a generator's collapse
+  rehomed, a parent relinked (F107281, scope 69709 against the walk's 1238). The walk wins
+  where they disagree, so the output is byte-identical on all three; those rows are A2's to
+  remove, and A1b2 waits for them.
+- Found on the way: v98 output is not deterministic. Two runs of one binary differ on
+  Expensify inside its largest `styles` function (the numbering of its object literals,
+  `obj670` against `obj285`, and the order of a few statements), and on Discord in which of
+  two locals of one function gets which number (`items12`/`items13`, elsewhere
+  `regExp12`/`regExp13`), a different function each run. A byte-identity check on v98 needs a
+  second run before a difference is read as the change's; the cause is its own task.
 
 Exit of A1: `encode_level_slot` and `slot_owner(func, level)` used only by the planless path.
 

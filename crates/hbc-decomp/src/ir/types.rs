@@ -60,7 +60,42 @@ impl fmt::Display for Constant {
 pub enum Binding {
     Register(u32),
     Variable(Var),
-    ClosureVar { level: u32, slot: u32 },
+    ClosureVar {
+        level: u32,
+        slot: u32,
+        #[serde(default)]
+        scope: ScopeTag,
+    },
+}
+
+// The scope a `ClosureVar` was built against, when the scope graph placed the
+// access (IDENTITY_PLAN.md A1a2), as (function, builder level of a block
+// scope): not the id, since block-scope ids are handed out again whenever the
+// context reanalyzes, and W6 turns it into the id of the moment.
+// Carried so W6 can stamp the access without walking the chain. Not part of the binding's identity yet:
+// a placed and an unplaced access at one level and slot of one body are the
+// same slot, and they compare, hash and order as such.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct ScopeTag(pub Option<(u32, Option<u32>)>);
+
+impl PartialEq for ScopeTag {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for ScopeTag {}
+impl std::hash::Hash for ScopeTag {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
+impl PartialOrd for ScopeTag {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for ScopeTag {
+    fn cmp(&self, _: &Self) -> std::cmp::Ordering {
+        std::cmp::Ordering::Equal
+    }
 }
 
 // Which environment slot a variable is: slot `slot` of scope `owner`, where the
@@ -227,13 +262,22 @@ impl Binding {
         Binding::Variable(Var::new(name))
     }
 
+    /// A closure slot access by level alone, with no placed scope.
+    pub fn closure_var(level: u32, slot: u32) -> Self {
+        Binding::ClosureVar {
+            level,
+            slot,
+            scope: ScopeTag(None),
+        }
+    }
+
     /// The name this binding renders as, which is also how two bindings are
     /// told apart once registers have been named.
     pub fn name(&self) -> String {
         match self {
             Binding::Register(r) => format!("r{r}"),
             Binding::Variable(n) => n.name.clone(),
-            Binding::ClosureVar { level, slot } => Value::closure_var_name(*level, *slot),
+            Binding::ClosureVar { level, slot, .. } => Value::closure_var_name(*level, *slot),
         }
     }
 }
@@ -244,7 +288,7 @@ impl fmt::Display for Binding {
             Binding::Register(r) => write!(f, "r{r}"),
             // Sanitised on the way out, as the codegen expects.
             Binding::Variable(name) => write!(f, "{}", crate::util::sanitize_identifier(name)),
-            Binding::ClosureVar { level, slot } => {
+            Binding::ClosureVar { level, slot, .. } => {
                 write!(f, "{}", Value::closure_var_name(*level, *slot))
             }
         }
@@ -333,8 +377,8 @@ mod binding_tests {
             Some(Binding::Variable("env".into()))
         );
         assert_eq!(
-            Value::Binding(Binding::ClosureVar { level: 1, slot: 2 }).as_binding(),
-            Some(Binding::ClosureVar { level: 1, slot: 2 })
+            Value::Binding(Binding::closure_var(1, 2)).as_binding(),
+            Some(Binding::closure_var(1, 2))
         );
     }
 
@@ -377,7 +421,7 @@ mod binding_tests {
         for b in [
             Binding::Register(3),
             Binding::Variable("obj".into()),
-            Binding::ClosureVar { level: 0, slot: 7 },
+            Binding::closure_var(0, 7),
         ] {
             let v: Value = b.clone().into();
             assert_eq!(v.as_binding(), Some(b));
@@ -392,8 +436,8 @@ mod binding_tests {
             Binding::Register(3),
             Binding::Variable("obj".into()),
             Binding::Variable("get Foo".into()),
-            Binding::ClosureVar { level: 0, slot: 7 },
-            Binding::ClosureVar { level: 2, slot: 1 },
+            Binding::closure_var(0, 7),
+            Binding::closure_var(2, 1),
         ] {
             let v: Value = b.clone().into();
             assert_eq!(format!("{b}"), format!("{v}"));

@@ -53,7 +53,7 @@ impl ClosureContext {
                     }
                 }
 
-                if let AssignTarget::Binding(Binding::ClosureVar { slot, level }) = target {
+                if let AssignTarget::Binding(Binding::ClosureVar { slot, level, .. }) = target {
                     if let Some(mut val) =
                         Self::resolve_store_value(value, reg_values, named_values)
                     {

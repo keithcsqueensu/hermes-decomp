@@ -103,6 +103,7 @@ pub fn handle_load_from_environment(
         value: Expression::Value(crate::ir::Value::Binding(Binding::ClosureVar {
             level,
             slot,
+            scope: env_map.access_scope(),
         })),
     }))
 }
@@ -139,7 +140,11 @@ pub fn handle_store_to_environment(
     let value = reg_expr(&inst.operands, 2)?;
 
     Some(FlowResult::Statement(Statement::Assign {
-        target: crate::ir::AssignTarget::Binding(Binding::ClosureVar { level, slot }),
+        target: crate::ir::AssignTarget::Binding(Binding::ClosureVar {
+            level,
+            slot,
+            scope: env_map.access_scope(),
+        }),
         value,
     }))
 }

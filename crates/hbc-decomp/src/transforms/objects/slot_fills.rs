@@ -529,8 +529,8 @@ fn sinkable(lit: &Statement, between: &[Statement], consumed: &[bool]) -> bool {
                                 .iter()
                                 .any(|x| matches!(x, Binding::Variable(y) if y.name == v.name))
                     }
-                    Binding::ClosureVar { level, slot } => self.bound.iter().any(|x| {
-                        matches!(x, Binding::ClosureVar { level: l, slot: s } if l == level && s == slot)
+                    Binding::ClosureVar { level, slot, .. } => self.bound.iter().any(|x| {
+                        matches!(x, Binding::ClosureVar { level: l, slot: s, .. } if l == level && s == slot)
                     }),
                 };
                 self.found |= hit;

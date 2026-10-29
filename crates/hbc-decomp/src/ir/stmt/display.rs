@@ -160,7 +160,7 @@ impl fmt::Display for AssignTarget {
                     None => write!(f, "{object}[{key}]"),
                 }
             }
-            AssignTarget::Binding(Binding::ClosureVar { level, slot }) => {
+            AssignTarget::Binding(Binding::ClosureVar { level, slot, .. }) => {
                 write!(f, "{}", crate::ir::Value::closure_var_name(*level, *slot))
             }
             AssignTarget::DestructuringArray(targets) => {

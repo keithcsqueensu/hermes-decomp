@@ -638,9 +638,9 @@ fn param_index_from_slot_store_stmt(
                 {
                     true
                 }
-                AssignTarget::Binding(Binding::ClosureVar { level: 0, slot: s }) if *s == slot => {
-                    true
-                }
+                AssignTarget::Binding(Binding::ClosureVar {
+                    level: 0, slot: s, ..
+                }) if *s == slot => true,
                 _ => false,
             };
             if writes_slot {

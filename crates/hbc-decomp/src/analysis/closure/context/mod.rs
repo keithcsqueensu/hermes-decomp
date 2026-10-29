@@ -99,6 +99,11 @@ pub struct ClosureContext {
     // where the block is built (in the step, they restarted every call).
     #[serde(default)]
     pub parked_scopes: BTreeSet<u32>,
+    // A1a1 (IDENTITY_PLAN.md): the scope each access the scope graph places
+    // reads or writes, by function and bytecode offset. A `ScopeRef`, not an
+    // id: block-scope ids are handed out again on every reanalysis.
+    #[serde(default)]
+    pub access_scopes: BTreeMap<u32, BTreeMap<u32, ScopeRef>>,
 }
 
 // A scope as the context names it: (function, None) for its own environment,
@@ -166,6 +171,15 @@ impl ClosureContext {
         match level {
             Some(level) => self.block_scope(function, level),
             None => function,
+        }
+    }
+
+    // `scope_id` for a scope that already has an id; a block scope nothing
+    // built yet has none.
+    pub fn known_scope_id(&self, (function, level): (u32, Option<u32>)) -> Option<u32> {
+        match level {
+            Some(level) => self.block_scopes.get(&(function, level)).copied(),
+            None => Some(function),
         }
     }
 
@@ -460,14 +474,11 @@ mod block_scope_tests {
         // Factory 1: slot 0 of its own env holds `global`; a block env holds the class.
         let factory = vec![
             Statement::Assign {
-                target: AssignTarget::Binding(Binding::ClosureVar { level: 0, slot: 0 }),
+                target: AssignTarget::Binding(Binding::closure_var(0, 0)),
                 value: Expression::Value(Value::Binding(Binding::Variable("global".into()))),
             },
             Statement::Assign {
-                target: AssignTarget::Binding(Binding::ClosureVar {
-                    level: block,
-                    slot: 0,
-                }),
+                target: AssignTarget::Binding(Binding::closure_var(block, 0)),
                 value: Expression::Function {
                     id: FunctionId(7),
                     name: Some("MessageQueue".into()),
