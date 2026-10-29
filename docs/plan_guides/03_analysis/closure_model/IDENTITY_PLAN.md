@@ -274,8 +274,8 @@ loops (v96 +34 `while (true)`, Discord +1,074, Discord's last unparsable module 
 v98 generator reconstruction expects the machine's dispatch not to be a loop and gives up on
 the new ones (raw machines: Expensify 536 -> 581, Discord 1,738 -> 1,919), and inside them the
 cleanup is weaker (results kept, loader temporaries not inlined, so imports are not lifted).
-It lands with `state_machine_v98` taught the loop form; a test for the loop itself is ready
-(`a_loop_with_a_catch_that_rejoins_it_is_found`).
+It lands with `state_machine_v98` taught the loop form, with a test that a loop whose catch
+rejoins it is found (header, protected block, catch, latch).
 
 What A1 leaves for A2, by count: W6 stamps the walk overrides (Expensify 20, Discord 92),
 names by scope that differ (15, 85), recorded owners the late walk overrides (112, 559), and
