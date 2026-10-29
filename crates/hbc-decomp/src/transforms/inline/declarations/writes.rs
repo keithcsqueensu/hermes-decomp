@@ -11,6 +11,32 @@ pub(super) fn count_writes(
     }
 }
 
+fn pattern_writes(target: &AssignTarget, writes: &mut BTreeMap<String, usize>) {
+    match target {
+        AssignTarget::Binding(Binding::Variable(name)) => {
+            *writes.entry(name.name.clone()).or_insert(0) += 1;
+        }
+        AssignTarget::DestructuringObject(props) => {
+            for (_, t, _) in props {
+                pattern_writes(t, writes);
+            }
+        }
+        AssignTarget::DestructuringArray(elems) => {
+            for (t, _) in elems.iter().flatten() {
+                pattern_writes(t, writes);
+            }
+        }
+        AssignTarget::DestructuringArrayRest { elements, rest } => {
+            for (t, _) in elements.iter().flatten() {
+                pattern_writes(t, writes);
+            }
+            pattern_writes(rest, writes);
+        }
+        AssignTarget::Rest(inner) => pattern_writes(inner, writes),
+        _ => {}
+    }
+}
+
 fn count_writes_stmt(
     stmt: &Statement,
     writes: &mut BTreeMap<String, usize>,
@@ -29,6 +55,15 @@ fn count_writes_stmt(
         } => {
             *writes.entry(format!("r{r}")).or_insert(0) += 1;
         }
+        // A pattern writes every name in it (`({ user_id } = arg0)` in a
+        // closure assigns the enclosing `user_id`).
+        Statement::Assign {
+            target:
+                target @ (AssignTarget::DestructuringObject(_)
+                | AssignTarget::DestructuringArray(_)
+                | AssignTarget::DestructuringArrayRest { .. }),
+            ..
+        } => pattern_writes(target, writes),
         Statement::Let { name, .. } => {
             let_declared.insert(name.name.clone());
         }

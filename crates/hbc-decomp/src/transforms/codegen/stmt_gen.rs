@@ -246,8 +246,9 @@ impl Codegen {
                 body,
             } => {
                 let var_name = sanitize_loop_var(variable, "item");
+                let kind = loop_var_kind(body, variable);
                 let mut out = format!(
-                    "{indent}for (const {var_name} of {}) {{\n",
+                    "{indent}for ({kind} {var_name} of {}) {{\n",
                     self.generate_expr(iterable)
                 );
                 self.indent_level += 1;
@@ -267,8 +268,9 @@ impl Codegen {
                 body,
             } => {
                 let var_name = sanitize_loop_var(variable, "key");
+                let kind = loop_var_kind(body, variable);
                 let mut out = format!(
-                    "{indent}for (const {var_name} in {}) {{\n",
+                    "{indent}for ({kind} {var_name} in {}) {{\n",
                     self.generate_expr(object)
                 );
                 self.indent_level += 1;
@@ -603,5 +605,28 @@ mod private_name_tests {
         collect_private_names_in_text(text, &mut names);
         let got: Vec<_> = names.into_iter().collect();
         assert_eq!(got, vec!["#r", "#s", "#t"]);
+    }
+}
+
+// `let` for a loop variable the body assigns (`item = tmp147`), else `const`.
+fn loop_var_kind(body: &[Statement], variable: &str) -> &'static str {
+    use crate::ir::{AssignTarget, Visitor};
+    struct W<'a>(&'a str, bool);
+    impl<'b> Visitor<'b> for W<'_> {
+        fn visit_assign_target(&mut self, t: &'b AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.1 |= v.name == self.0;
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut w = W(variable, false);
+    for s in body {
+        w.visit_statement(s);
+    }
+    if w.1 {
+        "let"
+    } else {
+        "const"
     }
 }

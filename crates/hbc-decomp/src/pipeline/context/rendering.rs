@@ -25,14 +25,55 @@ use std::sync::Arc;
 use super::super::get_function_params;
 use super::PipelineContext;
 
+// `stmts` with every stamped reference to a name in `names` respelled, so a
+// scan by name sees only the unstamped ones.
+fn without_stamped(
+    stmts: &[Statement],
+    names: &HashMap<String, HashSet<crate::ir::SlotRef>>,
+) -> Vec<Statement> {
+    use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, Value};
+    struct Respell<'a>(&'a HashMap<String, HashSet<crate::ir::SlotRef>>);
+    impl Respell<'_> {
+        fn var(&self, v: &mut crate::ir::Var) {
+            if v.slot.is_some() && self.0.contains_key(&v.name) {
+                v.name = format!("{}#stamped", v.name);
+            }
+        }
+    }
+    impl MutVisitor for Respell<'_> {
+        fn visit_statement(&mut self, s: &mut Statement) {
+            if let Statement::Let { name, .. } = s {
+                self.var(name);
+            }
+            self.walk_statement(s);
+        }
+        fn visit_expression(&mut self, e: &mut Expression) {
+            if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                self.var(v);
+            }
+            self.walk_expression(e);
+        }
+        fn visit_assign_target(&mut self, t: &mut AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.var(v);
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut copy = stmts.to_vec();
+    Respell(names).visit_statement_list(&mut copy);
+    copy
+}
+
 // One name for a captured ancestor slot and for a local of this body: the
 // body reads the capture by stamp and writes its own temporary first, under
 // the same spelling (`obj.easingX` of the enclosing `const obj`, and the
 // body's own `obj = { initialValues }`). Declaring the local would cut the
 // capture and leaving it undeclared assigns the ancestor's binding, so the
 // unstamped references take a fresh name; they meant the body's local in the
-// output already. Only where the name is written first and never written by
-// stamp: a store to the capture carries the slot's stamp.
+// output already. Only where the name's first unstamped occurrence is a write
+// and it is never written by stamp: a store to the capture carries the
+// slot's stamp.
 fn split_capture_and_local(
     ctx: &crate::analysis::closure::ClosureContext,
     func_id: u32,
@@ -44,8 +85,27 @@ fn split_capture_and_local(
     if caps.is_empty() {
         return;
     }
-    let first_written = transforms::written_first_vars(stmts);
-    let mut candidates: Vec<&String> = caps.keys().filter(|n| first_written.contains(*n)).collect();
+    struct UnstampedWrites<'a>(&'a HashMap<String, HashSet<crate::ir::SlotRef>>, bool);
+    impl<'a> Visitor<'a> for UnstampedWrites<'_> {
+        fn visit_assign_target(&mut self, t: &'a AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.1 |= v.slot.is_none() && self.0.contains_key(&v.name);
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut uw = UnstampedWrites(&caps, false);
+    for s in stmts.iter() {
+        uw.visit_statement(s);
+    }
+    if !uw.1 {
+        return;
+    }
+    // Whose first *unstamped* occurrence is a write: the stamped references
+    // are the capture and may come first (`let tmp = self; ... self = this`).
+    // The scan runs on a copy with the stamped references respelled.
+    let unstamped = transforms::written_first_vars(&without_stamped(stmts, &caps));
+    let mut candidates: Vec<&String> = caps.keys().filter(|n| unstamped.contains(*n)).collect();
     if candidates.is_empty() {
         return;
     }
@@ -124,6 +184,129 @@ fn split_capture_and_local(
 }
 
 impl PipelineContext {
+    // The parameter names a body renders with.
+    pub(super) fn render_params(
+        &self,
+        file: &BytecodeFile,
+        func_id: u32,
+        stmts: &[Statement],
+    ) -> Vec<String> {
+        if let Some(names) = self.global_analysis.param_names.get(&func_id) {
+            // Two distinct names can collapse into one once sanitised, so
+            // distinctness is checked after.
+            crate::pipeline::make_params_distinct(
+                crate::pipeline::params_from_names(file, func_id, names, stmts)
+                    .iter()
+                    .map(|p| crate::util::sanitize_identifier(p)),
+            )
+        } else {
+            crate::pipeline::make_params_distinct(
+                get_function_params(file, func_id, stmts)
+                    .into_iter()
+                    .map(|p| crate::util::sanitize_identifier(&p)),
+            )
+        }
+    }
+
+    // A bare `let x;` for a slot of this body named like one of its
+    // parameters, a slot nothing ever writes: the body copied the parameter in
+    // (an async wrapper's machine slots, `url = url` dropped as a
+    // self-assignment), so the parameter is the slot's binding as printed, and
+    // the `let` redeclared it, a syntax error (`(arg0, url) => { let url; }`),
+    // when nothing writes the name.
+    // Where anything writes the name, another variable may share it (a
+    // response named after the key it is sent under, `action_type`): the
+    // `let` stays, loud, until that variable is named apart.
+    fn drop_slot_lets_of_params(
+        &self,
+        func_id: u32,
+        stmts: &mut Vec<Statement>,
+        params: &[String],
+    ) {
+        use crate::ir::{AssignTarget, Binding, Expression, SlotRef, Value, Visitor};
+        let candidates: Vec<(SlotRef, String)> = stmts
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Let {
+                    name,
+                    value: Expression::Value(Value::Constant(crate::ir::Constant::Undefined)),
+                    ..
+                } if params.contains(&name.name) => name.slot.map(|slot| (slot, name.name.clone())),
+                _ => None,
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        // Any write of the name, whatever its stamp: with the `let` gone, the
+        // name binds to the parameter, and a write to another variable under
+        // it (Discord's `_fireSurveyAction`, whose response slot shares the
+        // parameter copy's name: `action_type = value`) would land there.
+        // A copy of the name into itself (`url = url`, the machine's prologue
+        // copying the wrapper's slot into its own) is the same chain of
+        // copies of the parameter, not another variable; render drops it.
+        struct Writes<'a>(&'a [(SlotRef, String)], HashSet<SlotRef>);
+        impl<'a> Visitor<'a> for Writes<'_> {
+            fn visit_statement(&mut self, s: &'a Statement) {
+                if let Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Variable(t)),
+                    value: Expression::Value(Value::Binding(Binding::Variable(v))),
+                } = s
+                {
+                    if t.name == v.name {
+                        return;
+                    }
+                }
+                self.walk_statement(s);
+            }
+            fn visit_assign_target(&mut self, t: &'a AssignTarget) {
+                if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                    for (slot, name) in self.0 {
+                        if v.name == *name || v.slot == Some(*slot) {
+                            self.1.insert(*slot);
+                        }
+                    }
+                }
+                self.walk_assign_target(t);
+            }
+        }
+        let candidates_ref = &candidates;
+        let mut w = Writes(candidates_ref, HashSet::new());
+        for s in stmts.iter() {
+            w.visit_statement(s);
+        }
+        let mut stack: Vec<u32> = self
+            .child_functions
+            .get(&func_id)
+            .cloned()
+            .unwrap_or_default();
+        let mut seen = HashSet::new();
+        while let Some(f) = stack.pop() {
+            if !seen.insert(f) {
+                continue;
+            }
+            if let Some(body) = self.all_ir.get(&f) {
+                for s in body {
+                    w.visit_statement(s);
+                }
+            }
+            if let Some(kids) = self.child_functions.get(&f) {
+                stack.extend(kids.iter().copied());
+            }
+        }
+        let written = w.1;
+        stmts.retain(|s| match s {
+            Statement::Let {
+                name,
+                value: Expression::Value(Value::Constant(crate::ir::Constant::Undefined)),
+                ..
+            } => !name.slot.is_some_and(|slot| {
+                candidates.iter().any(|(c, _)| *c == slot) && !written.contains(&slot)
+            }),
+            _ => true,
+        });
+    }
+
     // Build pre-rendered inline function bodies for ALL functions.
     // Multi-pass approach for multi-level nesting support.
     /// The slot identity check (closure model K4.3) over every body as codegen
@@ -390,6 +573,7 @@ impl PipelineContext {
         if let Some(ctx) = self.closure_ctx.as_ref() {
             split_capture_and_local(ctx, func_id, stmts);
         }
+        self.drop_slot_lets_of_params(func_id, stmts, params);
         let extra = self.extra_writes_for_function(func_id);
         // The names this body stores into an ancestor's slot under, by stamp,
         // where the owner binds them; and the ancestors' slot names (as the
@@ -682,22 +866,7 @@ impl PipelineContext {
             .par_iter()
             .filter(|(func_id, _)| !self.registry.function_to_module.contains_key(func_id))
             .map(|(&func_id, stmts)| {
-                let params: Vec<String> =
-                    if let Some(names) = self.global_analysis.param_names.get(&func_id) {
-                        // Two distinct names can collapse into one once
-                        // sanitised, so distinctness is checked after.
-                        crate::pipeline::make_params_distinct(
-                            crate::pipeline::params_from_names(file, func_id, names, stmts)
-                                .iter()
-                                .map(|p| crate::util::sanitize_identifier(p)),
-                        )
-                    } else {
-                        crate::pipeline::make_params_distinct(
-                            get_function_params(file, func_id, stmts)
-                                .into_iter()
-                                .map(|p| crate::util::sanitize_identifier(&p)),
-                        )
-                    };
+                let params = self.render_params(file, func_id, stmts);
 
                 let mut body_stmts = stmts.clone();
                 if let Some(param_names) = self.global_analysis.param_names.get(&func_id) {

@@ -394,6 +394,31 @@ equinox unchanged; run time unchanged (715 s / 1,386 s); one dead duplicate stri
 Expensify's remaining 113 `sum` writes were there at `d15c5fa` (React DevTools' `getID`
 counter in module 122).
 
+**The unparsable Discord modules and the last `const` writes (2026-10-28).**
+- *A parameter and its copy.* An async wrapper copies a parameter into a slot of the same
+  name; the copy printed `url = url` and was dropped, and the wrapper still declared the slot
+  (`(arg0, url) => { let url; ... }`), a syntax error. The bare `let` of a slot named like a
+  parameter now goes, but only where nothing below writes the name except such copies
+  (`drop_slot_lets_of_params`): otherwise another variable shares the name and would land on
+  the parameter. Discord's module 7466 is that case and stays loud: in `_fireSurveyAction` the
+  response slot is named `action_type` after the key it is sent under (`action_type =
+  undefined; ... { action_type }`). Renaming it apart needs to know which slot holds the
+  parameter's copy, which the IR no longer says once the copy is dropped; the evidence that
+  remains (read the copy, write another slot of the name) is also what one variable reached
+  through two identities looks like, which `separate_step_env_names` rightly refuses to split.
+  Unparsable modules 5 -> 1.
+- *Nested writes the declaration pass missed.* `child_functions` was keyed by the raw parent,
+  a block scope's id for a closure created on a block, so its writes never reached the
+  function's count; it is keyed by the owning function now. Destructuring targets count as
+  writes. A `for ... of` / `in` variable the body assigns is `let`. And a body's local named
+  like a capture it reads is split off when its first *unstamped* occurrence is a write (the
+  stamped capture reads may come first: `let tmp = self; ... self = this`).
+- Against the TooMany commit: `const`s written Discord 41 -> 0, Expensify 34 -> 1 (React
+  DevTools' 113 `sum` writes were a block-created closure's); undeclared Discord 15,688 ->
+  15,752 (the four modules that now parse count for the first time), Expensify 22,832 ->
+  22,823; no string literal or property lost. v96: 273 lines, mostly `const` -> `let`, and six
+  imports bound through `let X = X_mod` where a function's own destructuring writes the name.
+
 ## 3. Order and size
 
 S3.0 → S3.1 → S3.2 → S3.3 → S3.4. S3.1 carries most of the visible output gain (the parking

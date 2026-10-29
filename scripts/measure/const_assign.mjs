@@ -86,6 +86,7 @@ chunks.forEach((text, i) => {
           inner ? 'nested' : 'same',
           v.name,
           header,
+          starts[i] + def.name.loc.start.line - 1,
         ].join('\t'));
       }
     }

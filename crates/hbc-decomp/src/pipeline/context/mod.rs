@@ -167,8 +167,14 @@ impl PipelineContext {
         // per-function extra-writes walk does not rebuild it 100k+ times.
         let mut child_functions: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         if let Some(cctx) = closure_ctx.as_ref() {
+            // By the function that owns the parent scope: a closure created
+            // on a block environment has the block's id as its parent, and
+            // its writes are the function's to count.
             for (&child, &parent) in &cctx.parent_function {
-                child_functions.entry(parent).or_default().push(child);
+                child_functions
+                    .entry(cctx.scope_function(parent))
+                    .or_default()
+                    .push(child);
             }
         }
 
