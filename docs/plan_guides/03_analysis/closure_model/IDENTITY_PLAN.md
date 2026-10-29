@@ -265,6 +265,18 @@ recovered first used to absorb it and the others ended without it, or carry a co
 +26,893 lines, Discord +8,984, strings +2,844 and +902; no module loses a string literal
 (Orphan Functions aside) and the property drops read are copies folded into one tail.
 
+Not fixed yet, found the same way: a loop whose body holds a `try/catch` that rejoins it is
+not found at all (React's `while (child !== null) { switch (child.tag) { ... try ... } }`
+prints as an `if`, event-target-shim's listener walk loses its loop). `compute_dominators`
+makes every catch block a root, so the catch is a way into the latch around the header and
+the back edge is never seen. Giving a catch its protected blocks as predecessors finds those
+loops (v96 +34 `while (true)`, Discord +1,074, Discord's last unparsable module parses), but
+v98 generator reconstruction expects the machine's dispatch not to be a loop and gives up on
+the new ones (raw machines: Expensify 536 -> 581, Discord 1,738 -> 1,919), and inside them the
+cleanup is weaker (results kept, loader temporaries not inlined, so imports are not lifted).
+It lands with `state_machine_v98` taught the loop form; a test for the loop itself is ready
+(`a_loop_with_a_catch_that_rejoins_it_is_found`).
+
 What A1 leaves for A2, by count: W6 stamps the walk overrides (Expensify 20, Discord 92),
 names by scope that differ (15, 85), recorded owners the late walk overrides (112, 559), and
 placed accesses whose block scope was never built (4, 12). A2 is done when all four are 0 and
