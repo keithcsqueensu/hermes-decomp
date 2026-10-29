@@ -97,15 +97,43 @@ stage 1:
   `loop_reassign` (KNOWN `other:`: a `for ... of` whose body reassigns its variable is not
   recovered, the loop never advances).
 
-The third is designed, not built. `hvm` runs one file, so a module cannot be run alone, but
-the bundle can be made to: rewrite its global function with `hermes-decomp asm --function`
-(the relayout `apply.py` already uses) so that, in place of the app's entry `__r(...)`, it
-requires one chosen module and prints a stable snapshot of its exports (keys, `typeof`,
-primitive values, the results of calling exported functions on fixed inputs); load the
-decompiled module in node behind Metro shims (`__d`, `__r`, the dependency map) and print
-the same snapshot; compare. The work is the probe and choosing modules with no native
-dependencies (utilities: lodash-like helpers, formatters, constants modules). About a day or
-two; worth doing before A3, whose churn the ratchets alone will not judge.
+The third is built: `scripts/oracle/module_oracle.py` (2026-10-29). hvm runs one file, so the
+bundle is made to run one module: the global function's closing `__r(startup)` /
+`__r(entry)` calls are replaced, through `hermes-decomp asm`, by `m = __r(N); throw typeof m +
+"|" + Object.keys(m).join(",")` (thrown, because the bundle's globals leave neither `print` nor
+a working `JSON.stringify`; property reads by `GetByVal`, since a reused property-cache index
+answers with another property's slot). The decompiled side is `hermes-decomp extract`, each
+import pointed at its module's file (by `/* id */`, else by the module's name), run under node
+with `module`-less ES semantics; a module without a default export gets its own namespace as
+one, Metro's `require` giving the exports. The snapshot is the type of the exports and their
+keys; values are not compared yet (serializing them calls the getters Babel's interop defines
+exports with, and one that threw broke the snapshot).
+
+Getting it to run found two defects outside S3, both fixed with it:
+- **Exception tables of large legacy functions were dropped.** An overflowed v96 header's
+  `info_offset` points at the large header itself and the FunctionInfo follows it; the parser
+  read the large header's fields as the table, got a count in the millions and dropped it
+  silently, so a shipped v96 bundle's global function lost its handler (and its debug-info
+  offset), and `asm` refused it. `FunctionHeader::info_start`, used by the parser and the
+  writer.
+- **Babel's `interopRequireDefault` module printed empty.** The ESM classifier skipped any
+  assignment of a function named like `*interop*`, meant for a module's local helper, also
+  when it was the module's export (`module.exports = function _interopRequireDefault`).
+  Nearly every module calls it (`module_1(_mod368)`) where the import side keeps the call, so
+  the output called a function it never defined. An export is never skipped now.
+
+First run, Equinox (v96), 200 modules at random (seed 2): 92 not runnable under hvm (they reach
+native modules), 108 runnable. Of those, 53 match. Findings: 20 still CommonJS (`exports`,
+`module.exports`, `require(n)` left in ES output), 9 do not parse, 5 import a module by a name
+the extract does not carry, 1 exports something else (module 1556: a function under hvm, `{}`
+decompiled), and the rest throw at load: a method called without its receiver (`const
+forEach = items.forEach; forEach(cb)`, modules 930, 1008, 1214), a module variable declared
+and never assigned (930's `obj` for `originalConsoleMethods`), a local interop helper skipped
+while its call stays (`_interopRequireDefault is not defined`, 1867), and undefined values
+(`cache.create`, `.EOF`). Modules with JSX (`Unexpected token '<'`) are counted apart: node
+runs them only through a transform the harness does not have yet. Next for the harness: a JSX
+transform, value snapshots that read property descriptors instead of calling getters, and
+v98 bundles (the same patch, `hvm` v98).
 
 ## 4. Stages
 

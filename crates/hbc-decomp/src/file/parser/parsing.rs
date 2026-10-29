@@ -548,10 +548,7 @@ fn parse_debug_offsets(
         .unwrap_or(false);
 
     for fh in function_headers {
-        let (info_offset, flags, func_id) = match fh {
-            FunctionHeader::Legacy(h) => (h.info_offset as usize, h.flags, h.function_id),
-            FunctionHeader::Modern(h) => (h.info_offset as usize, h.flags, h.function_id),
-        };
+        let (info_offset, flags, func_id) = function_info(fh);
         if flags & FLAG_HAS_DEBUG_INFO == 0 || info_offset == 0 {
             continue;
         }
@@ -603,6 +600,11 @@ fn parse_debug_offsets(
 
 // Parse exception handler tables for all functions from the raw bytecode bytes.
 // Uses `info_offset` from legacy function headers and `hasExceptionHandler` flag (bit 3).
+// A function's FunctionInfo start (`FunctionHeader::info_start`), flags and id.
+fn function_info(fh: &FunctionHeader) -> (usize, u8, u32) {
+    (fh.info_start(), fh.flags(), fh.function_id())
+}
+
 fn parse_exception_handlers(
     bytes: &[u8],
     function_headers: &[FunctionHeader],
@@ -610,12 +612,7 @@ fn parse_exception_handlers(
     let mut result = BTreeMap::new();
 
     for fh in function_headers {
-        let (info_offset, flags, func_id) = match fh {
-            FunctionHeader::Legacy(h) => (h.info_offset as usize, h.flags, h.function_id),
-            // HBC >=97: the FunctionInfo (exception table) follows the large
-            // header; parse_large_header_modern records its 4-byte-aligned offset.
-            FunctionHeader::Modern(h) => (h.info_offset as usize, h.flags, h.function_id),
-        };
+        let (info_offset, flags, func_id) = function_info(fh);
 
         // hasExceptionHandler = bit 3
         if flags & FLAG_HAS_EXCEPTION_HANDLER == 0 {

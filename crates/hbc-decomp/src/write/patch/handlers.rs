@@ -15,7 +15,7 @@
 
 use crate::error::{Error, Result};
 use crate::file::{BytecodeFile, ExceptionHandler};
-use crate::format::{FunctionHeader, FLAG_HAS_EXCEPTION_HANDLER};
+use crate::format::FLAG_HAS_EXCEPTION_HANDLER;
 
 /// What a body edit does to the function's exception-handler table.
 #[derive(Debug, Clone)]
@@ -43,10 +43,9 @@ pub(crate) fn has_handlers(file: &BytecodeFile, id: u32) -> bool {
 /// Byte position of function `id`'s table (its `count`) in `file`'s image.
 pub(crate) fn table_pos(file: &BytecodeFile, id: u32) -> Result<usize> {
     let info = match file.function_headers.get(id as usize) {
-        Some(FunctionHeader::Legacy(h)) => h.info_offset,
-        Some(FunctionHeader::Modern(h)) => h.info_offset,
+        Some(h) => h.info_start(),
         None => return Err(Error::Write(format!("invalid function id {id}"))),
-    } as usize;
+    };
     if info == 0 {
         return Err(Error::Write(format!(
             "function {id} is flagged with an exception-handler table but has no info offset"

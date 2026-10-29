@@ -415,6 +415,26 @@ pub enum FunctionHeader {
 }
 
 impl FunctionHeader {
+    /// Where the function's FunctionInfo (exception table, then debug-info
+    /// offset) starts, before the reader's 4-byte alignment; 0 for none. A
+    /// legacy (HBC < 97) overflowed function's large header has `info_offset`
+    /// pointing at the large header itself, and the FunctionInfo follows it:
+    /// 7 u32 fields and 3 u8, 31 bytes. Read as the info section, the large
+    /// header's own fields gave a handler count in the millions, the table was
+    /// dropped as implausible, and a shipped v96 bundle's global function lost
+    /// its handler. The modern large header records the following offset
+    /// itself (`parse_large_header_modern`).
+    pub fn info_start(&self) -> usize {
+        const LEGACY_LARGE_HEADER_BYTES: usize = 7 * 4 + 3;
+        match self {
+            FunctionHeader::Legacy(h) if h.flags & FLAG_OVERFLOWED != 0 && h.info_offset != 0 => {
+                h.info_offset as usize + LEGACY_LARGE_HEADER_BYTES
+            }
+            FunctionHeader::Legacy(h) => h.info_offset as usize,
+            FunctionHeader::Modern(h) => h.info_offset as usize,
+        }
+    }
+
     pub fn function_id(&self) -> u32 {
         match self {
             FunctionHeader::Legacy(header) => header.function_id,
@@ -516,5 +536,40 @@ impl FunctionHeader {
             FunctionHeader::Legacy(header) => Some(header.environment_size),
             FunctionHeader::Modern(_) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod info_start_tests {
+    use super::*;
+
+    fn legacy(info_offset: u32, flags: u8) -> FunctionHeader {
+        FunctionHeader::Legacy(LegacyFunctionHeader {
+            function_id: 0,
+            offset: 0,
+            param_count: 1,
+            bytecode_size_in_bytes: 0,
+            function_name: 0,
+            info_offset,
+            frame_size: 0,
+            environment_size: 0,
+            highest_read_cache_index: 0,
+            highest_write_cache_index: 0,
+            flags,
+        })
+    }
+
+    // An overflowed legacy header's `info_offset` is the large header's own
+    // position; the FunctionInfo follows its 31 bytes.
+    #[test]
+    fn an_overflowed_legacy_function_info_follows_its_large_header() {
+        let h = legacy(1000, FLAG_OVERFLOWED | FLAG_HAS_EXCEPTION_HANDLER);
+        assert_eq!(h.info_start(), 1031);
+    }
+
+    #[test]
+    fn a_small_legacy_header_points_at_its_info() {
+        assert_eq!(legacy(1000, FLAG_HAS_EXCEPTION_HANDLER).info_start(), 1000);
+        assert_eq!(legacy(0, FLAG_OVERFLOWED).info_start(), 0);
     }
 }

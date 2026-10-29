@@ -53,8 +53,14 @@ impl Codegen {
                     }
                 }
 
-                // Skip interop wrapper function definitions
-                if Self::is_interop_wrapper_def(value) {
+                // Skip a local interop wrapper's definition, never an export of
+                // one: Babel's `interopRequireDefault` module is `module.exports
+                // = function _interopRequireDefault`, and its importers call it
+                // (`module_1(_mod368)`) wherever the import side does not unwrap
+                // the call, so skipping it left every module calling a function
+                // the output never defined (the module oracle's first find).
+                if matches!(target, AssignTarget::Binding(_)) && Self::is_interop_wrapper_def(value)
+                {
                     return EsmClassification::Skip;
                 }
 
