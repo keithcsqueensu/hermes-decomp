@@ -97,7 +97,7 @@ stage 1:
   `loop_reassign` (KNOWN `other:`: a `for ... of` whose body reassigns its variable is not
   recovered, the loop never advances).
 
-The third is built: `scripts/oracle/module_oracle.py` (2026-10-29). hvm runs one file, so the
+The third is built: `scripts/measure/module_oracle.py` (2026-10-29). hvm runs one file, so the
 bundle is made to run one module: the global function's closing `__r(startup)` /
 `__r(entry)` calls are replaced, through `hermes-decomp asm`, by `m = __r(N); throw typeof m +
 "|" + Object.keys(m).join(",")` (thrown, because the bundle's globals leave neither `print` nor
