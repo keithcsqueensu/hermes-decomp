@@ -40,11 +40,12 @@ impl PipelineContext {
             let needs = !closure_info.slots.is_empty() || Self::body_has_closure_var(stmts);
             if needs {
                 let old = std::mem::take(stmts);
-                let (resolved, baked) = crate::analysis::resolve_closures_recording(
-                    old,
-                    &closure_info,
-                    Some((&*closure_ctx, i)),
-                );
+                let (resolved, baked, owners) =
+                    crate::analysis::closure::resolve_closures_with_owners(
+                        old,
+                        &closure_info,
+                        Some((&*closure_ctx, i)),
+                    );
                 *stmts = resolved;
                 if !baked.is_empty() {
                     closure_ctx
@@ -52,6 +53,13 @@ impl PipelineContext {
                         .entry(i)
                         .or_default()
                         .extend(baked);
+                }
+                if !owners.is_empty() {
+                    closure_ctx
+                        .baked_owners
+                        .entry(i)
+                        .or_default()
+                        .extend(owners);
                 }
             }
         }

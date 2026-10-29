@@ -555,6 +555,8 @@ pub fn log_violations(stage: &str, v: &Violations, ctx: &ClosureContext) {
     log::debug!(target: TARGET, "W6 stamps: walked {walked}, scoped {agree} (the walk agrees), scoped {disagree} (the walk disagrees)");
     let [same, differs] = super::scope_name_counts();
     log::debug!(target: TARGET, "W6 names by scope: {same} as by level, {differs} differ");
+    let [walked, agree, disagree] = super::context::baked_owner_counts();
+    log::debug!(target: TARGET, "baked owners: walked {walked}, recorded {agree} (the walk agrees), recorded {disagree} (the walk disagrees)");
     if let Ok(path) = std::env::var("HD_SLOTS_DUMP") {
         let path = format!("{path}.{}.tsv", stage.replace(' ', "_"));
         if let Err(e) = std::fs::write(&path, v.to_tsv(ctx)) {

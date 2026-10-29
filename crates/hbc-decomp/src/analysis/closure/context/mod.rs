@@ -42,6 +42,11 @@ pub struct ClosureContext {
     // resolves it from this record once the owner has named the slot.
     #[serde(default)]
     pub baked_captures: BTreeMap<u32, BTreeMap<String, (u32, u32)>>,
+    // function -> (baked name -> the scope W6 stamped it with), IDENTITY_PLAN.md
+    // A1b3: the owner, recorded, where `slot_owner` would walk the chain from
+    // the level again.
+    #[serde(default)]
+    pub baked_owners: BTreeMap<u32, BTreeMap<String, u32>>,
     // child -> (creating function, builder level of the block environment it
     // was created with). Such a child's parent is that block scope.
     #[serde(default)]
@@ -104,6 +109,19 @@ pub struct ClosureContext {
     // id: block-scope ids are handed out again on every reanalysis.
     #[serde(default)]
     pub access_scopes: BTreeMap<u32, BTreeMap<u32, ScopeRef>>,
+}
+
+// Owners `baked_owner` gave, over the run: [walked (nothing recorded),
+// recorded agreeing with the walk, recorded disagreeing].
+static BAKED_OWNERS: [std::sync::atomic::AtomicU32; 3] = [
+    std::sync::atomic::AtomicU32::new(0),
+    std::sync::atomic::AtomicU32::new(0),
+    std::sync::atomic::AtomicU32::new(0),
+];
+use std::sync::atomic::Ordering::Relaxed;
+
+pub fn baked_owner_counts() -> [u32; 3] {
+    [0, 1, 2].map(|i| BAKED_OWNERS[i].load(Relaxed))
 }
 
 // A scope as the context names it: (function, None) for its own environment,
@@ -209,7 +227,34 @@ impl ClosureContext {
     // (`crate::ir::placeholder`).
     pub fn resolve_baked(&self, func: u32, name: &str) -> Option<(u32, u32)> {
         let &(level, slot) = self.baked_captures.get(&func)?.get(name)?;
-        Some((self.slot_owner(func, level)?, slot))
+        Some((self.baked_owner(func, name, (level, slot))?, slot))
+    }
+
+    // The scope `name`, read at (level, slot) in `func`'s body, stands for:
+    // the one W6 stamped it with when the bake recorded the name at that
+    // place and the walk up the chain still agrees, else the walk. Counted
+    // (`baked_owner_counts`).
+    pub fn baked_owner(&self, func: u32, name: &str, place: (u32, u32)) -> Option<u32> {
+        let walked = self.slot_owner(func, place.0);
+        let recorded = self
+            .baked_captures
+            .get(&func)
+            .and_then(|m| m.get(name))
+            .filter(|&&p| p == place)
+            .and_then(|_| self.baked_owners.get(&func)?.get(name).copied());
+        let Some(owner) = recorded else {
+            BAKED_OWNERS[0].fetch_add(1, Relaxed);
+            return walked;
+        };
+        let agrees = walked == Some(owner);
+        BAKED_OWNERS[if agrees { 1 } else { 2 }].fetch_add(1, Relaxed);
+        if !agrees {
+            // The chain moved after W6 (a generator's collapse relinks the
+            // step's scopes): the walk keeps its answer until A2.
+            log::trace!(target: "slots", "baked owner: F{func} `{name}` at {place:?}: recorded {owner}, the walk {walked:?}");
+            return walked;
+        }
+        Some(owner)
     }
 
     pub fn is_block_scope(&self, id: u32) -> bool {

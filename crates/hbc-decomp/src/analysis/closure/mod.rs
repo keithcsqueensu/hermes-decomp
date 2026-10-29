@@ -36,16 +36,38 @@ pub fn resolve_closures_recording(
     info: &ClosureInfo,
     scope: Option<(&ClosureContext, u32)>,
 ) -> (Vec<Statement>, BTreeMap<String, (u32, u32)>) {
+    let (out, baked, _) = resolve_closures_with_owners(stmts, info, scope);
+    (out, baked)
+}
+
+// The same, also returning the scope each baked name was stamped with
+// (IDENTITY_PLAN.md A1b3): the owner later passes would otherwise walk the
+// chain from the level for.
+#[allow(clippy::type_complexity)]
+pub fn resolve_closures_with_owners(
+    stmts: Vec<Statement>,
+    info: &ClosureInfo,
+    scope: Option<(&ClosureContext, u32)>,
+) -> (
+    Vec<Statement>,
+    BTreeMap<String, (u32, u32)>,
+    BTreeMap<String, u32>,
+) {
     let resolver = Resolver {
         info,
         scope,
         baked: std::cell::RefCell::new(BTreeMap::new()),
+        owners: std::cell::RefCell::new(BTreeMap::new()),
     };
     let out = stmts
         .into_iter()
         .map(|s| resolve_stmt(s, &resolver))
         .collect();
-    (out, resolver.baked.into_inner())
+    (
+        out,
+        resolver.baked.into_inner(),
+        resolver.owners.into_inner(),
+    )
 }
 
 fn resolve_list(stmts: Vec<Statement>, info: &Resolver) -> Vec<Statement> {
@@ -56,16 +78,21 @@ struct Resolver<'a> {
     info: &'a ClosureInfo,
     scope: Option<(&'a ClosureContext, u32)>,
     baked: std::cell::RefCell<BTreeMap<String, (u32, u32)>>,
+    owners: std::cell::RefCell<BTreeMap<String, u32>>,
 }
 
 impl Resolver<'_> {
     // Level 0 is recorded too: the owner's own binding for a slot is what
     // its captures must end up named after.
-    fn record(&self, name: &str, level: u32, slot: u32) {
-        self.baked
-            .borrow_mut()
-            .entry(name.to_string())
-            .or_insert((level, slot));
+    fn record(&self, name: &str, level: u32, slot: u32, owner: Option<u32>) {
+        let mut baked = self.baked.borrow_mut();
+        if baked.contains_key(name) {
+            return;
+        }
+        baked.insert(name.to_string(), (level, slot));
+        if let Some(owner) = owner {
+            self.owners.borrow_mut().insert(name.to_string(), owner);
+        }
     }
 
     // The variable a slot access becomes: its name, and the slot it is when the
@@ -96,8 +123,7 @@ impl Resolver<'_> {
                 log::trace!(target: stamps::TARGET, "scoped name: F{func} level {level} slot {slot}: `{name}` by level, `{scoped}` by scope {id}");
             }
         }
-        self.record(&name, level, slot);
-        let slot = self
+        let stamp = self
             .scope
             .and_then(|(ctx, func)| {
                 let walked = ctx.slot_owner(func, level);
@@ -116,8 +142,9 @@ impl Resolver<'_> {
                     return walked;
                 }
                 Some(id)
-            })
-            .map(|owner| SlotRef { owner, slot });
+            });
+        self.record(&name, level, slot, stamp);
+        let slot = stamp.map(|owner| SlotRef { owner, slot });
         Var { name, slot }
     }
 }

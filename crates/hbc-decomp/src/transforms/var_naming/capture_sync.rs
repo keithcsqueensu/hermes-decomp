@@ -50,7 +50,7 @@ pub fn sync_capture_names(
             if level == 0 {
                 continue;
             }
-            let Some(owner) = closure_ctx.slot_owner(fid, level) else {
+            let Some(owner) = closure_ctx.baked_owner(fid, name, (level, slot)) else {
                 continue;
             };
             let Some(owner_name) = owner_names.get(&owner).and_then(|m| m.get(&slot)) else {

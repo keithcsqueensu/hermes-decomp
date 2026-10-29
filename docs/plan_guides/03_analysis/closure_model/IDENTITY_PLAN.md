@@ -242,6 +242,20 @@ Done (2026-10-29), A1a1 to A1b1:
   `regExp12`/`regExp13`), a different function each run. A byte-identity check on v98 needs a
   second run before a difference is read as the change's; the cause is its own task.
 
+A1b3 (2026-10-29): the bake records, per baked name, the owner W6 stamped it with
+(`baked_owners`); `resolve_baked`, `capture_sync` and `ancestor_inherit` read it through
+`ClosureContext::baked_owner`, which counts it against the walk at the time of reading. Equinox
+180,628 agree, 0 disagree; Expensify 346,155 and 112; Discord 620,766 and 559. Those
+disagreements are the chain moving after W6 (a generator's collapse relinking its step's
+scopes): read from the record, they kept placeholders where the late walk found the name
+(`closure_6` for `byteLength`), so the walk keeps them too until A2, and the output is
+byte-identical (Expensify up to the `styles` nondeterminism above).
+
+What A1 leaves for A2, by count: W6 stamps the walk overrides (Expensify 20, Discord 92),
+names by scope that differ (15, 85), recorded owners the late walk overrides (112, 559), and
+placed accesses whose block scope was never built (4, 12). A2 is done when all four are 0 and
+the walk is no longer consulted for a placed access.
+
 Exit of A1: `encode_level_slot` and `slot_owner(func, level)` used only by the planless path.
 
 ### A2 — Retire the level machinery (medium to large)

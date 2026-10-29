@@ -84,7 +84,7 @@ pub fn inherit_ancestor_closure_names(
             if level == 0 {
                 continue;
             }
-            let Some(ancestor) = closure_ctx.slot_owner(fid, level) else {
+            let Some(ancestor) = closure_ctx.baked_owner(fid, name, (level, slot)) else {
                 continue;
             };
             let info = info_cache
