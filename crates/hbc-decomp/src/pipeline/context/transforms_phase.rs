@@ -600,12 +600,16 @@ impl PipelineContext {
             for s in body.iter() {
                 scan.visit_statement(s);
             }
-            let clashing: Vec<String> = scan
+            // In name order: fresh names are handed out in turn, and the map's
+            // order changes from run to run (`obj` and `obj2` of one body
+            // took `obj285` by turns).
+            let mut clashing: Vec<String> = scan
                 .uses
                 .iter()
                 .filter(|(_, u)| u.captured && u.plain && u.plain_write)
                 .map(|(n, _)| n.clone())
                 .collect();
+            clashing.sort();
             if clashing.is_empty() {
                 continue;
             }
@@ -1359,5 +1363,69 @@ mod generator_wrapper_tests {
             &inner,
             &Binding::Variable("closure_9".into())
         ));
+    }
+}
+
+#[cfg(test)]
+mod separate_locals_tests {
+    use super::PipelineContext;
+    use crate::analysis::ClosureContext;
+    use crate::ir::{AssignTarget, Binding, Expression, SlotRef, Statement, Value, Var};
+    use std::collections::BTreeMap;
+
+    fn var(name: &str, slot: Option<SlotRef>) -> Var {
+        Var {
+            name: name.into(),
+            slot,
+        }
+    }
+
+    fn read(v: Var) -> Statement {
+        Statement::Expr(Expression::Value(Value::Binding(Binding::Variable(v))))
+    }
+
+    fn write(v: Var) -> Statement {
+        Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable(v)),
+            value: Expression::Object { properties: vec![] },
+        }
+    }
+
+    // Two locals both named like a capture, whose fresh names compete: `a`
+    // tries a2, a3, ... and `a1` tries a12, a13, ..., and with a2..a11 taken
+    // both want `a12`. Whichever goes first gets it, so the order is the
+    // names', never the map's (Expensify's `styles`: `obj` and `obj2` took
+    // `obj285` by turns from run to run).
+    #[test]
+    fn competing_fresh_names_go_in_name_order() {
+        let mut ctx = ClosureContext::new();
+        ctx.add_child(1, 2);
+        for _ in 0..16 {
+            let mut body = Vec::new();
+            for (slot, n) in ["a", "a1"].iter().enumerate() {
+                let s = SlotRef {
+                    owner: 1,
+                    slot: slot as u32,
+                };
+                body.push(read(var(n, Some(s))));
+                body.push(write(var(n, None)));
+            }
+            for k in 2..=11 {
+                body.push(read(var(&format!("a{k}"), None)));
+            }
+            let mut all_ir = BTreeMap::from([(1, vec![]), (2, body)]);
+            PipelineContext::separate_locals_from_captures(&mut all_ir, &ctx);
+            let written: Vec<&str> = all_ir[&2]
+                .iter()
+                .filter_map(|s| match s {
+                    Statement::Assign {
+                        target: AssignTarget::Binding(Binding::Variable(v)),
+                        ..
+                    } => Some(v.name.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(written, ["a12", "a13"]);
+        }
     }
 }

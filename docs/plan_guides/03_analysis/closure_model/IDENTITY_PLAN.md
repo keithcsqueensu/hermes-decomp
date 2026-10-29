@@ -239,8 +239,11 @@ Done (2026-10-29), A1a1 to A1b1:
   Expensify inside its largest `styles` function (the numbering of its object literals,
   `obj670` against `obj285`, and the order of a few statements), and on Discord in which of
   two locals of one function gets which number (`items12`/`items13`, elsewhere
-  `regExp12`/`regExp13`), a different function each run. A byte-identity check on v98 needs a
-  second run before a difference is read as the change's; the cause is its own task.
+  `regExp12`/`regExp13`), a different function each run. Fixed the same day: the cause was
+  `separate_locals_from_captures`, which handed out fresh names to a body's clashing locals
+  in hash-map order, and two of them can want one name (`obj` tries `obj285` as `obj2` tries
+  `obj2`+`85`). In name order now; three runs of each bundle agree byte for byte, and each
+  function that used to flip settles on one of its two forms. v96 unchanged.
 
 A1b3 (2026-10-29): the bake records, per baked name, the owner W6 stamped it with
 (`baked_owners`); `resolve_baked`, `capture_sync` and `ancestor_inherit` read it through
@@ -249,7 +252,7 @@ A1b3 (2026-10-29): the bake records, per baked name, the owner W6 stamped it wit
 disagreements are the chain moving after W6 (a generator's collapse relinking its step's
 scopes): read from the record, they kept placeholders where the late walk found the name
 (`closure_6` for `byteLength`), so the walk keeps them too until A2, and the output is
-byte-identical (Expensify up to the `styles` nondeterminism above).
+byte-identical (Expensify up to the `styles` flip above, since fixed).
 
 What A1 leaves for A2, by count: W6 stamps the walk overrides (Expensify 20, Discord 92),
 names by scope that differ (15, 85), recorded owners the late walk overrides (112, 559), and
