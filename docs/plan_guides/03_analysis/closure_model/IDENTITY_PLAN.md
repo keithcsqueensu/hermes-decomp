@@ -165,6 +165,24 @@ the CLI's `--function`) keep the level path as it is.
 Exit: the same answers as today, so v96 and v98 byte-identical; the census counts accesses
 addressed by scope against accesses still by level (only the planless path).
 
+**Sized at the start (2026-10-29): larger than "medium".** A `ClosureVar`'s name does not come
+from its scope: the closure context builds a `ClosureInfo` per function keyed by
+`encode_level_slot(level, slot)` (W1, `context/walk.rs`, `info/analyze.rs`), the resolver names
+an access from that table and only then asks `slot_owner(func, level)` for the stamp, and nine
+passes call `slot_owner` on whatever `ClosureVar` they meet (`var_naming/*`, metro propagation,
+`ir_gen`). Today every planned access already resolves to its planned scope through the
+installed chain (`verify_env_plans` checks each one), so the indirection costs nothing in
+output; what A1 buys is structural (statements move between bodies without level shifts, and
+A2 can drop the level machinery). Split it:
+- **A1a** `EnvPlan` carries the scope id of each planned access, and the builder emits
+  `Binding::Slot { scope, slot }` for it; every pass that treats `ClosureVar` specially before
+  W6 treats `Slot` alike (16 files), and W6 stamps it directly. Naming still goes through the
+  level-keyed `ClosureInfo`, by the level the plan gave (kept beside the scope). Exit: byte-
+  identical output, census of accesses by scope.
+- **A1b** `ClosureInfo` keyed by `(scope, slot)`: the walk collects slots per scope, naming
+  allocates per scope, the nine `slot_owner` callers read the stamp. Exit: byte-identical
+  output; `encode_level_slot` and `slot_owner(func, level)` used only by the planless path.
+
 ### A2 — Retire the level machinery (medium to large)
 
 With scopes addressed directly, remove what only existed to make levels land:
