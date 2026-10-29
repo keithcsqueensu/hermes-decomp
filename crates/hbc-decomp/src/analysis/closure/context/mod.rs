@@ -296,11 +296,6 @@ impl ClosureContext {
             }
             return;
         }
-        if let Some(&old) = self.parent_function.get(&child) {
-            log::trace!(target: "slots", "add_child F{child}: had {:?}, now created in F{parent}", self.scope_ref(old));
-        } else {
-            log::trace!(target: "slots", "add_child F{child}: no graph parent, created in F{parent}");
-        }
         // Created with a block environment of `parent`: the block scope is the
         // parent, its slots are what the child reads at level 1.
         if let Some(&(creator, level)) = self.creation_scopes.get(&child) {

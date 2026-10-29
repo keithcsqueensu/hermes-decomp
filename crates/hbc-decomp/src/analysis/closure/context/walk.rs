@@ -84,10 +84,7 @@ impl ClosureContext {
                             let scope = self.block_scope(current_fn, *level);
                             if let ClosureSlotValue::Function { id, .. } = &val {
                                 if !self.scope_parents.contains_key(id) {
-                                    let old = self.parent_function.insert(*id, scope);
-                                    if old != Some(scope) {
-                                        log::trace!(target: "slots", "relink F{id}: {:?} -> {:?} (stored in a block of F{current_fn})", old.map(|o| self.scope_ref(o)), self.scope_ref(scope));
-                                    }
+                                    self.parent_function.insert(*id, scope);
                                 }
                             }
                             trace_store(scope, *slot, &val);
