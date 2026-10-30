@@ -300,6 +300,72 @@ pub(crate) fn params_from_names(
     }))
 }
 
+// Drop a recovered parameter name the body already gives another binding.
+//
+// Locals are named by then, parameters not yet, so nothing stopped a local
+// read through `.push` and a parameter both taking `arr`. The rename then
+// merged them: the local lost its `let`, and its first write overwrote the
+// parameter. A variable the body sets straight from the parameter is the
+// parameter's own slot, not a clash. Only a parameter the body still reads
+// is checked; one already baked into the body (deep naming) no longer shows.
+pub(crate) fn clear_param_names_taken_by_locals(
+    fid: u32,
+    names: &mut [Option<String>],
+    body: &[crate::ir::Statement],
+) {
+    use crate::ir::{AssignTarget, Binding, Expression, Statement, Value, Visitor};
+    struct Reads(std::collections::HashSet<u32>);
+    impl<'a> Visitor<'a> for Reads {
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if let Expression::Value(Value::Parameter(i)) = e {
+                self.0.insert(*i);
+            }
+            self.walk_expression(e);
+        }
+    }
+    struct Own<'n>(&'n [Option<String>], std::collections::HashSet<String>);
+    impl<'a> Visitor<'a> for Own<'_> {
+        fn visit_statement(&mut self, s: &'a Statement) {
+            let slot = match s {
+                Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Variable(v)),
+                    value: Expression::Value(Value::Parameter(i)),
+                } => Some((v.name.as_str(), *i)),
+                Statement::Let {
+                    name,
+                    value: Expression::Value(Value::Parameter(i)),
+                    ..
+                } => Some((name.name.as_str(), *i)),
+                _ => None,
+            };
+            if let Some((v, i)) = slot {
+                if self.0.get(i as usize).and_then(|n| n.as_deref()) == Some(v) {
+                    self.1.insert(v.to_string());
+                }
+            }
+            self.walk_statement(s);
+        }
+    }
+    let mut reads = Reads(Default::default());
+    let mut own = Own(names, Default::default());
+    for s in body {
+        reads.visit_statement(s);
+        own.visit_statement(s);
+    }
+    let own = own.1;
+    let mut taken = std::collections::HashSet::new();
+    collect_existing_var_names(body, &mut taken);
+    for (i, name) in names.iter_mut().enumerate() {
+        let clash = name
+            .as_deref()
+            .is_some_and(|n| taken.contains(n) && !own.contains(n));
+        if clash && reads.0.contains(&(i as u32)) {
+            log::trace!(target: "ipa", "F{fid} param {i} name {name:?} is a local's; dropped");
+            *name = None;
+        }
+    }
+}
+
 // One name per position, even when two positions recovered the same one.
 //
 // A module is always strict, so `function f(arr, arr)` is a syntax error rather
@@ -409,5 +475,30 @@ mod param_name_tests {
         // Handing out `x2` when the signature already carries one would only move
         // the collision.
         assert_eq!(run(&["x", "x2", "x"]), vec!["x", "x2", "x3"]);
+    }
+
+    // `function f(a) { var t = a.map(...); for (...) t[i % 2].push(i) }`:
+    // the element read through `.push` is a local `arr`, and the call site
+    // named the parameter `arr` too. Renamed, `arr = t[i % 2]` wrote the
+    // parameter and the local's `let` was dropped.
+    #[test]
+    fn a_name_a_local_already_holds_is_not_given_to_a_parameter() {
+        use super::clear_param_names_taken_by_locals;
+        use crate::ir::{AssignTarget, Binding, Expression, Statement, Value};
+        let var = |n: &str| Expression::Value(Value::Binding(Binding::Variable(n.into())));
+        let set = |n: &str, value| Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable(n.into())),
+            value,
+        };
+        let body = vec![
+            Statement::Expr(Expression::Value(Value::Parameter(0))),
+            set("arr", var("t")),
+            // A slot set straight from the parameter is the parameter itself.
+            set("item", Expression::Value(Value::Parameter(1))),
+            Statement::Expr(var("item")),
+        ];
+        let mut names = vec![Some("arr".to_string()), Some("item".to_string())];
+        clear_param_names_taken_by_locals(0, &mut names, &body);
+        assert_eq!(names, vec![None, Some("item".to_string())]);
     }
 }

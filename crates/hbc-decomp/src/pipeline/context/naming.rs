@@ -320,6 +320,12 @@ impl PipelineContext {
                 // reads `f(email)` and names the callee's parameter from it. Baking is
                 // idempotent (an already-renamed parameter is a Variable, not a
                 // Parameter, so a re-bake is a no-op).
+                // Once baked, a clash with a local can no longer be seen (W11f).
+                for (fid, names) in global_analysis.param_names.iter_mut() {
+                    if let Some(body) = all_ir.get(fid) {
+                        crate::pipeline::clear_param_names_taken_by_locals(*fid, names, body);
+                    }
+                }
                 let pnames = global_analysis.param_names.clone();
                 for (fid, names) in &pnames {
                     if let Some(stmts) = all_ir.get_mut(fid) {
@@ -371,6 +377,14 @@ impl PipelineContext {
             }
         }
         crate::analysis::closure::stamps::report("after W11e", all_ir, closure_ctx.as_ref());
+
+        // STAGE W11f: a parameter name a local already holds is dropped, last,
+        // once both the locals and the parameter names are final.
+        for (fid, names) in global_analysis.param_names.iter_mut() {
+            if let Some(body) = all_ir.get(fid) {
+                crate::pipeline::clear_param_names_taken_by_locals(*fid, names, body);
+            }
+        }
         crate::analysis::closure::identity::report_ir(
             "end of naming",
             all_ir,

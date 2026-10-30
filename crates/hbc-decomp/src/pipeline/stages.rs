@@ -43,7 +43,7 @@
 //   - REQUIRES: W3 (all_ir)
 //   - OUTPUT: renamed all_ir, PipelineContext::cascade_names
 //
-// The naming pipeline (context/naming.rs) runs W4b through W11e.
+// The naming pipeline (context/naming.rs) runs W4b through W11f.
 //
 // STAGE W4b: Module Names from fileFinishedImporting("…/Foo.tsx")
 //   - A recorded source path is ground truth and overrides heuristic names.
@@ -131,6 +131,11 @@
 //   - Names still-unnamed modules from a content hash instead of the Metro id.
 //   - REQUIRES: every other naming stage
 //   - OUTPUT: MetroRegistry names, renamed `module_{id}` variables
+//
+// STAGE W11f: Parameter Names Clear of Locals
+//   - Drops a recovered parameter name the body already gives another binding.
+//   - REQUIRES: every other naming stage (locals and parameter names final)
+//   - OUTPUT: GlobalAnalysis param names
 //
 // The transform pipeline (context/transforms_phase.rs) runs W12 through W16g.
 //

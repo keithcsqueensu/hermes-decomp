@@ -350,10 +350,18 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
   `ConjureDitherField` its worklets and exports; nested loops are in the round-trip corpus
   now). W6 stamps the walk overrides and names by scope that differ: 0 on all three.
   Undeclared Expensify 12,283 -> 12,272; strings lost 0; consts unchanged.
-  Found on the way, not fixed: the IPA parameter rename (`rename_param_registers`) does not
-  check the body's names, so a local the namer called `arr` and a parameter IPA calls `arr`
-  merge, the local's `let` goes and its writes clobber the parameter (a `-O` loop that
-  reuses the parameter's register shows it).
+  Found on the way: the IPA parameter rename (`rename_param_registers`) did not check the
+  body's names, so a local the namer called `arr` and a parameter IPA calls `arr` merged,
+  the local's `let` went and its writes clobbered the parameter (a `-O` loop that reuses
+  the parameter's register shows it; so does `hide(arg0, message)` opening with
+  `message = undefined`). W11f now drops a parameter name a local of the same body holds,
+  once both are final; the parameter prints as `argN`. Dropped: v96 4,720, Expensify 9,557,
+  Discord 15,630. Undeclared v96 1,807 -> 1,485, Expensify 12,272 -> 12,052, Discord
+  6,550 -> 6,558: the clobbered writes had left module-level `let`s (`let sku_id;`) that
+  hid reads already wrong, such as a timer callback reading `guild_id` for its loop
+  variable. Those are capture naming, A3's. Strings lost 0; consts written unchanged.
+  A parameter the body only reassigns (`str = str.substring(0, 1)`) loses its name too;
+  telling that apart from a clash needs identities (A3).
   The one block scope never built (Expensify F71548 level 130) is A2c's, not a stray
   row: jQuery's `inspectPrefiltersOrTransports` with `inspect` compiled inline twice, each
   copy in its own block holding its `selected`, and the `each` callback F107458 created in
