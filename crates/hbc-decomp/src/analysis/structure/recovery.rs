@@ -43,9 +43,27 @@ pub fn analyze(cfg: &CFG) -> (Structure, Vec<LoopInfo>) {
             })
             .or_insert(handler);
     }
-    let mut try_starts: BTreeMap<BlockId, _> = BTreeMap::new();
+    // Two catch blocks can protect ranges that start at one block: a `try`
+    // with both `catch` and `finally` protects the body with the catch and
+    // the body and the catch with the finally. Keyed one per start, the
+    // finally replaced the catch and the catch body was never emitted
+    // (Sentry's `sentryWrapped` lost `withScope(...); throw ex`, and the
+    // closure it creates its parent). Both are kept, outermost (the larger
+    // range) first, and nest.
+    let mut try_starts: BTreeMap<BlockId, Vec<&crate::ir::CfgExceptionHandler>> = BTreeMap::new();
     for handler in earliest_for_catch.values() {
-        try_starts.insert(handler.try_block_start, *handler);
+        try_starts
+            .entry(handler.try_block_start)
+            .or_default()
+            .push(*handler);
+    }
+    for handlers in try_starts.values_mut() {
+        handlers.sort_by_key(|h| {
+            (
+                std::cmp::Reverse(cfg.exception_edge_sources(h.catch_block).len()),
+                h.catch_block,
+            )
+        });
     }
 
     let mut emitted = HashSet::new();
@@ -55,6 +73,7 @@ pub fn analyze(cfg: &CFG) -> (Structure, Vec<LoopInfo>) {
         visited: &mut visited,
         emitted: &mut emitted,
         try_starts: &try_starts,
+        open_tries: HashSet::new(),
     };
 
     let root = recover_structure(&mut ctx, cfg.entry, &loop_stack);
@@ -122,7 +141,12 @@ pub(super) fn recover_structure(
         return reemit_exit(ctx, block_id).unwrap_or(Structure::Block(block_id, vec![]));
     }
 
-    if let Some(handler) = ctx.try_starts.get(&block_id) {
+    let next_try = ctx.try_starts.get(&block_id).and_then(|hs| {
+        hs.iter()
+            .copied()
+            .find(|h| !ctx.open_tries.contains(&h.catch_block))
+    });
+    if let Some(handler) = next_try {
         let catch_block_id = handler.catch_block;
 
         // The protected range has an end. The block the range falls through
@@ -150,8 +174,11 @@ pub(super) fn recover_structure(
         let catch_was_visited = ctx.visited.contains(&catch_block_id);
         ctx.visited.insert(catch_block_id);
 
-        // Recover the try body (catch block excluded via visited set)
-        let try_body = recover_structure_inner(ctx, block_id, loop_stack);
+        // Recover the try body (catch block excluded via visited set). A
+        // handler inside this one that starts at the same block opens there.
+        ctx.open_tries.insert(catch_block_id);
+        let try_body = recover_structure(ctx, block_id, loop_stack);
+        ctx.open_tries.remove(&catch_block_id);
 
         // Now recover the catch body, temporarily un-visit the catch block
         if !catch_was_visited {

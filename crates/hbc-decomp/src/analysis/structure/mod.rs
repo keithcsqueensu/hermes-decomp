@@ -15,7 +15,11 @@ pub(crate) struct RecoveryCtx<'a> {
     // Blocks already emitted somewhere, as opposed to merely marked visited
     // (a merge point or loop exit held back to be emitted after its region).
     pub emitted: &'a mut HashSet<BlockId>,
-    pub try_starts: &'a BTreeMap<BlockId, &'a CfgExceptionHandler>,
+    // try start -> the handlers whose range starts there, outermost first.
+    pub try_starts: &'a BTreeMap<BlockId, Vec<&'a CfgExceptionHandler>>,
+    // Catch blocks of the tries being recovered: the next handler at a start
+    // is the first one not open yet.
+    pub open_tries: HashSet<BlockId>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,5 +194,53 @@ mod switch_tests {
             ),
             "the exit does not leave the loop: {else_body:?}"
         );
+    }
+
+    // `try { s = "T" } catch (e) { s = "C"; throw } finally { s = "F" }`:
+    // the catch protects the body, the finally the body and the catch, and
+    // both ranges start at the same block. Keyed one per start, the finally
+    // replaced the catch and `s = "C"` was never emitted.
+    #[test]
+    fn a_catch_and_a_finally_on_one_body_both_print() {
+        let mut cfg = CFG::new();
+        let ok = cfg.create_block();
+        let catch = cfg.create_block();
+        let finally = cfg.create_block();
+        let entry = cfg.entry;
+        let s = |v: &str| set("s", Expression::constant(Constant::String(v.into())));
+        cfg.get_mut(entry).unwrap().push(s("T"));
+        cfg.get_mut(entry)
+            .unwrap()
+            .set_terminator(Terminator::Jump(ok));
+        cfg.get_mut(ok)
+            .unwrap()
+            .set_terminator(Terminator::Return(Some(var("s"))));
+        cfg.get_mut(catch).unwrap().push(s("C"));
+        cfg.get_mut(catch)
+            .unwrap()
+            .set_terminator(Terminator::Throw(var("e")));
+        cfg.get_mut(finally).unwrap().push(s("F"));
+        cfg.get_mut(finally)
+            .unwrap()
+            .set_terminator(Terminator::Throw(var("f")));
+        cfg.exception_handlers.push(crate::ir::CfgExceptionHandler {
+            try_block_start: entry,
+            catch_block: catch,
+            try_blocks: vec![entry],
+        });
+        cfg.exception_handlers.push(crate::ir::CfgExceptionHandler {
+            try_block_start: entry,
+            catch_block: finally,
+            try_blocks: vec![entry, catch],
+        });
+
+        let analysis = StructureAnalysis::analyze(&cfg);
+        let all = text(&analysis.root.to_statements(&cfg));
+        for v in ["T", "C", "F"] {
+            assert!(
+                all.contains(&format!("String(\"{v}\")")),
+                "{v} is gone: {all}"
+            );
+        }
     }
 }

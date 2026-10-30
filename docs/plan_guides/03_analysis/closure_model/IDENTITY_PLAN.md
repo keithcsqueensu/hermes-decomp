@@ -332,18 +332,45 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
   -> 12,286, the rise in raw machines whose parked slots the wrapper still binds as `c0`
   where the step's reads now take the usage name (`attachmentID`): wrong before as well
   (the step's parameter stood in), and A2e's to fix. Consts written unchanged (1, 1, 0).
-  Still open: W6 stamps the walk overrides (Expensify 5, Discord 44), names by scope that
-  differ (4, 38), a block scope never built (Expensify 1).
+  Next, lost code again: a `catch` and a `finally` on one body start at the same block, and
+  structure recovery kept one handler per start, so the `finally` won and the `catch` body
+  was never printed (Sentry's `sentryWrapped` lost `withScope(...); throw ex`, and the
+  function it creates had no parent; React's `startTransition` lost its `reportGlobalError`).
+  Handlers sharing a start now open outermost first (the handler more blocks throw to) and
+  each nests the next. Expensify stamps 5 -> 2; strings lost 0 on all three; undeclared v96
+  1,807, Expensify 12,286 -> 12,283, Discord 6,658 -> 6,551; consts written unchanged.
+  Still open: W6 stamps the walk overrides (Expensify 2, Discord 44), names by scope that
+  differ (2, 38), a block scope never built (Expensify 1).
 - **A2b — the walk no longer consulted for a placed access**, then A1b2 (naming by scope).
 - **A2c — `block_scopes` keyed by creation site**, not `(function, builder level)`.
   `NESTED_ENV_LEVEL_BASE`, `reg_source_slot` and `rehomed_block_scopes` go with it.
 - **A2d — the shared-parent install goes.** `parent_function` is the lexical tree again; the
   hoister's shared and self-creating exceptions are re-checked on block-created functions.
-- **A2e — raw machines (S3.2b).** The parked scope is declared for as long as its owner lives;
-  `STEP_ENV_SLOTS` and the stamped `let`s go. Likely split again by machine kind (async,
-  generator). The catch-loop fix above is ordered here: `state_machine_v98` learns a dispatch
-  that is a loop, then the dominator change lands, with raw machines not rising (536 and
-  1,738 before; the dominator change alone made them 581 and 1,919).
+- **A2e — raw machines.** S3.2b already parks a machine's scope in its wrapper
+  (`parked_scopes`; `STEP_ENV_SLOTS` is gone). What is left is that the machine prints
+  correctly while it stays raw, and that the catch-loop fix can land. Census (Expensify,
+  2026-10-29): the lifter gives up 492 times, 419 on a case it cannot parse (a case whose
+  `yield` sits under an `if` or a loop: it lifts straight `yield` chains only), 69 on two
+  terminal cases with content, 4 otherwise. Stages:
+  - **A2e1 — one name per parked slot.** The wrapper's binding, its destructuring and every
+    read in the step take one name, decided per slot (`SlotRef`), not per spelling: today the
+    wrapper binds `c0` while the step's reads take the usage name (`attachmentID`), +3
+    undeclared on Expensify. Counted: parked slots whose references print under more than
+    one name, to 0.
+  - **A2e2 — `separate_step_env_names` keyed by slot.** Its clash test reads names; with A2e1
+    it compares slots, so a slot reached two ways is not split and two slots under one
+    name are. Undeclared and unparsable on both v98 bundles must not rise.
+  - **A2e3 — the dispatch may be a loop.** `state_machine_v98` and `keep_raw_machines` accept
+    a machine whose dispatch sits in a loop (what the catch-loop dominator change makes of
+    one whose catch rejoins the dispatch), with a fixture of each shape.
+  - **A2e4 — the catch-loop fix lands**: catch blocks get their protected blocks as
+    predecessors in `compute_dominators`, with the test from the finding above, and raw
+    machines not rising (536 and 1,738 before; the change alone made them 581 and 1,919).
+
+  Lifting the machines that stay raw (a case whose `yield` is under control flow, two
+  terminals) is structuring, not identity: `../../04_transforms/GENERATOR_LIFT_PLAN.md`,
+  which lifts on the CFG before structuring. Its G2 removes the loop-shaped dispatch, so A2e3
+  is re-read once G2 lands and may reduce to A2e4.
 
 Exit: no `NESTED_ENV_LEVEL_BASE` slot identity and no `rehomed_block_scopes`; raw machines
 and `parked_scopes` measured; v96 changes read line by line, v98 changes class by class.
