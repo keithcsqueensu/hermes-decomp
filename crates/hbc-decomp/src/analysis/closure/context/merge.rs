@@ -1,7 +1,7 @@
 // Merge ancestor slot maps, reanalyze whole-program, IPA/Metro name hooks.
 use super::super::info::{encode_level_slot, ClosureInfo, ClosureSlotValue};
 use super::walk::is_parameter_placeholder;
-use super::ClosureContext;
+use super::{ClosureContext, ScopeRef};
 use crate::ir::Statement;
 use std::collections::{BTreeMap, HashSet};
 
@@ -174,6 +174,19 @@ impl ClosureContext {
         for scope in self.block_level.keys() {
             self.parent_function.remove(scope);
         }
+        // Block ids are given again below, in a new order. A child whose
+        // creator the scan no longer sees keeps its parent by what it was (the
+        // builder and level), not by the old number, which may now name another
+        // function's block (Expensify F109623 read F103111's slots).
+        let block_children: Vec<(u32, ScopeRef)> = self
+            .parent_function
+            .iter()
+            .filter(|(_, p)| self.block_level.contains_key(p))
+            .map(|(&child, &p)| (child, self.scope_ref(p)))
+            .collect();
+        for (child, _) in &block_children {
+            self.parent_function.remove(child);
+        }
         self.block_scopes.clear();
         self.rehomed_block_scopes.clear();
         self.block_level.clear();
@@ -186,6 +199,12 @@ impl ClosureContext {
                 continue;
             };
             self.analyze_function_collecting(fid, stmts, &mut deferred);
+        }
+        for (child, r) in block_children {
+            if !self.parent_function.contains_key(&child) {
+                let scope = self.scope_id(r);
+                self.parent_function.insert(child, scope);
+            }
         }
         // Second pass: ancestor links and function names are complete.
         for (from_fn, level, slot, val) in deferred {

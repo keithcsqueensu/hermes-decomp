@@ -585,6 +585,30 @@ mod block_scope_tests {
         assert_eq!(ctx.slot_owner(1, block), Some(scope));
         assert_eq!(ctx.slot_owner(2, block), Some(scope));
     }
+
+    #[test]
+    fn a_child_the_rescan_does_not_see_keeps_the_block_it_had() {
+        // 9 was created in 5's block env; the rescan no longer sees 5's body,
+        // while 3's body builds a block first and takes the id 5's block had.
+        let block = NESTED_ENV_LEVEL_BASE + 1;
+        let mut ctx = ClosureContext::new();
+        let old = ctx.block_scope(5, block);
+        ctx.parent_function.insert(9, old);
+        let body = vec![Statement::Assign {
+            target: AssignTarget::Binding(Binding::closure_var(block, 0)),
+            value: Expression::Function {
+                id: FunctionId(8),
+                name: None,
+                is_arrow: true,
+                is_async: false,
+                is_generator: false,
+                env: None,
+            },
+        }];
+        ctx.reanalyze_all(&std::collections::BTreeMap::from([(3, body)]));
+        assert_eq!(ctx.scope_ref(ctx.parent_function[&8]), (3, Some(block)));
+        assert_eq!(ctx.scope_ref(ctx.parent_function[&9]), (5, Some(block)));
+    }
 }
 
 #[cfg(test)]
