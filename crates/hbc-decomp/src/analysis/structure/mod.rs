@@ -243,4 +243,54 @@ mod switch_tests {
             );
         }
     }
+
+    // Two nested counted loops as `hermesc -O` emits them: the outer header
+    // resets the inner counter, the inner loop is one block branching to
+    // itself, the outer latch branches back to the header, then the tail.
+    #[test]
+    fn nested_bottom_tested_loops_keep_the_reset_and_the_tail() {
+        let mut cfg = CFG::new();
+        let outer = cfg.create_block();
+        let inner = cfg.create_block();
+        let latch = cfg.create_block();
+        let tail = cfg.create_block();
+        let entry = cfg.entry;
+        let s = |v: &str| set("s", Expression::constant(Constant::String(v.into())));
+        cfg.get_mut(entry)
+            .unwrap()
+            .set_terminator(Terminator::Jump(outer));
+        cfg.get_mut(outer).unwrap().push(s("O"));
+        cfg.get_mut(outer)
+            .unwrap()
+            .set_terminator(Terminator::Jump(inner));
+        cfg.get_mut(inner).unwrap().push(s("I"));
+        cfg.get_mut(inner)
+            .unwrap()
+            .set_terminator(Terminator::Branch {
+                condition: Expression::binary(BinaryOp::Lt, var("i"), var("n")),
+                true_target: inner,
+                false_target: latch,
+            });
+        cfg.get_mut(latch).unwrap().push(s("L"));
+        cfg.get_mut(latch)
+            .unwrap()
+            .set_terminator(Terminator::Branch {
+                condition: Expression::binary(BinaryOp::Lt, var("j"), var("n")),
+                true_target: outer,
+                false_target: tail,
+            });
+        cfg.get_mut(tail).unwrap().push(s("R"));
+        cfg.get_mut(tail)
+            .unwrap()
+            .set_terminator(Terminator::Return(Some(var("s"))));
+
+        let analysis = StructureAnalysis::analyze(&cfg);
+        let all = text(&analysis.root.to_statements(&cfg));
+        for v in ["O", "I", "L", "R"] {
+            assert!(
+                all.contains(&format!("String(\"{v}\")")),
+                "{v} is gone: {all}"
+            );
+        }
+    }
 }

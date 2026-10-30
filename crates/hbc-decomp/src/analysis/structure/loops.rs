@@ -177,12 +177,25 @@ pub(super) fn recover_loop(
         Terminator::Jump(target) => {
             let target = *target;
             if loop_info.body.contains(&target) {
+                // The back edges come to the header, so its statements run on
+                // every pass: they open the body, not precede the loop. The
+                // exit follows the loop as in the arms above. Hoisted and with
+                // no exit, two nested counted loops (`hermesc -O`) lost the
+                // inner counter's reset and everything after them (Discord's
+                // ConjureDitherField module lost its exports).
                 let body = recover_structure(ctx, target, &new_stack);
-                let mut parts = vec![Structure::Block(loop_info.header, header_stmts)];
-                parts.push(make_loop(
-                    body,
+                let mut parts = vec![make_loop(
+                    Structure::Sequence(vec![
+                        Structure::Block(loop_info.header, header_stmts),
+                        body,
+                    ]),
                     Expression::constant(crate::ir::Constant::Bool(true)),
-                ));
+                )];
+                if let Some(exit) = loop_info.exit {
+                    if !ctx.visited.contains(&exit) {
+                        parts.push(recover_structure(ctx, exit, loop_stack));
+                    }
+                }
                 Structure::Sequence(parts)
             } else {
                 let next = recover_structure(ctx, target, loop_stack);

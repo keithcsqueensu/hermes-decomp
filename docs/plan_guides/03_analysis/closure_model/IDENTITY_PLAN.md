@@ -339,8 +339,22 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
   Handlers sharing a start now open outermost first (the handler more blocks throw to) and
   each nests the next. Expensify stamps 5 -> 2; strings lost 0 on all three; undeclared v96
   1,807, Expensify 12,286 -> 12,283, Discord 6,658 -> 6,551; consts written unchanged.
-  Still open: W6 stamps the walk overrides (Expensify 2, Discord 44), names by scope that
-  differ (2, 38), a block scope never built (Expensify 1).
+  Then a context change after W6: `reanalyze_all` gives block scope ids again in a new
+  order, and a function whose creator the rescan no longer sees kept its parent by the old
+  number, now another function's block (Expensify F109623 read F103111's slots). Such a
+  parent is kept by builder and level and renumbered after the scan. Stamps Expensify
+  2 -> 0, Discord 44 -> 12. The last twelve were lost code: a loop whose header jumps into
+  its body (two nested counted loops under `hermesc -O`) printed the header's statements
+  before `while (true)` and never printed the loop's exit, so the inner counter's reset and
+  everything after the loops were gone (Discord's `crc32` table module lost its export,
+  `ConjureDitherField` its worklets and exports; nested loops are in the round-trip corpus
+  now). W6 stamps the walk overrides and names by scope that differ: 0 on all three.
+  Undeclared Expensify 12,283 -> 12,272; strings lost 0; consts unchanged.
+  Found on the way, not fixed: the IPA parameter rename (`rename_param_registers`) does not
+  check the body's names, so a local the namer called `arr` and a parameter IPA calls `arr`
+  merge, the local's `let` goes and its writes clobber the parameter (a `-O` loop that
+  reuses the parameter's register shows it).
+  Still open: a block scope never built (Expensify 1).
 - **A2b — the walk no longer consulted for a placed access**, then A1b2 (naming by scope).
 - **A2c — `block_scopes` keyed by creation site**, not `(function, builder level)`.
   `NESTED_ENV_LEVEL_BASE`, `reg_source_slot` and `rehomed_block_scopes` go with it.
