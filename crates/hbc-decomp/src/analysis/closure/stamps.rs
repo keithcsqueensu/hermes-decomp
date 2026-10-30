@@ -240,6 +240,11 @@ pub fn report(stage: &str, all_ir: &BTreeMap<u32, Vec<Statement>>, ctx: Option<&
         now.insert(func, names);
     }
     log_census(stage, total);
+    let (ok, off, samples) = class_body_stamps(ctx, all_ir);
+    log::debug!(target: TARGET, "{stage:<14} class-body stamps: {ok} agree, {off} off the method's chain or against its own body");
+    for s in samples {
+        log::trace!(target: TARGET, "    off-chain: {s}");
+    }
     worst.sort_by(|a, b| b.1.dropped.cmp(&a.1.dropped).then(a.0.cmp(&b.0)));
     for (func, c) in worst.into_iter().take(5) {
         let was = &before[&func];
@@ -299,4 +304,79 @@ pub fn report_render() {
     if let Ok(total) = RENDERED.lock() {
         log_census("at codegen", *total);
     }
+}
+
+// Stamps inside class bodies (EARLY_STAMPS_PLAN.md E0). A method's body is
+// stamped in its own view, so every slot it names is the method's own, an
+// ancestor's, or a machine scope parked in one of those; anything else names a
+// scope the method cannot reach. The walk over bodies does not enter a class
+// (the visitor leaves method bodies out), so this one does, method by method.
+pub fn class_body_stamps(
+    ctx: &ClosureContext,
+    all_ir: &BTreeMap<u32, Vec<Statement>>,
+) -> (usize, usize, Vec<String>) {
+    struct Classes<'a>(Vec<(u32, &'a [Statement])>);
+    impl<'a> Visitor<'a> for Classes<'a> {
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Class { methods, .. } = s {
+                for m in methods {
+                    if let (Expression::Function { id, .. }, Some(body)) = (&m.value, &m.body) {
+                        self.0.push((id.0, body));
+                    }
+                }
+            }
+            self.walk_statement(s);
+        }
+    }
+    let (mut ok, mut off, mut samples) = (0, 0, Vec::new());
+    for (&func, stmts) in all_ir {
+        let mut pending = Classes(Vec::new());
+        for s in stmts {
+            pending.visit_statement(s);
+        }
+        while let Some((method, body)) = pending.0.pop() {
+            let mut reach = own_scopes(ctx, method);
+            reach.extend(ctx.ancestors_of(method));
+            // The owners the method's own body (baked at W6 in its own view)
+            // gives each slot number: a class copy naming another owner for a
+            // slot the own body stamps disagrees with it.
+            let mut own_owners: HashMap<u32, HashSet<u32>> = HashMap::new();
+            if let Some(own_body) = all_ir.get(&method) {
+                for (_, slot) in var_refs(own_body) {
+                    if let Some(s) = slot {
+                        own_owners.entry(s.slot).or_default().insert(s.owner);
+                    }
+                }
+            }
+            for (name, slot) in var_refs(body) {
+                let Some(s) = slot else { continue };
+                let parked = ctx.parked_scopes.contains(&s.owner)
+                    && reach.contains(&ctx.scope_function(s.owner));
+                let disagrees = own_owners
+                    .get(&s.slot)
+                    .is_some_and(|o| !o.contains(&s.owner));
+                if (reach.contains(&s.owner) || parked) && !disagrees {
+                    ok += 1;
+                } else {
+                    off += 1;
+                    if samples.len() < 40 {
+                        samples.push(format!(
+                            "F{func} method F{method} `{name}` scope {} {:?} slot {} (own body: {:?}; method's chain {:?})",
+                            s.owner,
+                            ctx.scope_ref(s.owner),
+                            s.slot,
+                            own_owners.get(&s.slot),
+                            ctx.ancestors_of(method)
+                        ));
+                    }
+                }
+            }
+            let mut inner = Classes(Vec::new());
+            for s in body {
+                inner.visit_statement(s);
+            }
+            pending.0.extend(inner.0);
+        }
+    }
+    (ok, off, samples)
 }

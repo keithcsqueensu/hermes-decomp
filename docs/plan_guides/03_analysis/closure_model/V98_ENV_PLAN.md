@@ -1,6 +1,11 @@
 # Impl plan — the v98+ environment model
 
-> **Ownership.** Split out of `K4_PLAN.md` K4.2b. *Owns* how the IR builder and the closure
+> **Status: closed (2026-10-30).** E0–E4 landed; S3_PARKED_ENV_PLAN.md took the parked
+> environments, and IDENTITY_PLAN.md (plan A) owns what is left: naming, stamps and
+> `rename_slot` (from `K4_PLAN.md`, closed too), and the accesses the graph still cannot place
+> (plan A A2c3). Where each follow-up below went is in §7.
+>
+> **Ownership (as written).** Split out of `K4_PLAN.md` K4.2b. *Owns* how the IR builder and the closure
 > context decide which scope an environment access reaches, on HBC v98 and later. *Delegates*
 > naming, stamps and `rename_slot` to `K4_PLAN.md`; this plan only changes which `(owner, slot)`
 > an access is, never what that slot is called.
@@ -339,3 +344,19 @@ E1: `async_closures.v98` (S1) passes, with no K4.2b code; `feat/k4-2b` can be dr
 - **A second `CreateFunctionEnvironment`** in one function is taken as a block scope built on
   the running environment (`claim_function_env`). Its parent is the closure environment. E2
   should model it as `Created(k, Closure(0))` and E1 needs a fixture for it.
+
+## 7. Where the follow-ups went (2026-10-30)
+
+- **§5's order** is history. K4.2b never landed: E4 fixed S1 without it (`feat/k4-2b` dropped),
+  and A2b now stamps every placed access from its recorded scope. K4.5.3, K4.5.4 and K4.6 are
+  plan A A3 step 5a.
+- **E4's follow-ups.** `TooMany` was raised to 1024 (S3_PARKED_ENV_PLAN.md, 2026-10-28) and
+  takes F2473's undeclared `closure_2_26` case with it. TwoSlots among sibling blocks of one
+  function (names allocated per owner, siblings not deconflicted) is plan A A4's allocator,
+  which names per scope.
+- **§6.** Lowercase JSX tags: 0 on v96, Expensify and Discord (`undeclared.mjs`,
+  `lowercaseTags`). A second `CreateFunctionEnvironment` is a separate created scope
+  (`env_values`), keyed by its site since A2c1. `GetClosureEnvironment` is still `Env::Unknown`:
+  with disagreeing paths and nesting past the bound it is the `unknown` kind, 606 Expensify and
+  3,981 Discord accesses the graph never places. That is plan A A2c3.
+

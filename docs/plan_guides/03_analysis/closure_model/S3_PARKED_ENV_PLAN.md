@@ -1,7 +1,18 @@
 # Impl plan — S3, environments parked in slots (finishing it)
 
-Status: **proposed (2026-10-25).** Follows V98_ENV_PLAN.md (S3 in §1; E2–E4 in §4) and
-OUTPUT_DEFECTS_PLAN.md §9.
+Status: **closed (2026-10-30); what is left moved to IDENTITY_PLAN.md (plan A).** S3.0, S3.1,
+S3.2 (as S3.2b) and S3.4 landed; S3.3's item 1 (`TooMany`) landed and item 2 is served by the
+per-creator copies and S3.4's chain answer. Left, and where it went:
+- the builder side of the slot-held identity (`reg_source_slot`, `NESTED_ENV_LEVEL_BASE +
+  slot` as the raw level the plan overrides): plan A **A2c2**;
+- S3.3 item 3 and the rest the graph does not place (the `unknown` kind, slot-held and
+  up-from-a-slot accesses printed `closure_unknown_N`, chains that break): plan A **A2c3**,
+  with today's counts;
+- raw machines that stay raw: plan A **A2e** and GENERATOR_LIFT_PLAN.md;
+- Discord's last unparsable module (7466, `_fireSurveyAction`, a parameter and its slot copy
+  under one name): plan A **A3 step 4b**, and A4's exit.
+
+Follows V98_ENV_PLAN.md (S3 in §1; E2–E4 in §4) and OUTPUT_DEFECTS_PLAN.md §9.
 
 ## 1. Where S3 stands
 

@@ -1,7 +1,8 @@
 # Impl plan — stamps baked before W6
 
-Status: **proposed (2026-10-30).** Found in IDENTITY_PLAN.md A2c1. Blocks A2c's stable block
-ids, and so A2d and A3: an identity that changes number on every rescan is not an identity.
+Status: **done (2026-10-30): E0, E2 and E3 landed; E1 was not needed.** Found in
+IDENTITY_PLAN.md A2c1. §1 is the diagnosis as first written; §3 is what E0 found, which
+reverses it: the early stamps were right, and the renumbering made them wrong.
 
 ## 1. What was found
 
@@ -49,6 +50,63 @@ F18926's block). To confirm in E0.
   `owner_binding_if_follows`: a class reference that names the slot and is renamed with it should
   follow, not block.
 
-## 3. Not in scope
+## 3. What E0 found, and what landed
+
+**The stamps were right; renumbering made them wrong.** E0's census
+(`stamps::class_body_stamps`, logged with every stamp census under `slots=debug`) checks each
+stamped reference in a class method body against the method's chain and against the stamps
+the method's own body (baked at W6 in its own view) gives the same slot. On Discord with
+stable ids: 46,261 references, 0 off the chain, 0 against the method's own body (v96 8,486,
+Expensify 7,866, both 0).
+
+The probe on lodash settled it. With stable ids, `runInContext`'s classes read slot 36 as
+`(F18926@3, 36)`, which is on every method's chain and is the astral regex: right. With
+renumbering, the same stamp kept the id it was baked with at F26, and after W6's rescan that
+number belonged to `F8682@837`, a block of an unrelated function. The class references were
+silently pointing into another function's scope; the gate passed because nothing else
+referenced that slot. The `closure_6` read as "lodash's `TypeError`" in §1 is
+`runInContext`'s own slot 6, correctly stamped (the factory's slot 6 was never involved).
+
+So §1's cause was wrong, and E1 (re-resolving class bodies in the method's view) has nothing
+to fix: `fetch_body` already resolves a method with the method's own id.
+
+**What was really refusing `regex4`** is E3's gate. `owner_binding_if_follows` counted every
+class-statement reference as one no rename reaches. But codegen prints a method from its
+function's whole-program body (`inline_bodies`), renamed with that function, not from the copy
+inside the class; the copy is printed only when that body is missing. Its references follow.
+
+**Landed:**
+- E2: `reanalyze_all` keeps block ids (no renumbering, no parent edges dropped and restored).
+- E3: `class_method_refs` leaves out a method whose function has a body of its own, so its
+  copy no longer blocks the owner's rename.
+- E0's census stays as a diagnostic.
+
+**Results** (against A2c1, `b3914ba`):
+
+| | lines | undeclared | consts written | strings lost |
+|---|---|---|---|---|
+| v96 | 213 | 1,485 (=) | 1 (=) | 0 |
+| Expensify | 178 | 12,052 -> 12,039 | 1 (=) | 0 |
+| Discord | 3,475 | 6,553 -> 6,567 | 0 (=) | 0 |
+
+Discord's identity check falls: I1 2,525 -> 2,503 at the end of naming and 7,524 -> 7,374 at
+codegen, I2 8,167 -> 7,962 and 2,407 -> 2,368; I3's undeclared row is unchanged (364).
+`regex4` and `regex5` are named. The v96 and Expensify diffs are names the gate used to refuse:
+XHR's `const OPENED = 1` where `let c12 = 1` sat beside an undeclared `OPENED`, Sentry's
+`allowTouches`, Reanimated's `ERROR_MESSAGES`; dead `let closure_0 = x` aliases go.
+
+**Open: Discord's +14 is one name.** `fn7_2` +38, against 25 better across 11 names. It is
+moment.js's inlined `addRegexToken` inside a function with more than 127 blocks (the builder's
+level cap, IDENTITY_PLAN.md A2c1: its slots print at level 255). The arrow
+reads `fn7_2` and `re1_12` where the block binds `re1_11`. Before, it read `fn146` and `c1_9`
+against a binding of `closure_255_0_40`/`closure_255_1_39`: also wrong, but the wrong names were
+declared elsewhere. So the region was misread before and is visibly misread now. Its fix is
+the capped levels' (the arrow's reads and the block's stores do not reach the same block),
+not stamps: A2c2's follow-up.
+
+The plan's E2 exit asked for 6,520 or below, a number measured with renumbering kept on top
+of site keys. That exit is not met by 47, and the 47 are the `fn7_2` case above.
+
+## 4. Not in scope
 
 Shared functions that create themselves (SELF_CREATING_SHARED_PLAN.md); the level cap (A2c).

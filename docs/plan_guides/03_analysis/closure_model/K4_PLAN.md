@@ -5,6 +5,21 @@ stages, after K1–K3 shipped and K4-small did not (`PLAN.md` C9, C10). Conventi
 `PLAN.md`: **[code]** is `file:line` when written, re-derive it; **[measured]** is a number from
 running the tree on Equinox 11.43.0 (`index.android.bundle.backup`, v96).
 
+**Closed (2026-10-30): the open stages moved into IDENTITY_PLAN.md (plan A).** K4.0–K4.4 and
+K4.5.1–K4.5.2 shipped here. What was left is plan A's now, and its text lives there:
+
+| K4 stage | Plan A | Note |
+|---|---|---|
+| K4.2b stamps walk environments | superseded by A2b | every access the scope graph placed is stamped from its recorded scope (Discord: 1,309,425 of 1,318,481 W6 stamps); the walk answers only the unplaced 9,056 |
+| K4.5.3 inherit by stamp, K4.5.4 `capture_sync` by stamp | A3 step 5a | re-measured first, on A2b's stamps |
+| K4.6 `rename_slot` | A3 step 5a | |
+| K4.6b late renamers | A3 step 5a2 | |
+| K4.R relocation checks | A3.0b | lands before A3 step 3 |
+| K4.7 enforce I1/I2 | A4d2 | |
+| K4.8 retire the spelling | A4d3 | |
+
+The sections below are kept for what they measured; the moved ones point at plan A.
+
 ---
 
 ## 1. Why K4, and why not as first written
@@ -571,7 +586,8 @@ for its own commit, after `rename_slot` (K4.6) makes owner and readers move toge
 
   The rest are 1–8 references each, not all read.
 
-**K4.5.3 and K4.5.4 — blocked on a stamping bug (open).** Both were written and measured,
+**K4.5.3 and K4.5.4 — blocked on a stamping bug; moved to IDENTITY_PLAN.md A3 step 5a
+(2026-10-30), with K4.2b superseded by A2b.** The record of why: Both were written and measured,
 and on v98 both ran into the same fault: a stamp can name the wrong owner.
 `ClosureContext::ancestor_at` walks the function tree one hop per level. That is right
 only while every function on the way was created with its creator's own environment. A
@@ -601,53 +617,19 @@ nested `require` reads to the wrapper, and 677 lines of recovered imports went b
 `closure_2_0(dependencyMap[8])`.
 
 ### K4.6 — `rename_slot` — behaviour
-One operation, `rename_slot(all_ir, ctx, SlotRef, new_name)`: renames every `Var` carrying the
-`SlotRef`, in every body, and the context's name with it, refusing when `new_name` is already
-another binding anywhere those bodies can see (I2). Every post-W6 caller of
-`update_slot_variable` (metro W7b, W9's IPA and Metro-role refresh, W10, W11d) goes through
-it, so the context and the IR cannot drift.
-
-Then reopen C10's first experiment — let `closure_N$K` through W10/W11's gate, ancestor inherit
-and the declaration pass — which regressed only because a rename could reach some bodies and
-not others. *Acceptance:* the behaviour gates; `resolveThenable` and `genMethod` correct;
-I1/I2 falling.
+Moved to IDENTITY_PLAN.md A3 step 5a (2026-10-30).
 
 ### K4.6b — the late renamers go through `rename_slot` — behaviour
-K4.3 found I1 at 828 at the end of naming and 2,294 at codegen (§7): the stages after naming
-create two-thirds of the I1 violations. The renamers there work per body and by text —
-W13's inliner, `rename_param_registers`, `rename_reserved_words`,
-`make_sanitized_names_distinct`, `repair_switch_clobbers` — so a rename reaches the body it
-runs on and not the other bodies that name the same slot. Each is moved, one commit at a
-time, to rename a stamped `Var` by identity (all bodies) or not at all. Measure I1 at codegen
-per commit. *Acceptance:* the behaviour gates; I1 at codegen ≤ I1 at the end of naming.
+Moved to IDENTITY_PLAN.md A3 step 5a2 (2026-10-30).
 
 ### K4.R — relocation checks — diagnostic, then behaviour
-Identity matters wherever code moves between bodies, not only for closure naming: W16g
-(`hoist_repeated_closures`) gives a repeatedly-created function one declaration in a shared
-scope, W16h hoists module loads into the factory, W13 inlines. Each move is only correct if
-every slot the moved statements name is visible at the destination — its `owner` is the
-destination or on the destination's parent chain — and the destination binds no other thing
-under that name. With absolute `SlotRef`s that is a check, not a guess:
-
-1. `check_relocation(stmts, from, to, ctx)`: the slots `stmts` name whose owner is not
-   visible from `to`, and the names `to` already binds differently. Logged per pass under
-   `slots=debug`; a count of moves that would change meaning.
-2. Each hoisting pass refuses a move the check rejects (behaviour, one commit per pass).
-
-The census already shows hoisting moving identity correctly in the common case: W16h turns
-~9k capture references into own-slot references of the factory, with every stamp intact.
+Moved to IDENTITY_PLAN.md A3.0b (2026-10-30).
 
 ### K4.7 — enforce I1/I2 at the end of naming — behaviour
-A closing pass: for each remaining I1 violation pick one name (best `NameSource` among those
-carried, then the owner's), for each I2 violation rename one side by identity, via
-`rename_slot`. The K4.3 counts go to zero on the corpus, and the ceiling becomes zero.
+Moved to IDENTITY_PLAN.md A4d2 (2026-10-30).
 
 ### K4.8 — retire the spelling — cleanup
-Where a `Var` has a `slot`, the placeholder parsers (`crate::ir::placeholder`) are no longer
-consulted; `is_closure_name`-style gates become `var.slot.is_some()` plus a `NameSource` test.
-The reanalyze/no-reanalyze distinction and the "must run after `resolve_closures`" prose (C8)
-are reviewed for what still needs them. P1b's `NameSource::Debug` rung (K3) becomes a
-`rename_slot` from the debug scope chain.
+Moved to IDENTITY_PLAN.md A4d3 (2026-10-30).
 
 ## 5. Risks
 

@@ -172,29 +172,11 @@ impl ClosureContext {
     /// correct ancestor (nested body writing into a parent env).
     pub fn reanalyze_all(&mut self, all_ir: &BTreeMap<u32, Vec<Statement>>) {
         self.function_closures.clear();
-        // Block ids are given again below, as the scan builds them. They could
-        // be kept (they are keyed by creation site now), but stamps baked
-        // before W6 (F26, class bodies resolved in their creator's view) still
-        // name blocks they do not read, and a fresh number is what keeps those
-        // from matching (EARLY_STAMPS_PLAN.md). A child whose creator
-        // the scan no longer sees keeps its block by site, not by the old number.
-        let block_children: Vec<(u32, ScopeRef)> = self
-            .parent_function
-            .iter()
-            .filter(|(_, p)| self.block_level.contains_key(p))
-            .map(|(&child, &p)| (child, self.scope_ref(p)))
-            .collect();
-        for (child, _) in &block_children {
-            self.parent_function.remove(child);
-        }
-        for scope in self.block_level.keys() {
-            self.parent_function.remove(scope);
-        }
-        self.block_scopes.clear();
-        self.block_key.clear();
-        self.block_level.clear();
-        self.block_function.clear();
-        self.block_index.clear();
+        // Block scopes keep their ids: they are keyed by creation site, and a
+        // stamp baked before this scan (F26, the class pass's method bodies)
+        // names them by id. Numbering them again sent those stamps to
+        // whichever block took the number (lodash's `runInContext` classes read
+        // F8682's block for F18926's; EARLY_STAMPS_PLAN.md).
         let mut deferred: Vec<(u32, u32, u32, ClosureSlotValue)> = Vec::new();
         let mut keys: Vec<u32> = all_ir.keys().copied().collect();
         keys.sort();
@@ -203,12 +185,6 @@ impl ClosureContext {
                 continue;
             };
             self.analyze_function_collecting(fid, stmts, &mut deferred);
-        }
-        for (child, r) in block_children {
-            if !self.parent_function.contains_key(&child) {
-                let scope = self.scope_id(r);
-                self.parent_function.insert(child, scope);
-            }
         }
         // A block only the recorded accesses name (one its builder reads and
         // nothing stores into or creates on) is a scope all the same.

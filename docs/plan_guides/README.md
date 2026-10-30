@@ -33,7 +33,12 @@ plan_guides/
   03_analysis/
     RISKS.md                  register (points to the closure model)
     closure_model/PLAN.md     the decompiler's closure / env-slot model
-    closure_model/K4_PLAN.md  K4 staged: captures keep their identity to codegen
+    closure_model/K4_PLAN.md  K4 staged: captures keep their identity to codegen (closed; open stages now in IDENTITY_PLAN)
+    closure_model/IDENTITY_PLAN.md  plan A: every access names its scope, every variable an identity
+    closure_model/V98_ENV_PLAN.md  the v98 environment model, scope graph (closed; rest in IDENTITY_PLAN)
+    closure_model/S3_PARKED_ENV_PLAN.md  environments parked in slots (closed; rest in IDENTITY_PLAN)
+    closure_model/EARLY_STAMPS_PLAN.md  stamps baked before W6; stable block ids (done)
+    closure_model/SELF_CREATING_SHARED_PLAN.md  copies of shared functions that create themselves
   04_transforms/
     RISKS.md                  register (open defects in OUTPUT_DEFECTS_PLAN; standing hazards)
     OUTPUT_DEFECTS_PLAN.md    unparsed modules, JSX residue, E1 fixture failures outside env
@@ -107,7 +112,7 @@ is worth keeping, because it is also the failure mode — see § Splitting.
 | `06_write/string_packing/PLAN.md` | write register, design limits | how string storage is laid out and could be repacked | P0–P2 shipped (validation, containment packing with a pin set); P3, P4 open |
 | `06_write/relocation/PLAN.md` | write register, design limits | the absolute-offset surface; splice-and-shift | P0–P2 shipped (one `relocate` primitive, R26 fixed); P3 on a named trigger |
 | `01_read/unmodeled_regions/PLAN.md` | relocation P3 | per-region read / interpret / emit status + formats | P0, P1, P2, P3, P4a (A, B, C), P5 shipped; P1b, P4, P6 open |
-| `03_analysis/closure_model/PLAN.md` | unmodeled-regions P1b | the decompiler's closure / env-slot model | K1, K2, K3 shipped (K1 as exact env levels; K3 byte-identical); C9 fixed; C10 (late renamers still text-keyed) open; K4 staged in `K4_PLAN.md`, K4.0 (harness) done |
+| `03_analysis/closure_model/PLAN.md` | unmodeled-regions P1b | the decompiler's closure / env-slot model | K1, K2, K3 shipped (K1 as exact env levels; K3 byte-identical); C9 fixed; C10 (late renamers still text-keyed) open; K4 staged in `K4_PLAN.md`, K4.0–K4.5.2 shipped, the rest absorbed into `IDENTITY_PLAN.md` (2026-10-30) |
 
 Two edges cross stages and are the ones people trip on:
 

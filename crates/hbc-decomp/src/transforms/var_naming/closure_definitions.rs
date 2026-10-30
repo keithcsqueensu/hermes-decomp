@@ -408,7 +408,7 @@ impl SlotFollow {
                     unstamped.entry(name.to_string()).or_default().insert(func);
                 }
             }
-            for (name, slot) in class_method_refs(stmts) {
+            for (name, slot) in class_method_refs(stmts, all_ir) {
                 if slot.is_none() && is_closure_name(&name) {
                     unstamped.entry(name).or_default().insert(IN_CLASS);
                 }
@@ -497,9 +497,10 @@ fn stamped_slot_refs(
                     .insert((func, name.to_string()));
             }
         }
-        // A class's methods already live inside its statement, where no
-        // per-function rename reaches; a reference there never follows.
-        for (name, slot) in class_method_refs(stmts) {
+        // A class method's copy that renders from its own IR lives inside the
+        // class statement, where no per-function rename reaches; a reference
+        // there never follows.
+        for (name, slot) in class_method_refs(stmts, all_ir) {
             if let Some(slot) = slot {
                 out.entry(slot).or_default().insert((IN_CLASS, name));
             }
@@ -512,13 +513,27 @@ fn stamped_slot_refs(
 const IN_CLASS: u32 = u32::MAX;
 
 // Every variable reference in the bodies of the class methods `stmts` hold,
-// nested classes included (the IR walker does not visit methods).
-fn class_method_refs(stmts: &[Statement]) -> Vec<(String, Option<crate::ir::SlotRef>)> {
-    struct Classes(Vec<(String, Option<crate::ir::SlotRef>)>);
-    impl<'a> Visitor<'a> for Classes {
+// nested classes included (the IR walker does not visit methods). A method
+// whose function has a body of its own is left out: codegen prints that body
+// (`inline_bodies`), renamed with its function, not the copy in the class, so
+// its references are that function's and follow its renames
+// (EARLY_STAMPS_PLAN.md E3; lodash's `regex4`, read in `runInContext`'s classes).
+fn class_method_refs(
+    stmts: &[Statement],
+    all_ir: &BTreeMap<u32, Vec<Statement>>,
+) -> Vec<(String, Option<crate::ir::SlotRef>)> {
+    struct Classes<'b>(
+        Vec<(String, Option<crate::ir::SlotRef>)>,
+        &'b BTreeMap<u32, Vec<Statement>>,
+    );
+    impl<'a> Visitor<'a> for Classes<'_> {
         fn visit_statement(&mut self, s: &'a Statement) {
             if let Statement::Class { methods, .. } = s {
                 for m in methods {
+                    if matches!(&m.value, Expression::Function { id, .. } if self.1.contains_key(&id.0))
+                    {
+                        continue;
+                    }
                     if let Some(body) = &m.body {
                         for (n, slot) in crate::analysis::closure::stamps::var_refs(body) {
                             self.0.push((n.to_string(), slot));
@@ -532,7 +547,7 @@ fn class_method_refs(stmts: &[Statement]) -> Vec<(String, Option<crate::ir::Slot
             self.walk_statement(s);
         }
     }
-    let mut c = Classes(Vec::new());
+    let mut c = Classes(Vec::new(), all_ir);
     for s in stmts {
         c.visit_statement(s);
     }

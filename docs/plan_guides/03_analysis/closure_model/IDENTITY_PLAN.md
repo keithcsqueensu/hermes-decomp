@@ -1,7 +1,10 @@
 # Impl plan — A, scope and variable identity
 
 Status: **proposed (2026-10-28).** Follows S3_PARKED_ENV_PLAN.md (S3.3, S3.4 and the
-follow-ups recorded there) and K4_PLAN.md. Plan B (putting hermesc's inlined helpers back as
+follow-ups recorded there) and K4_PLAN.md, whose open stages it absorbed on 2026-10-30
+(K4.R as A3.0b, K4.5.3/K4.5.4 and K4.6 in A3 step 5a, K4.6b as 5a2, K4.7 and K4.8 as A4d2 and
+A4d3; K4.2b superseded by A2b), and the leftovers of V98_ENV_PLAN.md and
+S3_PARKED_ENV_PLAN.md (A2c2, A2c3, A2e, A3 step 4b), both closed the same day. Plan B (putting hermesc's inlined helpers back as
 functions, INLINED_HELPERS_PLAN.md) depends on stage 3 of this plan.
 
 ## 1. Where things stand
@@ -399,12 +402,37 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
     unchanged. Still open:
     - the callback's store reaching its own block needs copies of a function that creates
       itself: SELF_CREATING_SHARED_PLAN.md;
-    - ids are still numbered again by every rescan. Keeping them (they could be, by site)
-      lost names on Discord (6,651: lodash's `regex4`), because stamps baked before W6 in class
-      bodies name blocks they do not read and the renumbering hid them: EARLY_STAMPS_PLAN.md,
-      which A2d and A3 wait for;
+    - ~~ids are still numbered again by every rescan~~ **done (2026-10-30),
+      EARLY_STAMPS_PLAN.md.** Block ids are stable. The diagnosis reversed: the stamps baked
+      before W6 were right, and renumbering sent them to whichever block took their number
+      (lodash's classes read an unrelated function's block). What refused `regex4` was the
+      class-statement gate, which now lets a method that prints from its own body follow.
+      Undeclared v96 1,485 (=), Expensify 12,052 -> 12,039, Discord 6,553 -> 6,567, all of
+      Discord's rise one name in the capped-level function (next item);
     - A2c2: a slot-held environment is still addressed at `NESTED_ENV_LEVEL_BASE + slot`
-      (a block of its own under `SLOT_HELD_SITE`), and `reg_source_slot` stays.
+      (a block of its own under `SLOT_HELD_SITE`), and `reg_source_slot` stays. With it, the
+      builder's level cap: in a function with more than 127 blocks (as Discord F31169; here
+      moment.js's inlined `addRegexToken`, whose slots print at level 255), a closure's reads and its block's stores do not reach the same
+      block (`fn7_2`, 38 undeclared; misread under other declared names before).
+- **A2c3 — the accesses the graph does not place** (from S3_PARKED_ENV_PLAN.md S3.3 item 3
+  and V98_ENV_PLAN.md §6, 2026-10-30). Every environment access should name its scope; these
+  still do not, Expensify / Discord (E2+E3 build):
+
+  | bucket | Expensify | Discord | today |
+  |---|---|---|---|
+  | `unknown` kind (`GetClosureEnvironment`, paths that disagree, nesting past the bound) | 606 | 3,981 | level model |
+  | closure accesses unresolved | 2,634 | 2,874 | most served by per-creator copies and the chain answer; the rest level model |
+  | slot-held / up-from-a-slot the graph cannot place | 18 / 44 | 39 / 70 | `closure_unknown_N` (loud) |
+  | resolved but not on the installed chain | 59 | 40 | |
+
+  Stages: first split the `unknown` kind by cause in the census (`GetClosureEnvironment`
+  alone was 295 sites on Discord in V98 E2, the rest disagreeing paths); then a fixture for
+  `GetClosureEnvironment` (what a closure value's environment is: the scope it was created
+  in, which the graph knows from the closure's creation) and model it as that; then recount
+  the closure remainder past the copies and the chain answer (the 457 / 458 S3.4 left on the
+  level model because the chain merely breaks: "no fact creates", "parent unresolved").
+  Exit: every bucket counted by cause, `GetClosureEnvironment` placed, and the level model
+  answering only what is counted. A3's identities are only as good as these.
 - **A2d — the shared-parent install goes.** `parent_function` is the lexical tree again; the
   hoister's shared and self-creating exceptions are re-checked on block-created functions.
 - **A2e — raw machines.** S3.2b already parks a machine's scope in its wrapper
@@ -460,6 +488,18 @@ without an identity (178 construction sites outside tests, most in `transforms/i
 `analysis/metro`, `var_naming`, `patterns` and `codegen`), logged with the census. It changes
 no output; its counts are what each step below must bring to zero for its family.
 
+**A3.0b — the relocation check** (was K4.R, moved here 2026-10-30). Identity matters wherever
+code moves between bodies: W16g (`hoist_repeated_closures`) gives a repeatedly created
+function one declaration in a shared scope, W16h hoists module loads into the factory, W13
+inlines. A move is correct only if every slot the moved statements name is visible at the
+destination (its owner is the destination or on its parent chain) and the destination binds
+no other thing under that name. With stamps that is a check, not a guess:
+1. `check_relocation(stmts, from, to, ctx)`: the slots `stmts` name whose owner is not visible
+   from `to`, and the names `to` already binds differently; logged per pass under
+   `slots=debug` as a count of moves that would change meaning. Diagnostic, no output change.
+2. Each hoisting pass refuses a move the check rejects, one commit per pass. This is step 3's
+   guard, so it lands before step 3.
+
 Steps 4 and 5 are each split (2026-10-29):
 
 - **4a — moves keep identities.** `keep_raw_machines` (the `createGenerator(step)` rewrite and
@@ -475,11 +515,34 @@ Steps 4 and 5 are each split (2026-10-29):
 - **4d — `separate_step_env_names` goes.** With 4a–4c, a parked slot's clash is two identities
   under one name, and the general clash rule (step 5) renames it. Undeclared and unparsable
   counts must not rise on either v98 bundle.
-- **5a — renaming by identity.** `rename_variables_in_stmts` gains an identity-keyed form, and
-  the naming passes move to it one at a time, each its own commit with the counts: W10
-  `closure_definitions`, W11 definition-site naming, W11b `ancestor_inherit`, W11c
-  `capture_sync`, then the IPA and metro renames. A pass converted renames the slot, never
-  the spelling, so a body's own local of the same name stays as it was.
+- **5a — renaming by identity** (absorbs K4.5.3, K4.5.4 and K4.6, 2026-10-30).
+  One operation, `rename_slot(all_ir, ctx, SlotRef, new_name)`, renames every `Var` carrying
+  the slot in every body, and the context's name with it, and refuses when `new_name` is
+  already another binding anywhere those bodies can see (I2). Every post-W6 caller of
+  `update_slot_variable` (metro W7b, W9's IPA and Metro-role refresh, W10, W11d) goes through
+  it, so the context and the IR cannot drift. `rename_variables_in_stmts` gains the same
+  identity-keyed form, and the naming passes move to it one at a time, each its own commit
+  with the counts: W10 `closure_definitions`, W11 definition-site naming, W11b
+  `ancestor_inherit` (K4.5.3: inherit takes the stamped slot), W11c `capture_sync` (K4.5.4:
+  both names read off the stamps), then the IPA and metro renames. When ancestor inherit and
+  `capture_sync` are done, `baked_captures` has no readers and goes. A pass converted renames
+  the slot, never the spelling, so a body's own local of the same name stays as it was.
+  K4.5.3 and K4.5.4 were blocked on stamps under an environment-less function (K4.2b, the walk
+  by environment); since A2b every access the scope graph placed is stamped from its recorded
+  scope, so the first commit re-measures them on that basis: the earlier attempt sent nested
+  `require` reads to an async wrapper (677 lines of imports back to `closure_2_0(...)`), and
+  that row must stay at 0. Then reopen C10's first experiment (`closure_N$K` let through
+  W10/W11's gate, ancestor inherit and the declaration pass), which regressed only because a
+  rename reached some bodies and not others. Acceptance: I1 and I2 not rising per commit;
+  `resolveThenable` and `genMethod` correct.
+- **5a2 — the late renamers by identity** (was K4.6b). K4.3 found I1 at 828 at the end of
+  naming and 2,294 at codegen (Equinox): the stages after naming made two thirds of the I1
+  violations. The renamers there work per body and by text (W13's inliner,
+  `rename_param_registers`, `rename_reserved_words`, `make_sanitized_names_distinct`,
+  `repair_switch_clobbers`), so a rename reaches the body it runs on and not the other bodies
+  naming the same slot. Each moves, one commit at a time, to renaming a stamped `Var` by
+  identity (all bodies) or not at all, with I1 at codegen measured per commit. Acceptance: I1
+  at codegen no higher than at the end of naming.
 - **5b — shared bodies by identity.** A copy of a shared body maps identities per creator
   scope; `separate_copy_names` and the rename half of `shared_body_variants` go. I1 at the
   shared-body floor.
@@ -518,6 +581,17 @@ Staged (2026-10-29) so that no step changes names before it has been measured in
   `relax_written_consts`, `extra_writes_from_nested_bodies`, `split_capture_and_local`,
   `drop_slot_lets_of_params` and the outer `written_first_vars` go, each with the const and
   undeclared counts.
+- **A4d2 — enforce I1/I2** (was K4.7). A closing pass: for each I1 violation left, one name
+  (best `NameSource` among those carried, then the owner's); for each I2 violation, one side
+  renamed by identity through `rename_slot`. The identity check's counts go to zero on the
+  corpus and its ceiling becomes zero. With the allocator in place this is its invariant, not
+  a repair; it stays as the check that proves it.
+- **A4d3 — retire the spelling** (was K4.8). Where a `Var` has an identity, the placeholder
+  parsers (`crate::ir::placeholder`) are no longer consulted; `is_closure_name`-style gates
+  become an identity test plus a `NameSource` test. The reanalyze/no-reanalyze distinction and
+  the "must run after `resolve_closures`" ordering prose (PLAN.md C8) are reviewed for what
+  still needs them. P1b's `NameSource::Debug` rung becomes a candidate name from the debug
+  scope chain, given to the allocator like any other.
 - **A4e — the rest of §1's patches**: `stamp_merged`, the hoister's `stay_at_sites` (with
   A2d's re-check), each deleted with the fixture of its defect class passing.
 
