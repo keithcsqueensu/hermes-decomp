@@ -242,7 +242,7 @@ impl ClosureContext {
 
     // The scope `name`, read at (level, slot) in `func`'s body, stands for:
     // the one W6 stamped it with when the bake recorded the name at that
-    // place and the walk up the chain still agrees, else the walk. Counted
+    // place, else the walk (IDENTITY_PLAN.md A2b). Counted
     // (`baked_owner_counts`).
     pub fn baked_owner(&self, func: u32, name: &str, place: (u32, u32)) -> Option<u32> {
         let walked = self.slot_owner(func, place.0);
@@ -259,10 +259,8 @@ impl ClosureContext {
         let agrees = walked == Some(owner);
         BAKED_OWNERS[if agrees { 1 } else { 2 }].fetch_add(1, Relaxed);
         if !agrees {
-            // The chain moved after W6 (a generator's collapse relinks the
-            // step's scopes): the walk keeps its answer until A2.
+            // Counted, not followed: the walk is what moved after W6.
             log::trace!(target: "slots", "baked owner: F{func} `{name}` at {place:?}: recorded {owner}, the walk {walked:?}");
-            return walked;
         }
         Some(owner)
     }

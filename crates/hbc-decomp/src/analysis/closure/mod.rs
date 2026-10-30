@@ -96,13 +96,13 @@ impl Resolver<'_> {
     }
 
     // The variable a slot access becomes: its name, and the slot it is when the
-    // owner is known. A placed access names its scope (IDENTITY_PLAN.md A1a3)
-    // where the walk up the chain agrees; the walk answers for the rest.
+    // owner is known. A placed access is its scope's, named from that scope's
+    // table (IDENTITY_PLAN.md A2b, A1b2); the walk answers only for the rest.
     fn bake(&self, level: u32, slot: u32, scope: Option<(u32, Option<u32>)>) -> Var {
         // The scope's id as the context numbers it now.
         let scope = scope.and_then(|r| self.scope.and_then(|(ctx, _)| ctx.known_scope_id(r)));
         let encoded = encode_level_slot(level, slot);
-        let name = if self.slots.contains_key(&encoded) {
+        let mut name = if self.slots.contains_key(&encoded) {
             self.get_slot_name(encoded)
         } else if level == 0 {
             self.get_slot_name(slot)
@@ -122,6 +122,7 @@ impl Resolver<'_> {
             if !same {
                 log::trace!(target: stamps::TARGET, "scoped name: F{func} level {level} slot {slot}: `{name}` by level, `{scoped}` by scope {id}");
             }
+            name = scoped;
         }
         let stamp = self
             .scope
@@ -134,12 +135,9 @@ impl Resolver<'_> {
                 let agrees = walked == Some(id);
                 SCOPE_STAMPS[if agrees { 1 } else { 2 }].fetch_add(1, Relaxed);
                 if !agrees {
-                    // The chain changed after the plan (a body with no parent
-                    // left, a block scope a generator's collapse rehomed, a
-                    // parent relinked): the walk keeps its answer until A2
-                    // makes the two one (IDENTITY_PLAN.md A1a3).
+                    // Counted, not followed: the walk is what moved (A2a
+                    // brought this to 0 on every bundle measured).
                     log::trace!(target: stamps::TARGET, "scoped stamp: F{func} level {level} slot {slot}: scope {id}, the walk {walked:?}");
-                    return walked;
                 }
                 Some(id)
             });

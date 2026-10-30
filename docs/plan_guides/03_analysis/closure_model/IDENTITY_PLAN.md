@@ -372,6 +372,13 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
   themselves. It closes with A2c (block scopes by creation site) and the copies, and is
   re-checked there.
 - **A2b — the walk no longer consulted for a placed access**, then A1b2 (naming by scope).
+  Done (2026-10-30): W6's `bake` stamps a placed access with its recorded scope and names
+  it from that scope's table, and `baked_owner` returns the recorded owner; a disagreeing
+  walk is still counted and traced, no longer followed. Output byte-identical on all three
+  bundles, as A2a's zeros predicted. The walk now answers only accesses with no record:
+  W6 stamps v96 0 of 406,289, Expensify 2,168 of 762,149, Discord 9,075 of 1,318,481;
+  baked owners v96 0, Expensify 551, Discord 481. Those are A2c's to place or call
+  unknown (the never-built block, slot-held accesses the graph cannot place).
 - **A2c — `block_scopes` keyed by creation site**, not `(function, builder level)`.
   `NESTED_ENV_LEVEL_BASE`, `reg_source_slot` and `rehomed_block_scopes` go with it.
   Exit includes Expensify F71548 (a function created in two blocks of one creator and in
