@@ -73,6 +73,9 @@ pub struct EnvRegMap {
     reg_source_slot: BTreeMap<u32, (u32, u32)>,
     /// registers holding an environment this function just created
     created_envs: HashSet<u32>,
+    /// created environment register -> the offset that created it: its
+    /// identity, where the level is only a handle (capped at `MAX_LEVEL`)
+    created_site: BTreeMap<u32, u32>,
     /// Whether the environment this function runs in has already been created.
     /// A second `CreateFunctionEnvironment` in the same function does not rebuild
     /// that environment, it builds a separate small one for a closure being made.
@@ -152,6 +155,7 @@ impl EnvRegMap {
         let level = (NESTED_ENV_LEVEL_BASE + self.extra_env_count).min(MAX_LEVEL);
         self.set_level(reg, level);
         self.created_envs.insert(reg);
+        self.created_site.insert(reg, self.at);
         self.sites.push((self.at, level));
         level
     }
@@ -167,12 +171,22 @@ impl EnvRegMap {
         let level = (NESTED_ENV_LEVEL_BASE + self.extra_env_count).min(MAX_LEVEL);
         self.set_level(reg, level);
         self.created_envs.insert(reg);
+        self.created_site.insert(reg, self.at);
         self.sites.push((self.at, level));
         level
     }
 
     pub fn is_created_env(&self, reg: u32) -> bool {
         self.created_envs.contains(&reg)
+    }
+
+    /// The offset that created the environment `reg` holds, if it holds one
+    /// this function created.
+    pub fn created_site_of(&self, reg: u32) -> Option<u32> {
+        if !self.created_envs.contains(&reg) {
+            return None;
+        }
+        self.created_site.get(&reg).copied()
     }
 
     /// Level for an env register, defaulting to 0 (current) when unknown.
@@ -247,6 +261,9 @@ impl EnvRegMap {
         }
         if self.created_envs.contains(&src) {
             self.created_envs.insert(dst);
+            if let Some(&site) = self.created_site.get(&src) {
+                self.created_site.insert(dst, site);
+            }
         } else {
             self.created_envs.remove(&dst);
         }

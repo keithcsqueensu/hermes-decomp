@@ -23,24 +23,35 @@ pub struct ClosureContext {
     // binding's scope) is a scope of its own between that function and the
     // closures created inside the block. It is given a synthetic id so it
     // takes part in the parent chain like a function would. Keyed by
-    // (creating function, builder level), value: the synthetic id.
+    // (creating function, creation site), the key the scope graph uses
+    // (`Scope::Created`); value: the synthetic id (IDENTITY_PLAN.md A2c).
+    // Built on first use: a store, a creation, or a recorded access; numbered
+    // again by every rescan (`reanalyze_all`).
     #[serde(default)]
     pub block_scopes: BTreeMap<(u32, u32), u32>,
     // synthetic id -> the builder level its slots are addressed with inside
     // the creating function.
     #[serde(default)]
     pub block_level: BTreeMap<u32, u32>,
+    // synthetic id -> its key in `block_scopes`.
+    #[serde(default)]
+    pub block_key: BTreeMap<u32, (u32, u32)>,
+    // (function, builder level) -> the block scope that body addresses at
+    // that level: the blocks it built, and those of a generator step whose
+    // body it took over (`rehome_block_scopes`). The level is only the
+    // builder's handle; the block is the scope.
+    #[serde(default)]
+    pub block_index: BTreeMap<(u32, u32), u32>,
+    // (creating function, creation site) -> its builder level, for every site
+    // the builder saw.
+    #[serde(default)]
+    pub site_levels: BTreeMap<(u32, u32), u32>,
     // synthetic id -> the function that built the block environment. Its
     // parent is usually that function, but not always: a block built on an
     // outer environment (V98_ENV_PLAN.md S2, a second
     // `CreateFunctionEnvironment`) has that outer scope as its parent.
     #[serde(default)]
     pub block_function: BTreeMap<u32, u32>,
-    // (function, builder level) -> a block scope that function built and
-    // `rehome_block_scopes` moved to a generator's wrapper. Its slots are
-    // still read at that level from the bodies that were created inside it.
-    #[serde(default)]
-    pub rehomed_block_scopes: BTreeMap<(u32, u32), u32>,
     // function -> (baked capture name -> (level, slot) it came from). A
     // capture whose ancestor slot had no name when it was baked prints as
     // `closure_N`, which says nothing about the level; the late inherit pass
@@ -53,9 +64,11 @@ pub struct ClosureContext {
     #[serde(default)]
     pub baked_owners: BTreeMap<u32, BTreeMap<String, u32>>,
     // child -> (creating function, builder level of the block environment it
-    // was created with). Such a child's parent is that block scope.
+    // was created with, and its creation site when the builder knew it). Such
+    // a child's parent is that block scope: by site, since past the level cap
+    // many blocks share one level.
     #[serde(default)]
-    pub creation_scopes: BTreeMap<u32, (u32, u32)>,
+    pub creation_scopes: BTreeMap<u32, (u32, u32, Option<u32>)>,
     // function -> how many hops past its creator the environment it was created
     // with sits; absent means 0, the creator's own. Its IR levels are already
     // shifted by this (`ir::shift_env_levels`), so level L is always L hops up
@@ -81,12 +94,12 @@ pub struct ClosureContext {
     #[serde(default)]
     pub env_plans: BTreeMap<u32, crate::ir::EnvPlan>,
     // The scope the graph says a function was created with: (function, None)
-    // for a function's own environment, (function, Some(builder level)) for a
+    // for a function's own environment, (function, Some(creation site)) for a
     // block environment it built. Where present it is the parent, whatever
     // the creating closure's environment register said.
     #[serde(default)]
     pub scope_parents: BTreeMap<u32, (u32, Option<u32>)>,
-    // The same for a block environment: (creating function, builder level) ->
+    // The same for a block environment: (creating function, creation site) ->
     // the scope it was built on.
     #[serde(default)]
     pub block_parents: BTreeMap<(u32, u32), (u32, Option<u32>)>,
@@ -130,12 +143,18 @@ pub fn baked_owner_counts() -> [u32; 3] {
 }
 
 // A scope as the context names it: (function, None) for its own environment,
-// (function, Some(builder level)) for a block environment it built.
+// (function, Some(creation site)) for a block environment it built.
 pub type ScopeRef = (u32, Option<u32>);
 
 // Synthetic ids count down from the top of the range; a bundle has far fewer
 // than two billion functions, so they never meet a real id.
 const FIRST_BLOCK_SCOPE_ID: u32 = u32::MAX - 1;
+
+// The site of a block no creation made: a store through a slot-held
+// environment at `NESTED_ENV_LEVEL_BASE + slot` that no created environment
+// claims. Kept as a block of its own, keyed by this bit and the level, until
+// A2c2 makes such an access unknown. No offset reaches it.
+pub const SLOT_HELD_SITE: u32 = 1 << 31;
 
 impl ClosureContext {
     pub fn new() -> Self {
@@ -148,69 +167,113 @@ impl ClosureContext {
     // starts, holds what are now `to`'s locals. Left with `from`, which no
     // longer has a body, its slots read as an ancestor's from `to` (1 178
     // CaptureAndLocal rows on Discord once its generators lifted). The parent
-    // chain stays as it is: levels count hops along it.
+    // chain stays as it is: levels count hops along it. The blocks keep their
+    // identity; `to` addresses them at the same levels, and `from` still does.
     pub fn rehome_block_scopes(&mut self, from: u32, to: u32) -> Vec<u32> {
-        let moved: Vec<((u32, u32), u32)> = self
-            .block_scopes
+        let moved: Vec<(u32, u32)> = self
+            .block_index
             .iter()
-            .filter(|((builder, _), _)| *builder == from)
-            .map(|(&k, &v)| (k, v))
+            .filter(|((f, _), _)| *f == from)
+            .map(|(&(_, level), &id)| (level, id))
             .collect();
         let mut out = Vec::new();
-        for ((_, level), id) in moved {
-            if self.block_scopes.contains_key(&(to, level)) {
+        for (level, id) in moved {
+            if self.block_index.contains_key(&(to, level)) {
                 continue;
             }
-            self.block_scopes.remove(&(from, level));
-            self.block_scopes.insert((to, level), id);
-            self.rehomed_block_scopes.insert((from, level), id);
+            self.block_index.insert((to, level), id);
             self.block_function.insert(id, to);
             out.push(id);
         }
         out
     }
 
-    // The synthetic scope for the block environment `level` that `parent`
-    // built, created on first use. The scope's parent is the function.
-    pub fn block_scope(&mut self, parent: u32, level: u32) -> u32 {
-        if let Some(&id) = self.block_scopes.get(&(parent, level)) {
+    // Every block environment the builder saw, built once, in key order.
+    pub fn build_block_scopes(&mut self) {
+        let sites: Vec<(u32, u32)> = self.site_levels.keys().copied().collect();
+        for (creator, site) in sites {
+            self.block_scope_at(creator, site);
+        }
+    }
+
+    // The synthetic scope for the block environment `creator` built at
+    // `site`. Its parent is the scope the graph says it was built on, else the
+    // creator.
+    pub fn block_scope_at(&mut self, creator: u32, site: u32) -> u32 {
+        if let Some(&id) = self.block_scopes.get(&(creator, site)) {
             return id;
         }
+        let level = match self.site_levels.get(&(creator, site)) {
+            Some(&level) => level,
+            None if site & SLOT_HELD_SITE != 0 => site & !SLOT_HELD_SITE,
+            None => {
+                log::trace!(target: "slots", "block scope: F{creator}@{site} has no level");
+                return creator;
+            }
+        };
         let id = FIRST_BLOCK_SCOPE_ID - self.block_scopes.len() as u32;
-        self.block_scopes.insert((parent, level), id);
+        self.block_scopes.insert((creator, site), id);
+        self.block_key.insert(id, (creator, site));
         self.block_level.insert(id, level);
-        self.block_function.insert(id, parent);
+        self.block_function.insert(id, creator);
+        self.block_index.entry((creator, level)).or_insert(id);
         // Inserted first, so a parent cycle among block scopes ends here.
-        let built_on = match self.block_parents.get(&(parent, level)).copied() {
+        let built_on = match self.block_parents.get(&(creator, site)).copied() {
             Some(r) => self.scope_id(r),
-            None => parent,
+            None => creator,
         };
         self.parent_function
-            .insert(id, if built_on == id { parent } else { built_on });
+            .insert(id, if built_on == id { creator } else { built_on });
         id
     }
 
+    // The block scope `function`'s body addresses at builder `level`. A store
+    // at a level no created environment claims is a slot-held environment's
+    // (`NESTED_ENV_LEVEL_BASE + slot`), given a block of its own until A2c2.
+    pub fn block_at_level(&mut self, function: u32, level: u32) -> u32 {
+        if let Some(&id) = self.block_index.get(&(function, level)) {
+            return id;
+        }
+        // The site the builder gave that level; past the cap several share
+        // it, and the first stands for them (a placed access names its own).
+        let site = self
+            .site_levels
+            .range((function, 0)..=(function, u32::MAX))
+            .find(|(_, &l)| l == level)
+            .map(|(&(_, site), _)| site);
+        self.block_scope_at(function, site.unwrap_or(SLOT_HELD_SITE | level))
+    }
+
+    // Whether several of `function`'s creation sites share builder `level`
+    // (past `MAX_LEVEL` every further block gets the same one).
+    pub fn level_is_shared(&self, function: u32, level: u32) -> bool {
+        self.site_levels
+            .range((function, 0)..=(function, u32::MAX))
+            .filter(|(_, &l)| l == level)
+            .nth(1)
+            .is_some()
+    }
+
     // The id a scope reference stands for: the function, or its block scope.
-    pub fn scope_id(&mut self, (function, level): (u32, Option<u32>)) -> u32 {
-        match level {
-            Some(level) => self.block_scope(function, level),
+    pub fn scope_id(&mut self, (function, site): (u32, Option<u32>)) -> u32 {
+        match site {
+            Some(site) => self.block_scope_at(function, site),
             None => function,
         }
     }
 
-    // `scope_id` for a scope that already has an id; a block scope nothing
-    // built yet has none.
-    pub fn known_scope_id(&self, (function, level): (u32, Option<u32>)) -> Option<u32> {
-        match level {
-            Some(level) => self.block_scopes.get(&(function, level)).copied(),
+    // `scope_id` for a scope that already has an id.
+    pub fn known_scope_id(&self, (function, site): (u32, Option<u32>)) -> Option<u32> {
+        match site {
+            Some(site) => self.block_scopes.get(&(function, site)).copied(),
             None => Some(function),
         }
     }
 
     // The reverse of `scope_id`.
     pub fn scope_ref(&self, id: u32) -> (u32, Option<u32>) {
-        match self.block_level.get(&id) {
-            Some(&level) => (self.scope_function(id), Some(level)),
+        match self.block_key.get(&id) {
+            Some(&(creator, site)) => (creator, Some(site)),
             None => (id, None),
         }
     }
@@ -223,11 +286,7 @@ impl ClosureContext {
             return Some(func);
         }
         if level >= crate::ir::NESTED_ENV_LEVEL_BASE {
-            return self
-                .block_scopes
-                .get(&(func, level))
-                .or_else(|| self.rehomed_block_scopes.get(&(func, level)))
-                .copied();
+            return self.block_index.get(&(func, level)).copied();
         }
         self.ancestor_at(func, level)
     }
@@ -306,9 +365,14 @@ impl ClosureContext {
         }
         // Created with a block environment of `parent`: the block scope is the
         // parent, its slots are what the child reads at level 1.
-        if let Some(&(creator, level)) = self.creation_scopes.get(&child) {
+        if let Some(&(creator, level, site)) = self.creation_scopes.get(&child) {
             if creator == parent {
-                let scope = self.block_scope(parent, level);
+                let scope = match site {
+                    Some(site) if self.site_levels.contains_key(&(parent, site)) => {
+                        self.block_scope_at(parent, site)
+                    }
+                    _ => self.block_at_level(parent, level),
+                };
                 self.parent_function.insert(child, scope);
                 return;
             }
@@ -451,8 +515,8 @@ impl ClosureContext {
         self.env_offsets = memo.into_iter().filter(|&(_, o)| o > 0).collect();
     }
 
-    pub fn set_creation_scope(&mut self, child: u32, creator: u32, level: u32) {
-        self.creation_scopes.insert(child, (creator, level));
+    pub fn set_creation_scope(&mut self, child: u32, creator: u32, level: u32, site: Option<u32>) {
+        self.creation_scopes.insert(child, (creator, level, site));
     }
 
     pub fn add_closure_info(&mut self, function_id: u32, info: ClosureInfo) {
@@ -543,6 +607,8 @@ mod block_scope_tests {
             },
         ];
         let mut ctx = ClosureContext::new();
+        ctx.site_levels.insert((1, 40), block);
+        ctx.build_block_scopes();
         ctx.analyze_function(1, &factory);
         ctx.analyze_function(7, &[]);
 
@@ -578,7 +644,8 @@ mod block_scope_tests {
         let block = NESTED_ENV_LEVEL_BASE + 1;
         let mut ctx = ClosureContext::new();
         ctx.add_child(1, 2);
-        let scope = ctx.block_scope(2, block);
+        ctx.site_levels.insert((2, 40), block);
+        let scope = ctx.block_scope_at(2, 40);
         assert_eq!(ctx.rehome_block_scopes(2, 1), vec![scope]);
         assert_eq!(ctx.slot_owner(1, block), Some(scope));
         assert_eq!(ctx.slot_owner(2, block), Some(scope));
@@ -590,7 +657,10 @@ mod block_scope_tests {
         // while 3's body builds a block first and takes the id 5's block had.
         let block = NESTED_ENV_LEVEL_BASE + 1;
         let mut ctx = ClosureContext::new();
-        let old = ctx.block_scope(5, block);
+        ctx.site_levels.insert((5, 10), block);
+        ctx.site_levels.insert((3, 20), block);
+        ctx.build_block_scopes();
+        let old = ctx.block_scopes[&(5, 10)];
         ctx.parent_function.insert(9, old);
         let body = vec![Statement::Assign {
             target: AssignTarget::Binding(Binding::closure_var(block, 0)),
@@ -604,8 +674,29 @@ mod block_scope_tests {
             },
         }];
         ctx.reanalyze_all(&std::collections::BTreeMap::from([(3, body)]));
-        assert_eq!(ctx.scope_ref(ctx.parent_function[&8]), (3, Some(block)));
-        assert_eq!(ctx.scope_ref(ctx.parent_function[&9]), (5, Some(block)));
+        assert_eq!(ctx.scope_ref(ctx.parent_function[&8]), (3, Some(20)));
+        assert_eq!(ctx.scope_ref(ctx.parent_function[&9]), (5, Some(10)));
+    }
+
+    // jQuery's `inspectPrefiltersOrTransports` (Expensify F71548): `inspect`
+    // compiled inline twice, each copy in its own block. Nothing stores into
+    // the second block from the creator's body, so built on first store it
+    // was never built and its read printed as the undeclared `closure_130_0`.
+    #[test]
+    fn every_block_a_creator_builds_is_a_scope_before_any_store() {
+        let mut ctx = ClosureContext::new();
+        ctx.site_levels.insert((4, 30), NESTED_ENV_LEVEL_BASE + 1);
+        ctx.site_levels.insert((4, 90), NESTED_ENV_LEVEL_BASE + 2);
+        ctx.build_block_scopes();
+        for site in [30, 90] {
+            let id = ctx.known_scope_id((4, Some(site))).expect("built");
+            assert_eq!(ctx.scope_ref(id), (4, Some(site)));
+            assert_eq!(ctx.parent_function[&id], 4);
+        }
+        assert_eq!(
+            ctx.slot_owner(4, NESTED_ENV_LEVEL_BASE + 2),
+            ctx.known_scope_id((4, Some(90)))
+        );
     }
 }
 

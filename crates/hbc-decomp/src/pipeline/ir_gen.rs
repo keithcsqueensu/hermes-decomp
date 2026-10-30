@@ -289,7 +289,7 @@ struct FunctionIr {
     id: u32,
     name: Option<String>,
     statements: Vec<Statement>,
-    created_in_block: Vec<(u32, u32)>,
+    created_in_block: Vec<(u32, u32, Option<u32>)>,
     created_with_env: Vec<(u32, u32)>,
     slot_held_accesses: u32,
     env: FunctionEnv,
@@ -386,8 +386,8 @@ pub fn build_closure_context_from_file(
         .map(|r| (r.id, std::mem::take(&mut r.env)))
         .collect();
     for item in results.iter().flatten() {
-        for &(child, level) in &item.created_in_block {
-            ctx.set_creation_scope(child, item.id, level);
+        for &(child, level, site) in &item.created_in_block {
+            ctx.set_creation_scope(child, item.id, level, site);
         }
         created.extend(
             item.created_with_env
@@ -575,7 +575,7 @@ fn dump_env_facts<'a>(
 }
 
 // A scope as the closure context names it: (function, None) for a function's
-// own environment, (function, Some(builder level)) for a block environment it
+// own environment, (function, Some(creation site)) for a block environment it
 // built.
 type ScopeRef = (u32, Option<u32>);
 
@@ -595,10 +595,16 @@ fn plan_env_levels(
         .iter()
         .flat_map(|(f, e)| e.sites.iter().map(move |&(site, l)| ((*f, site), l)))
         .collect();
+    for (&key, &level) in &site_level {
+        ctx.site_levels.insert(key, level);
+    }
+    // A created scope the builder saw is the context's block at that site.
     let to_ref = |s: Scope| -> Option<ScopeRef> {
         match s {
             Scope::Fn(g) => Some((g, None)),
-            Scope::Created(g, site) => site_level.get(&(g, site)).map(|&l| (g, Some(l))),
+            Scope::Created(g, site) => site_level
+                .contains_key(&(g, site))
+                .then_some((g, Some(site))),
         }
     };
     let mut census: BTreeMap<String, u32> = BTreeMap::new();
@@ -612,10 +618,10 @@ fn plan_env_levels(
             }
         }
     }
-    for (&(g, site), &level) in &site_level {
+    for &(g, site) in site_level.keys() {
         if let Some(r) = graph.parent(Scope::Created(g, site)).and_then(to_ref) {
-            if r != (g, Some(level)) {
-                ctx.block_parents.insert((g, level), r);
+            if r != (g, Some(site)) {
+                ctx.block_parents.insert((g, site), r);
                 count("parents: blocks");
             }
         }
@@ -675,7 +681,7 @@ fn plan_env_levels(
         for _ in 0..n {
             cur = match cur {
                 (g, None) => *ctx.scope_parents.get(&g)?,
-                (g, Some(level)) => *ctx.block_parents.get(&(g, level))?,
+                (g, Some(site)) => *ctx.block_parents.get(&(g, site))?,
             };
         }
         Some(cur)
@@ -728,7 +734,7 @@ fn plan_env_levels(
         for k in 1..=64u32 {
             cur = match cur {
                 (g, None) => *ctx.scope_parents.get(&g)?,
-                (g, Some(level)) => match ctx.block_parents.get(&(g, level)) {
+                (g, Some(site)) => match ctx.block_parents.get(&(g, site)) {
                     Some(&r) => r,
                     None => return None,
                 },
@@ -745,7 +751,7 @@ fn plan_env_levels(
         for _ in 0..n {
             cur = match cur {
                 (g, None) => *ctx.scope_parents.get(&g)?,
-                (g, Some(level)) => *ctx.block_parents.get(&(g, level))?,
+                (g, Some(site)) => *ctx.block_parents.get(&(g, site))?,
             };
         }
         Some(cur)
@@ -968,7 +974,18 @@ fn record_access_scopes(
     census: &mut BTreeMap<String, u32>,
 ) {
     for (&(f, off), &(r, level)) in scopes {
-        let class = match ctx.known_scope_id(r) {
+        // A block only read from the bodies that build it (Expensify F71548's
+        // second inlined `inspect`) is built here, by its site (A2c).
+        let known = ctx.known_scope_id(r).or_else(|| match r {
+            (g, Some(site)) if ctx.site_levels.contains_key(&(g, site)) => {
+                *census
+                    .entry("scopes: built for its accesses".to_string())
+                    .or_default() += 1;
+                Some(ctx.scope_id(r))
+            }
+            _ => None,
+        });
+        let class = match known {
             None => {
                 log::trace!(target: "slots", "access scope: F{f} @{off} level {level}: {r:?} never built");
                 "scopes: block scope never built"

@@ -52,11 +52,8 @@ pub(super) struct Variants {
 }
 
 // The scope id a creation scope reference stands for, when it still exists.
-fn owner_of(ctx: &ClosureContext, (g, level): (u32, Option<u32>)) -> Option<u32> {
-    match level {
-        None => Some(g),
-        Some(l) => ctx.block_scopes.get(&(g, l)).copied(),
-    }
+fn owner_of(ctx: &ClosureContext, r: (u32, Option<u32>)) -> Option<u32> {
+    ctx.known_scope_id(r)
 }
 
 // The scope a creation site in `g` creates `f` on: its only one there, or the
@@ -69,7 +66,7 @@ fn site_owner(ctx: &ClosureContext, f: u32, g: u32, env: Option<u32>) -> Option<
     }
     let owner = match env? {
         0 => g,
-        l if l >= crate::ir::NESTED_ENV_LEVEL_BASE => *ctx.block_scopes.get(&(g, l))?,
+        l if l >= crate::ir::NESTED_ENV_LEVEL_BASE => *ctx.block_index.get(&(g, l))?,
         _ => return None,
     };
     owners.contains(&owner).then_some(owner)

@@ -88,8 +88,8 @@ pub fn var_refs(stmts: &[Statement]) -> Vec<(&str, Option<SlotRef>)> {
 // builds.
 pub fn own_scopes(ctx: &ClosureContext, func: u32) -> HashSet<u32> {
     let mut out = HashSet::from([func]);
-    for (&(builder, _), &block) in &ctx.block_scopes {
-        if builder == func {
+    for (&block, &f) in &ctx.block_function {
+        if f == func {
             out.insert(block);
         }
     }

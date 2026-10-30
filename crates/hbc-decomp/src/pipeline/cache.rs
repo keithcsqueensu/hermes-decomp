@@ -37,7 +37,8 @@ use super::DecompileOptionsV2;
 // 10: `MetroRegistry.wide_ids`, module ids past u32.
 // 11: shared-body copies (`variant_origin`, `holder_variants`). 12: `copy_writes`.
 // 13: `ClosureContext.parked_scopes`. 14: `access_scopes`.
-pub const CACHE_VERSION: u32 = 14;
+// 15: block scopes keyed by creation site (`block_key`, `block_index`, `site_levels`).
+pub const CACHE_VERSION: u32 = 15;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.
@@ -341,7 +342,8 @@ mod tests {
     #[test]
     fn closure_context_with_block_scopes_roundtrips() {
         let mut ctx = crate::analysis::closure::ClosureContext::default();
-        let scope = ctx.block_scope(7, 130);
+        ctx.site_levels.insert((7, 12), 130);
+        let scope = ctx.block_scope_at(7, 12);
         assert!(ctx.is_block_scope(scope));
         let bytes = rmp_serde::encode::to_vec(&ctx).expect("encode");
         let back: crate::analysis::closure::ClosureContext =

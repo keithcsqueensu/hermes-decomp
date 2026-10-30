@@ -53,7 +53,7 @@ impl ClosureContext {
                     }
                 }
 
-                if let AssignTarget::Binding(Binding::ClosureVar { slot, level, .. }) = target {
+                if let AssignTarget::Binding(Binding::ClosureVar { slot, level, scope }) = target {
                     if let Some(mut val) =
                         Self::resolve_store_value(value, reg_values, named_values)
                     {
@@ -81,7 +81,21 @@ impl ClosureContext {
                             // was created inside it (the class constructor
                             // goes into slot 0 of the class scope), so the
                             // block, not the function, is its parent.
-                            let scope = self.block_scope(current_fn, *level);
+                            // Past the level cap several of this function's
+                            // blocks share one level: the one the access was
+                            // placed in, by its site.
+                            let placed = match scope.0 {
+                                Some((g, Some(site)))
+                                    if g == current_fn && self.level_is_shared(g, *level) =>
+                                {
+                                    self.known_scope_id((g, Some(site)))
+                                }
+                                _ => None,
+                            };
+                            let scope = match placed {
+                                Some(id) => id,
+                                None => self.block_at_level(current_fn, *level),
+                            };
                             if let ClosureSlotValue::Function { id, .. } = &val {
                                 if !self.scope_parents.contains_key(id) {
                                     self.parent_function.insert(*id, scope);

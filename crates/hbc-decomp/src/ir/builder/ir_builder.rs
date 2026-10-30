@@ -25,7 +25,7 @@ pub struct IRBuilder<'a> {
     // so the closure context must make the block scope its parent, not the
     // function: with the function as parent, `addEventPoolingTo` resolved the
     // factory's block slot 40 (`releasePooledEvent`) as an unnamed slot.
-    pub created_in_block: Vec<(u32, u32)>,
+    pub created_in_block: Vec<(u32, u32, Option<u32>)>,
     // Every other function the last built function created, with the builder
     // level of the environment it was given: 0 for the creator's own, N >= 1
     // for one N levels out. A closure reads its environments counting from the
@@ -243,7 +243,8 @@ impl<'a> IRBuilder<'a> {
             if let Some((child, env_reg)) = created_function_and_env(self.format, inst) {
                 let level = env_map.level_of(env_reg);
                 if level >= super::env_state::NESTED_ENV_LEVEL_BASE {
-                    self.created_in_block.push((child, level));
+                    let site = env_map.created_site_of(env_reg);
+                    self.created_in_block.push((child, level, site));
                 } else {
                     self.created_with_env.push((child, level));
                 }

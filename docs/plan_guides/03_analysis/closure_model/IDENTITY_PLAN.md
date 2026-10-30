@@ -383,6 +383,28 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
   `NESTED_ENV_LEVEL_BASE`, `reg_source_slot` and `rehomed_block_scopes` go with it.
   Exit includes Expensify F71548 (a function created in two blocks of one creator and in
   itself, A2a above): each block built, the callback's store reaching its own block.
+  - **A2c1 — done (2026-10-30).** A block's identity is `(creator, creation site)`, the
+    graph's `Scope::Created`; `ScopeRef` carries the site. `(function, builder level)` is
+    only an index into the blocks (`block_index`), which a generator rehome extends instead of
+    moving the key, so `rehomed_block_scopes` is gone. A child created in a block finds it by
+    the site the builder recorded for the environment register, and a block only recorded
+    accesses name is built for them: F71548's second block exists (never built: 0 on all
+    three). Found on the way, and the reason for the site: the builder caps levels at 255,
+    so a function with more than 127 blocks gave the rest one level and they merged into one
+    scope (Discord F31169, 171 accesses; each block now declares its own, where one variable
+    stood for all, and the level walk cannot tell them apart, hence its 171 disagreeing
+    stamps). Output: v96 identical; Expensify 12 lines (F71548's copies: `closure_1_0` now
+    `closure_133_0`, a slot of its real block, undeclared as before); Discord 832 lines.
+    Undeclared v96 1,485, Expensify 12,052, Discord 6,558 -> 6,553; strings lost 0; consts
+    unchanged. Still open:
+    - the callback's store reaching its own block needs copies of a function that creates
+      itself: SELF_CREATING_SHARED_PLAN.md;
+    - ids are still numbered again by every rescan. Keeping them (they could be, by site)
+      lost names on Discord (6,651: lodash's `regex4`), because stamps baked before W6 in class
+      bodies name blocks they do not read and the renumbering hid them: EARLY_STAMPS_PLAN.md,
+      which A2d and A3 wait for;
+    - A2c2: a slot-held environment is still addressed at `NESTED_ENV_LEVEL_BASE + slot`
+      (a block of its own under `SLOT_HELD_SITE`), and `reg_source_slot` stays.
 - **A2d — the shared-parent install goes.** `parent_function` is the lexical tree again; the
   hoister's shared and self-creating exceptions are re-checked on block-created functions.
 - **A2e — raw machines.** S3.2b already parks a machine's scope in its wrapper
