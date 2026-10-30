@@ -354,10 +354,20 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
   check the body's names, so a local the namer called `arr` and a parameter IPA calls `arr`
   merge, the local's `let` goes and its writes clobber the parameter (a `-O` loop that
   reuses the parameter's register shows it).
-  Still open: a block scope never built (Expensify 1).
+  The one block scope never built (Expensify F71548 level 130) is A2c's, not a stray
+  row: jQuery's `inspectPrefiltersOrTransports` with `inspect` compiled inline twice, each
+  copy in its own block holding its `selected`, and the `each` callback F107458 created in
+  both blocks and in its own. Its store `selected = ...` has three owners; the context
+  keeps one creation scope per function, so the first block is the only one built, the
+  second copy's read prints as the undeclared `closure_130_0` and the callback writes
+  `closure_0$2`. Shared-body copies (S3.3) would split it but skip functions that create
+  themselves. It closes with A2c (block scopes by creation site) and the copies, and is
+  re-checked there.
 - **A2b — the walk no longer consulted for a placed access**, then A1b2 (naming by scope).
 - **A2c — `block_scopes` keyed by creation site**, not `(function, builder level)`.
   `NESTED_ENV_LEVEL_BASE`, `reg_source_slot` and `rehomed_block_scopes` go with it.
+  Exit includes Expensify F71548 (a function created in two blocks of one creator and in
+  itself, A2a above): each block built, the callback's store reaching its own block.
 - **A2d — the shared-parent install goes.** `parent_function` is the lexical tree again; the
   hoister's shared and self-creating exceptions are re-checked on block-created functions.
 - **A2e — raw machines.** S3.2b already parks a machine's scope in its wrapper

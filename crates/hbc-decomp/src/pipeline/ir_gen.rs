@@ -969,7 +969,10 @@ fn record_access_scopes(
 ) {
     for (&(f, off), &(r, level)) in scopes {
         let class = match ctx.known_scope_id(r) {
-            None => "scopes: block scope never built",
+            None => {
+                log::trace!(target: "slots", "access scope: F{f} @{off} level {level}: {r:?} never built");
+                "scopes: block scope never built"
+            }
             Some(id) => {
                 ctx.access_scopes.entry(f).or_default().insert(off, r);
                 if ctx.slot_owner(f, level) == Some(id) {
