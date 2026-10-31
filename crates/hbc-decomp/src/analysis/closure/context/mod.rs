@@ -117,6 +117,10 @@ pub struct ClosureContext {
     // identity (A4d).
     #[serde(default)]
     pub shared_parents: BTreeMap<u32, (u32, Option<u32>)>,
+    // Functions with a block another function stores into through a closure's
+    // environment (A2c3): their blocks share one namespace.
+    #[serde(default)]
+    pub off_chain_blocks: BTreeSet<u32>,
     // The same for a block environment: (creating function, creation site) ->
     // the scope it was built on.
     #[serde(default)]
@@ -416,6 +420,31 @@ impl ClosureContext {
             for anc in self.ancestors_of(scope) {
                 if let Some(names) = decided.get(&anc) {
                     visible.extend(names.values().cloned());
+                }
+            }
+            if self.is_block_scope(scope) {
+                // A block renders in its creator's body, so what that body sees
+                // is in view even when the block's environment chain leaves it
+                // (an inlined call builds on the closure's environment; Sentry's
+                // `request` in slot 0 overwrote the enclosing `closure_0`).
+                let function = self.scope_function(scope);
+                let mut around = self.ancestors_of(function);
+                around.push(function);
+                for anc in around {
+                    if let Some(names) = decided.get(&anc) {
+                        visible.extend(names.values().cloned());
+                    }
+                }
+                // Blocks reached from off their chain (A2c3) are inlined helpers'
+                // scopes, printed flat in one body: siblings there are one
+                // namespace (two memo helpers, each with a slot 1). Other blocks
+                // keep their own JS block, where a sibling's name is free.
+                if self.off_chain_blocks.contains(&function) {
+                    for (block, names) in &decided {
+                        if self.is_block_scope(*block) && self.scope_function(*block) == function {
+                            visible.extend(names.values().cloned());
+                        }
+                    }
                 }
             }
             let info = self.function_closures.get_mut(&scope).unwrap();

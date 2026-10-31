@@ -39,7 +39,8 @@ use super::DecompileOptionsV2;
 // 13: `ClosureContext.parked_scopes`. 14: `access_scopes`.
 // 15: block scopes keyed by creation site (`block_key`, `block_index`, `site_levels`).
 // 16: `ClosureContext.shared_parents`, out of `scope_parents`.
-pub const CACHE_VERSION: u32 = 16;
+// 17: `ClosureContext.off_chain_blocks`.
+pub const CACHE_VERSION: u32 = 17;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.

@@ -897,6 +897,15 @@ fn plan_env_levels(
                     count(&format!("access: resolved, {}", through.kind()));
                     tally(true);
                 }
+                // The closure's scope may be off this function's chain (a
+                // sibling block, `make("left")` inlined beside it): it has no
+                // level to reach it, but the access is that scope's, and takes
+                // its name and stamp from it.
+                (None, Some(r)) if matches!(through, crate::ir::env_values::Env::OfClosure(_)) => {
+                    scopes.insert((*f, *off), (r, old));
+                    count("access: closure's environment, off the chain");
+                    tally(true);
+                }
                 _ => {
                     count("access: resolved, not on the chain");
                     count(&format!(

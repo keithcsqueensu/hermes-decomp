@@ -95,7 +95,15 @@ impl ClosureContext {
                                 Some((g, Some(site))) if g == current_fn => {
                                     self.known_scope_id((g, Some(site)))
                                 }
-                                _ => None,
+                                // A closure's environment off this function's
+                                // chain (A2c3): the scope it was placed in.
+                                Some(r) => {
+                                    if r.1.is_some() {
+                                        self.off_chain_blocks.insert(r.0);
+                                    }
+                                    Some(self.scope_id(r))
+                                }
+                                None => None,
                             };
                             let scope = match placed {
                                 Some(id) => id,

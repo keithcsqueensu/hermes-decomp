@@ -457,6 +457,34 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
   level model because the chain merely breaks: "no fact creates", "parent unresolved").
   Exit: every bucket counted by cause, `GetClosureEnvironment` placed, and the level model
   answering only what is counted. A3's identities are only as good as these.
+  **`GetClosureEnvironment` placed (2026-10-31).** The plan's reading, "a closure's
+  environment is the scope it was created in", is too coarse: one compiled closure can sit in
+  two slots over two blocks (a helper inlined twice), so the answer is per slot. The graph
+  keeps (scope, slot) -> the environment stored with the closure; a slot that also gets a
+  value other than a closure its storer created (`undefined` and empty aside) is mixed and
+  stays unresolved. A closure's scope is often a sibling block off the reader's chain, with no
+  level to reach it: the access records the scope, and takes its name and stamp from there.
+  Counts, Expensify / Discord: the `unknown` kind 606 / 3,981 -> 146 / 39, the new kind 460 /
+  3,942, of which placed on the chain or off it nearly all (off the chain 416 / 3,934,
+  unresolved 38 / 4). The slot-held and up-from-a-slot remainders (18 / 39, 44 / 70) and the
+  resolved-off-chain bucket (59 / 40) are unchanged; the closure remainder is not yet recounted.
+  Placing these stores exposed two name clashes `allocate_slot_names` had been spared by
+  constant-derived names. A block renders in its creator's body, so what that body sees is
+  in view even when the block's chain leaves it (an inlined call builds on the closure's
+  environment: Sentry's `closure_0 = request` overwrote the enclosing options). Blocks stored
+  into from off their chain are inlined helpers' scopes printed flat, so a function with one
+  shares a namespace across its blocks (React Native's two memo helpers, slot 1 of each).
+  Applying the sibling rule to every block instead churned 15k lines and raised undeclared.
+  Against G0: v96 identical. Expensify undeclared 12,161 -> 11,786, I1 2,200 -> 2,158, I2
+  1,320 -> 997 (TwoSlots 720 -> 392, CaptureAndLocal 147 -> 122; Shadowed 391 -> 419). Discord
+  6,573 -> 6,562, I1 7,374 -> 7,291, I2 2,368 -> 1,807 (TwoSlots 1,040 -> 532), and its one
+  unparsable module parses. Class-body stamps off the method's chain or against its body rise
+  on Discord, 0 -> 54 at W6: a method reading a sibling block through a closure's environment.
+  That is the census counting what the new placement does, not a mis-stamp, for the sampled
+  ones (the block's function is on the method's chain); a local still shadows some of these
+  reads (`let closure_1` in a memo reader), which is A3/A4's. Still provisional:
+  `CLOSURE_ENV_SITE`, for a closure the builder's slot identity sees and the graph does not
+  place.
 - **A2d — the shared-parent install goes.** `parent_function` is the lexical tree again; the
   hoister's shared and self-creating exceptions are re-checked on block-created functions.
   **Done in part (2026-10-30); the rest is A4d's.** Landed, byte-identical on all three

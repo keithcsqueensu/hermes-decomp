@@ -34,7 +34,17 @@ pub enum Env {
     // Whatever was in slot `slot` of an environment: an environment parked
     // there, if the register is used as one.
     InSlot(Box<Env>, u32),
-    // Paths that disagree, `GetClosureEnvironment`, or nesting past the bound.
+    // A closure this function just created, and the environment it was given.
+    // Not an environment: what `GetClosureEnvironment` reads one from.
+    Function { child: u32, env: Box<Env> },
+    // The environment of the closure in a register, loaded out of a slot
+    // (`GetClosureEnvironment`, where hermesc inlined a call to that closure).
+    OfClosure(Box<Env>),
+    // `undefined` or the empty value: the initial value of a slot that later
+    // holds a closure, which says nothing about which closure.
+    NoValue,
+    // Paths that disagree, a closure this pass cannot follow, or nesting past
+    // the bound.
     Unknown,
 }
 
@@ -63,7 +73,9 @@ impl Env {
 
     fn depth(&self) -> u32 {
         match self {
-            Env::Own | Env::Closure(_) | Env::Unknown => 0,
+            Env::Own | Env::Closure(_) | Env::NoValue | Env::Unknown => 0,
+            Env::Function { env, .. } => 1 + env.depth(),
+            Env::OfClosure(inner) => 1 + inner.depth(),
             Env::Created { parent, .. } => parent.as_ref().map_or(0, |p| 1 + p.depth()),
             Env::Up(inner, _) | Env::InSlot(inner, _) => 1 + inner.depth(),
         }
@@ -84,6 +96,8 @@ impl Env {
             Env::Created { .. } => "created",
             Env::Up(..) => "up from a slot",
             Env::InSlot(..) => "slot-held",
+            Env::OfClosure(_) => "a closure's environment",
+            Env::Function { .. } | Env::NoValue => "not an environment",
             Env::Unknown => "unknown",
         }
     }
@@ -101,6 +115,9 @@ impl std::fmt::Display for Env {
             Env::Created { site, parent: None } => write!(f, "created@{site}(root)"),
             Env::Up(inner, n) => write!(f, "up{n}({inner})"),
             Env::InSlot(inner, slot) => write!(f, "{inner}[{slot}]"),
+            Env::Function { child, env } => write!(f, "F{child}({env})"),
+            Env::OfClosure(inner) => write!(f, "env({inner})"),
+            Env::NoValue => write!(f, "none"),
             Env::Unknown => write!(f, "?"),
         }
     }
@@ -117,6 +134,10 @@ pub struct EnvFacts {
     pub parked_at: Vec<u32>,
     // (child function, environment it was created with).
     pub closures: Vec<(u32, Env)>,
+    // Every store into a slot, for what `GetClosureEnvironment` reads back:
+    // (through, slot, the environment of the closure stored), None for a value
+    // that is not a closure created here. `undefined` and empty are left out.
+    pub slot_closures: Vec<(Env, u32, Option<Env>)>,
     // Loads and stores: (offset, through, slot, is_store).
     pub accesses: Vec<(u32, Env, u32, bool)>,
 }
@@ -217,12 +238,18 @@ impl Step<'_> {
         };
         let name = def.name.as_str();
         let mut facts = facts;
+        let mut created_closure = None;
         if let Some((child, env_reg)) =
             super::ir_builder::created_function_and_env(self.format, inst)
         {
+            let env = Self::env_of(state, Some(env_reg));
             if let Some(f) = facts.as_deref_mut() {
-                f.closures.push((child, Self::env_of(state, Some(env_reg))));
+                f.closures.push((child, env.clone()));
             }
+            created_closure = Some(Env::Function {
+                child,
+                env: Box::new(env),
+            });
         }
         let value = match name {
             "CreateFunctionEnvironment" | "CreateEnvironment" if inst.operands.len() < 3 => {
@@ -269,7 +296,12 @@ impl Step<'_> {
                 Some(start.up(imm(inst, 2).unwrap_or(0)))
             }
             "GetEnvironment" => Some(Env::Closure(imm(inst, 1).unwrap_or(0) + 1)),
-            "GetClosureEnvironment" => Some(Env::Unknown),
+            "GetClosureEnvironment" => match Self::env_of(state, reg(inst, 1)) {
+                Env::Function { env, .. } => Some(*env),
+                held @ Env::InSlot(..) => Some(Env::OfClosure(Box::new(held))),
+                _ => Some(Env::Unknown),
+            },
+            "LoadConstUndefined" | "LoadConstEmpty" => Some(Env::NoValue),
             "LoadFromEnvironment" | "LoadFromEnvironmentL" => {
                 let through = Self::env_of(state, reg(inst, 1));
                 let slot = imm(inst, 2).unwrap_or(0);
@@ -286,8 +318,24 @@ impl Step<'_> {
                 let slot = imm(inst, 1).unwrap_or(0);
                 if let Some(f) = facts {
                     f.accesses.push((inst.offset, through.clone(), slot, true));
-                    if let Some(v) = reg(inst, 2).and_then(|r| state.get(&r)) {
-                        if !matches!(v, Env::InSlot(..) | Env::Unknown) {
+                    let held = reg(inst, 2).and_then(|r| state.get(&r));
+                    match held {
+                        Some(Env::NoValue) => {}
+                        Some(Env::Function { env, .. }) => {
+                            f.slot_closures
+                                .push((through.clone(), slot, Some((**env).clone())));
+                        }
+                        _ => f.slot_closures.push((through.clone(), slot, None)),
+                    }
+                    if let Some(v) = held {
+                        if !matches!(
+                            v,
+                            Env::InSlot(..)
+                                | Env::Unknown
+                                | Env::Function { .. }
+                                | Env::OfClosure(_)
+                                | Env::NoValue
+                        ) {
                             f.parked.push((through, slot, v.clone()));
                             f.parked_at.push(inst.offset);
                         }
@@ -309,7 +357,7 @@ impl Step<'_> {
                 }
                 return;
             }
-            _ => None,
+            _ => created_closure,
         };
         let writes = written(name, inst);
         for r in &writes {

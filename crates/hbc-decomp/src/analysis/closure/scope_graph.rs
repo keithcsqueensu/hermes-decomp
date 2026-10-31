@@ -62,6 +62,12 @@ pub struct ScopeGraph {
     built_on: BTreeMap<(u32, u32), Option<Env>>,
     // (scope, slot) -> the scopes parked there.
     parked: BTreeMap<(Scope, u32), Known>,
+    // (scope, slot) -> the environments of the closures stored there. One
+    // compiled closure can sit in two slots over two blocks (a helper inlined
+    // twice), so this is per slot, not the function's creation scopes.
+    slot_closures: BTreeMap<(Scope, u32), Known>,
+    // Slots that also get a value that is not a closure created by its storer.
+    slot_mixed: BTreeSet<(Scope, u32)>,
     // How deep `resolve` is in itself. A created scope's parent is resolved
     // through its creator's chain, which can lead back to that scope through
     // facts that disagree; past the bound the answer is unresolved.
@@ -124,6 +130,19 @@ impl ScopeGraph {
                         (graph.resolve(f, through), graph.resolve(f, value))
                     {
                         changed |= learn(&mut graph.parked, (at, *slot), v);
+                    }
+                }
+                for (through, slot, env) in &fx.slot_closures {
+                    let Some(at) = graph.resolve(f, through) else {
+                        continue;
+                    };
+                    match env {
+                        Some(env) => {
+                            if let Some(s) = graph.resolve(f, env) {
+                                changed |= learn(&mut graph.slot_closures, (at, *slot), s);
+                            }
+                        }
+                        None => changed |= graph.slot_mixed.insert((at, *slot)),
                     }
                 }
             }
@@ -218,7 +237,18 @@ impl ScopeGraph {
                 let at = self.resolve(f, inner)?;
                 single(self.parked.get(&(at, *slot)))
             }
-            Env::Unknown => None,
+            // The closure in a slot was created on the scope stored with it.
+            Env::OfClosure(held) => {
+                let Env::InSlot(inner, slot) = held.as_ref() else {
+                    return None;
+                };
+                let at = self.resolve(f, inner)?;
+                if self.slot_mixed.contains(&(at, *slot)) {
+                    return None;
+                }
+                single(self.slot_closures.get(&(at, *slot)))
+            }
+            Env::Function { .. } | Env::NoValue | Env::Unknown => None,
         }
     }
 
