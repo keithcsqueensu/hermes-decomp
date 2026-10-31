@@ -409,11 +409,35 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
       class-statement gate, which now lets a method that prints from its own body follow.
       Undeclared v96 1,485 (=), Expensify 12,052 -> 12,039, Discord 6,553 -> 6,567, all of
       Discord's rise one name in the capped-level function (next item);
-    - A2c2: a slot-held environment is still addressed at `NESTED_ENV_LEVEL_BASE + slot`
-      (a block of its own under `SLOT_HELD_SITE`), and `reg_source_slot` stays. With it, the
-      builder's level cap: in a function with more than 127 blocks (as Discord F31169; here
-      moment.js's inlined `addRegexToken`, whose slots print at level 255), a closure's reads and its block's stores do not reach the same
-      block (`fn7_2`, 38 undeclared; misread under other declared names before).
+    - ~~A2c2~~ **done (2026-10-30), below.** `fn7_2`, first put down to the level cap, is
+      not one: a closure reads a slot under the name the context derived from the
+      parameter it copies (`fn`), and the owner's binding refused that name because the
+      parameter holds it, so one slot has two names (I1) and the closure's resolves to the
+      parameter. A small repro (140 helpers each creating a closure over a copy of a
+      parameter IPA names `fn`) shows it without any capped level. It is A3 step 5a's
+      (`capture_sync` by stamp), not A2c's.
+- **A2c2 — slot-held environments by identity (done, 2026-10-30).** The builder no longer
+  addresses an environment loaded out of a slot at `NESTED_ENV_LEVEL_BASE + slot`: it has no
+  level of its own (`UNKNOWN_ENV_LEVEL`), so the plan's level is what reaches the scope the
+  graph placed, and one the graph cannot place stays an explicit unknown, as S3.4 meant.
+  `reg_source_slot` (register to (level, slot)) became a register set; a created environment
+  parked in a slot keeps its own identity, its creation site, instead of taking the slot's;
+  `SLOT_HELD_SITE` is gone; the walk stores a placed access into its block by site at every
+  level, not only a shared one (`level_is_shared` and `is_created_env` went with it).
+  One case keeps a provisional identity: `GetClosureEnvironment r, r` on a closure loaded out
+  of a slot used to inherit the slot-held level by accident, the register keeping the
+  closure's provenance, and that was the only thing telling two closures' environments apart
+  (Expensify's minified `v`, `w`, `y`: slots 26 and 27). It is explicit now
+  (`EnvRegMap::closure_envs`, `CLOSURE_ENV_SITE`) and is A2c3's to place. Measured on the way:
+  turning it into an unknown merged both closures' slot 0 into one `closure_unknown_0`, which
+  one module-level `let` then covered (undeclared fell by 648 / 312, all of it hidden, not
+  fixed); giving every `GetClosureEnvironment` destination the slot's identity doubled
+  Discord's undeclared (lodash's `baseCreate` lost its own `object`).
+  Against E2+E3: v96 identical; Expensify 351 lines, undeclared 12,039 -> 12,161, Discord 27
+  lines, 6,567 -> 6,573, all reads that named a fake block now an explicit unknown
+  (`closure_161_0`, `closure_186_0`, and 23 listener reads named `f107556` in one module);
+  one placed (Sentry's replay reads `closure_0$3` for `closure_128_0`). Consts and strings
+  unchanged. `NESTED_ENV_LEVEL_BASE` stays as the level space of created blocks.
 - **A2c3 — the accesses the graph does not place** (from S3_PARKED_ENV_PLAN.md S3.3 item 3
   and V98_ENV_PLAN.md §6, 2026-10-30). Every environment access should name its scope; these
   still do not, Expensify / Discord (E2+E3 build):
@@ -488,7 +512,13 @@ without an identity (178 construction sites outside tests, most in `transforms/i
 `analysis/metro`, `var_naming`, `patterns` and `codegen`), logged with the census. It changes
 no output; its counts are what each step below must bring to zero for its family.
 
-**A3.0b — the relocation check** (was K4.R, moved here 2026-10-30). Identity matters wherever
+**A3.0b — the relocation check** (was K4.R, moved here 2026-10-30). **Step 1 done
+(2026-10-30):** `stamps::out_of_reach`, logged with every stamp census as `out of reach N new
+M`, with the functions that gained some under `trace`. Expensify and Discord: 0 at every
+checkpoint. v96: 11 from W15 (3 async wrappers whose unwrapped generator body still names the
+generator's own scope; the wrapper declares them, so the output is right, and re-owning them
+is step 4a's). W13, W16g and W16h move nothing out of reach, so step 2 has nothing to refuse
+yet; the check stays as step 3's guard. Identity matters wherever
 code moves between bodies: W16g (`hoist_repeated_closures`) gives a repeatedly created
 function one declaration in a shared scope, W16h hoists module loads into the factory, W13
 inlines. A move is correct only if every slot the moved statements name is visible at the

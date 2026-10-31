@@ -10,6 +10,12 @@ mod walk;
 use super::info::{ClosureInfo, ClosureSlotValue, NameSource};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+// The site of a block no creation made: the environment of a closure loaded out
+// of a slot (`GetClosureEnvironment`), at `NESTED_ENV_LEVEL_BASE + slot`. Kept
+// as a block of its own, keyed by this bit and the level, until A2c3 places a
+// closure's environment as the scope it was created in. No offset reaches it.
+pub const CLOSURE_ENV_SITE: u32 = 1 << 31;
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ClosureContext {
     pub parent_function: BTreeMap<u32, u32>,
@@ -150,12 +156,6 @@ pub type ScopeRef = (u32, Option<u32>);
 // than two billion functions, so they never meet a real id.
 const FIRST_BLOCK_SCOPE_ID: u32 = u32::MAX - 1;
 
-// The site of a block no creation made: a store through a slot-held
-// environment at `NESTED_ENV_LEVEL_BASE + slot` that no created environment
-// claims. Kept as a block of its own, keyed by this bit and the level, until
-// A2c2 makes such an access unknown. No offset reaches it.
-pub const SLOT_HELD_SITE: u32 = 1 << 31;
-
 impl ClosureContext {
     pub fn new() -> Self {
         Self::default()
@@ -205,7 +205,7 @@ impl ClosureContext {
         }
         let level = match self.site_levels.get(&(creator, site)) {
             Some(&level) => level,
-            None if site & SLOT_HELD_SITE != 0 => site & !SLOT_HELD_SITE,
+            None if site & CLOSURE_ENV_SITE != 0 => site & !CLOSURE_ENV_SITE,
             None => {
                 log::trace!(target: "slots", "block scope: F{creator}@{site} has no level");
                 return creator;
@@ -227,9 +227,11 @@ impl ClosureContext {
         id
     }
 
-    // The block scope `function`'s body addresses at builder `level`. A store
-    // at a level no created environment claims is a slot-held environment's
-    // (`NESTED_ENV_LEVEL_BASE + slot`), given a block of its own until A2c2.
+    // The block scope `function`'s body addresses at builder `level`. A level
+    // no created environment claims is a closure environment's
+    // (`NESTED_ENV_LEVEL_BASE + slot`, `GetClosureEnvironment` on a closure
+    // loaded out of that slot), a block of its own until A2c3 places it. A
+    // slot-held environment has no such level since A2c2.
     pub fn block_at_level(&mut self, function: u32, level: u32) -> u32 {
         if let Some(&id) = self.block_index.get(&(function, level)) {
             return id;
@@ -241,17 +243,7 @@ impl ClosureContext {
             .range((function, 0)..=(function, u32::MAX))
             .find(|(_, &l)| l == level)
             .map(|(&(_, site), _)| site);
-        self.block_scope_at(function, site.unwrap_or(SLOT_HELD_SITE | level))
-    }
-
-    // Whether several of `function`'s creation sites share builder `level`
-    // (past `MAX_LEVEL` every further block gets the same one).
-    pub fn level_is_shared(&self, function: u32, level: u32) -> bool {
-        self.site_levels
-            .range((function, 0)..=(function, u32::MAX))
-            .filter(|(_, &l)| l == level)
-            .nth(1)
-            .is_some()
+        self.block_scope_at(function, site.unwrap_or(CLOSURE_ENV_SITE | level))
     }
 
     // The id a scope reference stands for: the function, or its block scope.

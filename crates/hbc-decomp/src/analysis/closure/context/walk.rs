@@ -81,13 +81,11 @@ impl ClosureContext {
                             // was created inside it (the class constructor
                             // goes into slot 0 of the class scope), so the
                             // block, not the function, is its parent.
-                            // Past the level cap several of this function's
-                            // blocks share one level: the one the access was
-                            // placed in, by its site.
+                            // A placed store is its block's, by site: the
+                            // level is a handle (past the level cap several
+                            // of this function's blocks share one).
                             let placed = match scope.0 {
-                                Some((g, Some(site)))
-                                    if g == current_fn && self.level_is_shared(g, *level) =>
-                                {
+                                Some((g, Some(site))) if g == current_fn => {
                                     self.known_scope_id((g, Some(site)))
                                 }
                                 _ => None,

@@ -169,6 +169,65 @@ pub fn captured_slot_names(
         .collect()
 }
 
+// The relocation check (IDENTITY_PLAN.md A3.0b): stamped references whose owner
+// the body they sit in cannot see. A pass that moves statements between bodies
+// (W13's inliner, W16g's hoist of repeated closures, W16h's module loads) is
+// correct only where every slot the moved statements name stays visible at the
+// destination, so a count that rises between two checkpoints is a move that
+// changed meaning, and the pass between them made it.
+pub fn out_of_reach(
+    ctx: &ClosureContext,
+    func: u32,
+    stmts: &[Statement],
+) -> Vec<(String, SlotRef)> {
+    let mut reach = own_scopes(ctx, func);
+    reach.extend(ctx.ancestors_of(func));
+    var_refs(stmts)
+        .into_iter()
+        .filter_map(|(name, slot)| {
+            let s = slot?;
+            let parked = ctx.parked_scopes.contains(&s.owner)
+                && reach.contains(&ctx.scope_function(s.owner));
+            (!reach.contains(&s.owner) && !parked).then(|| (name.to_string(), s))
+        })
+        .collect()
+}
+
+// Each function's out-of-reach count at the last checkpoint.
+static REACH: Mutex<Option<HashMap<u32, usize>>> = Mutex::new(None);
+
+fn report_reach(stage: &str, all_ir: &BTreeMap<u32, Vec<Statement>>, ctx: &ClosureContext) {
+    let Ok(mut last) = REACH.lock() else { return };
+    let before = last.take().unwrap_or_default();
+    let mut now = HashMap::with_capacity(all_ir.len());
+    let mut total = 0;
+    let mut grew = Vec::new();
+    for (&func, stmts) in all_ir {
+        let refs = out_of_reach(ctx, func, stmts);
+        total += refs.len();
+        let was = before.get(&func).copied().unwrap_or(0);
+        if refs.len() > was {
+            grew.push((
+                refs.len() - was,
+                func,
+                refs.iter().take(3).cloned().collect::<Vec<_>>(),
+            ));
+        }
+        now.insert(func, refs.len());
+    }
+    let moved: usize = grew.iter().map(|g| g.0).sum();
+    log::debug!(target: TARGET, "{stage:<14} out of reach {total:>6}  new {moved:>5}");
+    grew.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    for (n, func, refs) in grew.into_iter().take(8) {
+        let refs: Vec<String> = refs
+            .iter()
+            .map(|(name, s)| format!("`{name}` {:?} slot {}", ctx.scope_ref(s.owner), s.slot))
+            .collect();
+        log::trace!(target: TARGET, "    F{func}: {n} newly out of reach, e.g. {}", refs.join(", "));
+    }
+    *last = Some(now);
+}
+
 // Per name: (stamped, unstamped) references in one body.
 type NameCounts = HashMap<String, (usize, usize)>;
 
@@ -240,6 +299,7 @@ pub fn report(stage: &str, all_ir: &BTreeMap<u32, Vec<Statement>>, ctx: Option<&
         now.insert(func, names);
     }
     log_census(stage, total);
+    report_reach(stage, all_ir, ctx);
     let (ok, off, samples) = class_body_stamps(ctx, all_ir);
     log::debug!(target: TARGET, "{stage:<14} class-body stamps: {ok} agree, {off} off the method's chain or against its own body");
     for s in samples {

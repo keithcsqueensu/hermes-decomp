@@ -107,6 +107,11 @@ not stamps: A2c2's follow-up.
 The plan's E2 exit asked for 6,520 or below, a number measured with renumbering kept on top
 of site keys. That exit is not met by 47, and the 47 are the `fn7_2` case above.
 
+**Correction (2026-10-30, A2c2):** `fn7_2` is not the level cap. A repro with no capped level
+shows the same shape: a closure reads a parameter's copy under the name the context derived
+from the parameter, which the owner's binding refused because the parameter holds it (I1).
+It is IDENTITY_PLAN.md A3 step 5a's.
+
 ## 4. Not in scope
 
 Shared functions that create themselves (SELF_CREATING_SHARED_PLAN.md); the level cap (A2c).

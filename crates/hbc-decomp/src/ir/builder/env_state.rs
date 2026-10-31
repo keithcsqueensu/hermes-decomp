@@ -68,9 +68,15 @@ impl EnvPlan {
 pub struct EnvRegMap {
     /// register → environment nesting level (0 = current function)
     reg_level: BTreeMap<u32, u32>,
-    /// register → the (level, slot) it was loaded from, for a register that later
-    /// turns out to hold an environment
-    reg_source_slot: BTreeMap<u32, (u32, u32)>,
+    /// registers loaded out of a slot of an environment this function reaches
+    /// by its chain, with the slot: used as an environment, one parked there
+    /// (slot-held); holding a closure, the closure whose environment
+    /// `GetClosureEnvironment` takes
+    slot_held: BTreeMap<u32, u32>,
+    /// registers holding the environment of a closure loaded out of a slot,
+    /// with that slot: addressed at `NESTED_ENV_LEVEL_BASE + slot` until the
+    /// scope graph places them (IDENTITY_PLAN.md A2c3)
+    closure_envs: BTreeMap<u32, u32>,
     /// registers holding an environment this function just created
     created_envs: HashSet<u32>,
     /// created environment register -> the offset that created it: its
@@ -130,7 +136,8 @@ impl EnvRegMap {
     /// slot, so any earlier provenance for this register is dropped.
     pub fn set_level(&mut self, reg: u32, level: u32) {
         self.reg_level.insert(reg, level);
-        self.reg_source_slot.remove(&reg);
+        self.slot_held.remove(&reg);
+        self.closure_envs.remove(&reg);
         self.created_envs.remove(&reg);
     }
 
@@ -176,10 +183,6 @@ impl EnvRegMap {
         level
     }
 
-    pub fn is_created_env(&self, reg: u32) -> bool {
-        self.created_envs.contains(&reg)
-    }
-
     /// The offset that created the environment `reg` holds, if it holds one
     /// this function created.
     pub fn created_site_of(&self, reg: u32) -> Option<u32> {
@@ -201,11 +204,29 @@ impl EnvRegMap {
         self.reg_level.get(&reg).copied().unwrap_or(0)
     }
 
-    /// Record that `reg` received the value of slot `slot` of the environment at
-    /// `level`. If that value turns out to be an environment itself, this is what
-    /// tells the two apart.
+    /// Record that `reg` received the value of a slot of the environment at
+    /// `level`. If that value turns out to be an environment itself, it is one
+    /// parked there, which only the scope graph can place.
     pub fn set_source_slot(&mut self, reg: u32, level: u32, slot: u32) {
-        self.reg_source_slot.insert(reg, (level, slot));
+        self.closure_envs.remove(&reg);
+        if level < NESTED_ENV_LEVEL_BASE {
+            self.slot_held.insert(reg, slot);
+        } else {
+            self.slot_held.remove(&reg);
+        }
+    }
+
+    /// `dst` = the environment of the closure in `closure`. One loaded out of
+    /// a slot is told apart from another by that slot, a provisional identity
+    /// until the scope graph places a closure's environment as the scope it
+    /// was created in (IDENTITY_PLAN.md A2c3). Before A2c2 it had the
+    /// slot-held identity by accident, the register keeping the closure's
+    /// provenance.
+    pub fn set_closure_env(&mut self, dst: u32, closure: u32) {
+        if let Some(&slot) = self.slot_held.get(&closure) {
+            self.slot_held.remove(&dst);
+            self.closure_envs.insert(dst, slot);
+        }
     }
 
     /// The level to address `reg` with when it is used as an environment.
@@ -218,8 +239,7 @@ impl EnvRegMap {
     /// `env_level_of` for a load or store through `reg`, counting one that
     /// goes through a slot-held environment.
     pub fn access_level_of(&mut self, reg: u32) -> u32 {
-        if matches!(self.reg_source_slot.get(&reg), Some(&(level, _)) if level < NESTED_ENV_LEVEL_BASE)
-        {
+        if self.slot_held.contains_key(&reg) {
             self.slot_held_accesses += 1;
         }
         let raw = self.env_level_of(reg);
@@ -235,11 +255,18 @@ impl EnvRegMap {
         crate::ir::ScopeTag(self.scopes.as_ref().and_then(|s| s.get(&self.at).copied()))
     }
 
+    // An environment loaded out of a slot has no level of its own: the scope
+    // parked there is the scope graph's to name (the plan's level, or its
+    // explicit unknown). It used to be `NESTED_ENV_LEVEL_BASE + slot`, a fake
+    // block scope keyed by the slot number alone, which every environment
+    // parked in a slot of that number shared and which a created block of the
+    // same level number collided with (IDENTITY_PLAN.md A2c2).
     pub fn env_level_of(&self, reg: u32) -> u32 {
-        if let Some(&(level, slot)) = self.reg_source_slot.get(&reg) {
-            if level < NESTED_ENV_LEVEL_BASE {
-                return (NESTED_ENV_LEVEL_BASE + slot).min(MAX_LEVEL);
-            }
+        if let Some(&slot) = self.closure_envs.get(&reg) {
+            return (NESTED_ENV_LEVEL_BASE + slot).min(MAX_LEVEL);
+        }
+        if self.slot_held.contains_key(&reg) {
+            return UNKNOWN_ENV_LEVEL;
         }
         self.level_of(reg)
     }
@@ -251,12 +278,20 @@ impl EnvRegMap {
         } else {
             self.reg_level.remove(&dst);
         }
-        match self.reg_source_slot.get(&src).copied() {
-            Some(v) => {
-                self.reg_source_slot.insert(dst, v);
+        match self.slot_held.get(&src).copied() {
+            Some(slot) => {
+                self.slot_held.insert(dst, slot);
             }
             None => {
-                self.reg_source_slot.remove(&dst);
+                self.slot_held.remove(&dst);
+            }
+        }
+        match self.closure_envs.get(&src).copied() {
+            Some(slot) => {
+                self.closure_envs.insert(dst, slot);
+            }
+            None => {
+                self.closure_envs.remove(&dst);
             }
         }
         if self.created_envs.contains(&src) {
@@ -295,25 +330,16 @@ mod tests {
         assert_eq!(m.parent_env_level(1), 2);
     }
 
-    // An environment created here and then stored into a slot of the enclosing
-    // one takes that slot's identity, which is the level a load from the same
-    // slot produces. Builder and capturing closure then agree on the name.
+    // An environment loaded out of a slot is the scope graph's to place: the
+    // builder gives it no level of its own, never one keyed by the slot number.
     #[test]
-    fn captured_created_env_takes_the_capture_slot_identity() {
+    fn a_slot_held_environment_has_no_level_of_its_own() {
         let mut m = EnvRegMap::new();
-        let own = m.claim_created_env(20);
-        assert!(own >= NESTED_ENV_LEVEL_BASE);
-        assert!(m.is_created_env(20));
-
-        // StoreToEnvironment r1(level 0), slot 3, r20
-        m.set_source_slot(20, 0, 3);
-        let created = m.env_level_of(20);
-
-        // LoadFromEnvironment rX, r1, 3 in the capturing closure
-        let mut child = EnvRegMap::new();
-        child.set_source_slot(7, 0, 3);
-        assert_eq!(created, child.env_level_of(7));
-        assert_eq!(created, NESTED_ENV_LEVEL_BASE + 3);
+        m.set_source_slot(7, 0, 3);
+        assert_eq!(m.env_level_of(7), UNKNOWN_ENV_LEVEL);
+        // Loaded out of a block's slot: not a parked environment.
+        m.set_source_slot(8, NESTED_ENV_LEVEL_BASE + 1, 3);
+        assert_eq!(m.env_level_of(8), 0);
     }
 
     // Reaching an environment through the parent chain is not reaching one out of
@@ -322,9 +348,22 @@ mod tests {
     fn walking_the_parent_chain_clears_slot_provenance() {
         let mut m = EnvRegMap::new();
         m.set_source_slot(4, 0, 2);
-        assert_eq!(m.env_level_of(4), NESTED_ENV_LEVEL_BASE + 2);
+        assert_eq!(m.env_level_of(4), UNKNOWN_ENV_LEVEL);
         m.set_level(4, 1);
         assert_eq!(m.env_level_of(4), 1);
+    }
+
+    // The environment of a closure loaded out of a slot keeps that slot's
+    // provisional identity; it is not a parked environment.
+    #[test]
+    fn a_closure_environment_is_told_apart_by_its_slot() {
+        let mut m = EnvRegMap::new();
+        m.set_source_slot(3, 0, 26);
+        m.set_closure_env(3, 3);
+        assert_eq!(m.env_level_of(3), NESTED_ENV_LEVEL_BASE + 26);
+        m.set_source_slot(5, 0, 27);
+        m.set_closure_env(5, 5);
+        assert_eq!(m.env_level_of(5), NESTED_ENV_LEVEL_BASE + 27);
     }
 
     #[test]
@@ -340,8 +379,8 @@ mod tests {
         // A Mov of a created environment carries that fact to the destination.
         m.claim_created_env(3);
         m.copy_reg(9, 3);
-        assert!(m.is_created_env(9));
+        assert!(m.created_site_of(9).is_some());
         m.copy_reg(9, 7); // src is not a created env → clear
-        assert!(!m.is_created_env(9));
+        assert!(m.created_site_of(9).is_none());
     }
 }

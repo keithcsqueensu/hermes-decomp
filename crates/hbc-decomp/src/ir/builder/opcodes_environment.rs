@@ -75,13 +75,22 @@ pub fn handle_get_environment(
 }
 
 // GetClosureEnvironment rDst, rClosure, env of a closure value.
-// Without resolving the closure object we cannot know the absolute level; leave
-// unknown (level_of defaults to 0). Still a no-op for IR statements.
+// The closure's environment is the scope it was created in, which only the
+// scope graph can place (IDENTITY_PLAN.md A2c3). Until then the register keeps
+// what it held: written over its own closure loaded out of a slot, that slot's
+// provisional identity; otherwise its earlier level (level_of defaults to 0).
+// Giving every destination the slot's identity moved lodash's `baseCreate`
+// off its own `object` (Discord undeclared doubled). Still a no-op for IR
+// statements.
 pub fn handle_get_closure_environment(
     inst: &crate::Instruction,
-    _env_map: &mut EnvRegMap,
+    env_map: &mut EnvRegMap,
 ) -> Option<FlowResult> {
-    let _dst = get_reg(&inst.operands, 0)?;
+    let dst = get_reg(&inst.operands, 0)?;
+    let closure = get_reg(&inst.operands, 1)?;
+    if dst == closure {
+        env_map.set_closure_env(dst, closure);
+    }
     Some(FlowResult::Noop)
 }
 
@@ -94,8 +103,8 @@ pub fn handle_load_from_environment(
     let env_reg = get_reg(&inst.operands, 1)?;
     let slot = inst.operands.get(2)?.value.as_u32()?;
     let level = env_map.access_level_of(env_reg);
-    // Remember where this value came from: if it is used as an environment
-    // later, that is what identifies it.
+    // Remember that this value came out of a slot: used as an environment
+    // later, it is one parked there.
     env_map.set_source_slot(dst, level, slot);
 
     Some(FlowResult::Statement(Statement::Assign {
@@ -117,16 +126,9 @@ pub fn handle_store_to_environment(
     let slot = inst.operands.get(1)?.value.as_u32()?;
     let level = env_map.access_level_of(env_reg);
 
-    // Capturing a freshly created environment into parent slot `slot`: give it the
-    // identity of that slot, so its own slot accesses use the level a load from
-    // the same slot produces (see env_level_of). Parent and capturing child then
-    // name the shared scope the same way, and its zero-inits stop colliding with
-    // the running env's slots.
-    if let Some(value_reg) = get_reg(&inst.operands, 2) {
-        if env_map.is_created_env(value_reg) {
-            env_map.set_source_slot(value_reg, level, slot);
-        }
-    }
+    // A created environment parked in a slot keeps its own identity, its
+    // creation site: the closures that load it back are placed by the scope
+    // graph, not matched to it by slot number (IDENTITY_PLAN.md A2c2).
     // An environment parked in a slot whose every read the scope graph
     // resolved: nothing to print.
     if env_map
