@@ -102,9 +102,21 @@ pub struct ClosureContext {
     // The scope the graph says a function was created with: (function, None)
     // for a function's own environment, (function, Some(creation site)) for a
     // block environment it built. Where present it is the parent, whatever
-    // the creating closure's environment register said.
+    // the creating closure's environment register said. The graph's single
+    // answers only (IDENTITY_PLAN.md A2d).
     #[serde(default)]
     pub scope_parents: BTreeMap<u32, (u32, Option<u32>)>,
+    // A shared function's place in the tree: its first creation scope. The
+    // graph has no single answer for it, and no access depends on this one
+    // (each is placed by the scope it records), but declaration placement and
+    // the shadow checks need one parent per function: without it, the parent
+    // was whichever creator the walk saw last, often without its block
+    // (Discord's I2 Shadowed 1,059 -> 2,150). A function that creates itself
+    // has none (ts-pattern's `optional`: one parent moved every creator's
+    // declaration to one scope). Goes when declarations are placed by
+    // identity (A4d).
+    #[serde(default)]
+    pub shared_parents: BTreeMap<u32, (u32, Option<u32>)>,
     // The same for a block environment: (creating function, creation site) ->
     // the scope it was built on.
     #[serde(default)]
@@ -348,7 +360,11 @@ impl ClosureContext {
         if parent == child {
             return;
         }
-        if let Some(&r) = self.scope_parents.get(&child) {
+        if let Some(&r) = self
+            .scope_parents
+            .get(&child)
+            .or_else(|| self.shared_parents.get(&child))
+        {
             let scope = self.scope_id(r);
             if scope != child {
                 self.parent_function.insert(child, scope);

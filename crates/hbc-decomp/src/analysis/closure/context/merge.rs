@@ -177,7 +177,7 @@ impl ClosureContext {
         // names them by id. Numbering them again sent those stamps to
         // whichever block took the number (lodash's `runInContext` classes read
         // F8682's block for F18926's; EARLY_STAMPS_PLAN.md).
-        let mut deferred: Vec<(u32, u32, u32, ClosureSlotValue)> = Vec::new();
+        let mut deferred: Vec<super::walk::Deferred> = Vec::new();
         let mut keys: Vec<u32> = all_ir.keys().copied().collect();
         keys.sort();
         for fid in keys {
@@ -202,7 +202,7 @@ impl ClosureContext {
             }
         }
         // Second pass: ancestor links and function names are complete.
-        for (from_fn, level, slot, val) in deferred {
+        for (from_fn, level, slot, val, placed) in deferred {
             // A nested body storing one of its own parameters (`logFn = fn`
             // inside `setLogFn(fn)`) says nothing about the slot's name: the
             // index is the nested function's, and read as the owner's it
@@ -210,7 +210,11 @@ impl ClosureContext {
             if matches!(&val, ClosureSlotValue::Variable(v) if is_parameter_placeholder(v)) {
                 continue;
             }
-            if let Some(target) = self.ancestor_at(from_fn, level) {
+            let target = match placed {
+                Some(r) => Some(self.scope_id(r)),
+                None => self.ancestor_at(from_fn, level),
+            };
+            if let Some(target) = target {
                 super::walk::trace_store(target, slot, &val);
                 self.function_closures
                     .entry(target)

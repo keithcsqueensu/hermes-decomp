@@ -10,7 +10,7 @@ impl ClosureContext {
     pub fn analyze_function(&mut self, function_id: u32, stmts: &[Statement]) {
         let mut deferred = Vec::new();
         self.analyze_function_collecting(function_id, stmts, &mut deferred);
-        for (from_fn, level, slot, val) in deferred {
+        for (from_fn, level, slot, val, placed) in deferred {
             // A nested body storing one of its own parameters (`logFn = fn`
             // inside `setLogFn(fn)`) says nothing about the slot's name: the
             // index is the nested function's, and read as the owner's it
@@ -18,7 +18,11 @@ impl ClosureContext {
             if matches!(&val, ClosureSlotValue::Variable(v) if is_parameter_placeholder(v)) {
                 continue;
             }
-            if let Some(target) = self.ancestor_at(from_fn, level) {
+            let target = match placed {
+                Some(r) => Some(self.scope_id(r)),
+                None => self.ancestor_at(from_fn, level),
+            };
+            if let Some(target) = target {
                 super::walk::trace_store(target, slot, &val);
                 self.function_closures
                     .entry(target)
@@ -32,7 +36,7 @@ impl ClosureContext {
         &mut self,
         function_id: u32,
         stmts: &[Statement],
-        deferred: &mut Vec<(u32, u32, u32, ClosureSlotValue)>,
+        deferred: &mut Vec<super::walk::Deferred>,
     ) {
         let mut info = ClosureInfo::new();
         let mut register_values: BTreeMap<u32, ClosureSlotValue> = BTreeMap::new();

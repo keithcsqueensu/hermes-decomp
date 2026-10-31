@@ -640,6 +640,13 @@ fn plan_env_levels(
             }
         }
     }
+    // The chain the levels below are counted on: the graph's single answers,
+    // and for a shared function its first creation scope (S3.4). It is the
+    // plan's alone (IDENTITY_PLAN.md A2d): `ctx.scope_parents` keeps only the
+    // graph's answers, so `parent_function` is the tree the creations make, not
+    // a representative's, and every access through a shared function is
+    // placed by the scope it records, not by a walk up that representative.
+    let mut chain_parents = ctx.scope_parents.clone();
     let mut installed: Vec<u32> = Vec::new();
     for (f, sites) in creations_of {
         let mut by_creator: BTreeMap<u32, std::collections::BTreeSet<ScopeRef>> = BTreeMap::new();
@@ -666,7 +673,7 @@ fn plan_env_levels(
         // read two levels down through the function lands on a slot the copy
         // renames, not past the function into whatever `add_child` linked.
         if let Some(&rep) = by_creator.values().next().and_then(|s| s.iter().next()) {
-            if let std::collections::btree_map::Entry::Vacant(e) = ctx.scope_parents.entry(f) {
+            if let std::collections::btree_map::Entry::Vacant(e) = chain_parents.entry(f) {
                 e.insert(rep);
                 installed.push(f);
             }
@@ -680,7 +687,7 @@ fn plan_env_levels(
         let mut cur = from;
         for _ in 0..n {
             cur = match cur {
-                (g, None) => *ctx.scope_parents.get(&g)?,
+                (g, None) => *chain_parents.get(&g)?,
                 (g, Some(site)) => *ctx.block_parents.get(&(g, site))?,
             };
         }
@@ -713,10 +720,15 @@ fn plan_env_levels(
         .filter(|g| creates_itself(*g, &ctx.shared_creations[g]))
         .collect();
     for g in &selfish {
-        ctx.scope_parents.remove(g);
+        chain_parents.remove(g);
     }
     for _ in &selfish {
         count("shared: functions that create themselves");
+    }
+    for g in &installed {
+        if let Some(&r) = chain_parents.get(g) {
+            ctx.shared_parents.insert(*g, r);
+        }
     }
     // The level that reaches `s` from `f`: its own scopes directly, anything
     // else as the hops up its chain -- the chain of parents installed above,
@@ -733,7 +745,7 @@ fn plan_env_levels(
         let mut cur: ScopeRef = (f, None);
         for k in 1..=64u32 {
             cur = match cur {
-                (g, None) => *ctx.scope_parents.get(&g)?,
+                (g, None) => *chain_parents.get(&g)?,
                 (g, Some(site)) => match ctx.block_parents.get(&(g, site)) {
                     Some(&r) => r,
                     None => return None,
@@ -750,7 +762,7 @@ fn plan_env_levels(
         let mut cur = from;
         for _ in 0..n {
             cur = match cur {
-                (g, None) => *ctx.scope_parents.get(&g)?,
+                (g, None) => *chain_parents.get(&g)?,
                 (g, Some(site)) => *ctx.block_parents.get(&(g, site))?,
             };
         }
@@ -831,7 +843,7 @@ fn plan_env_levels(
                             shared = true;
                             break;
                         }
-                        cur = ctx.scope_parents.get(&g).map(|&(p, _)| p);
+                        cur = chain_parents.get(&g).map(|&(p, _)| p);
                     }
                     let place = if shared { "a shared body" } else { "elsewhere" };
                     count(&format!("unresolved closure in {place}: {why}"));

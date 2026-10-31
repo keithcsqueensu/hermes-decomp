@@ -459,6 +459,24 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
   answering only what is counted. A3's identities are only as good as these.
 - **A2d — the shared-parent install goes.** `parent_function` is the lexical tree again; the
   hoister's shared and self-creating exceptions are re-checked on block-created functions.
+  **Done in part (2026-10-30); the rest is A4d's.** Landed, byte-identical on all three
+  bundles with every identity count unchanged:
+  - `scope_parents` holds the graph's single answers only. The representative (a shared
+    function's first creation scope, S3.4) is counted on a chain local to the plan's level
+    computation (`chain_parents` in `ir_gen`), and kept for the tree in a field of its own,
+    `shared_parents`, with the self-creating exception stated there.
+  - A store into an ancestor's slot carries the scope it was placed in (`walk::Deferred`) and
+    lands there, not `level` hops up `parent_function`; it agreed with the walk everywhere.
+  Not landed: dropping the representative from the tree. Measured: with `parent_function`
+  left to the creations, a shared function's parent is whichever creator the walk saw last,
+  often without its block. Expensify / Discord: undeclared 12,161 -> 12,149 / 6,573 ->
+  6,611, I2 1,320 -> 2,114 / 2,368 -> 3,552 (Shadowed 391 -> 1,073 / 1,059 -> 2,150), class
+  bodies whose stamps leave the method's chain 0 -> 25 / 65. A function created by several
+  scopes has no single lexical parent; declaration placement and the shadow checks need one
+  until declarations are placed per identity across every copy (A4d), which is where
+  `shared_parents` goes. The hoister's exceptions keep their own reasons: a shared function
+  renders one copy per creator, and a block-created one reads its own block, so neither can
+  be declared once outside; both stay.
 - **A2e — raw machines.** S3.2b already parks a machine's scope in its wrapper
   (`parked_scopes`; `STEP_ENV_SLOTS` is gone). What is left is that the machine prints
   correctly while it stays raw, and that the catch-loop fix can land. Census (Expensify,
@@ -606,7 +624,8 @@ Staged (2026-10-29) so that no step changes names before it has been measured in
   keep theirs. Unparsable and undeclared counts must not rise on any bundle.
 - **A4c — locals named by the allocator.** The register-born identities (F23) too; the
   naming passes stop renaming text.
-- **A4d — declarations by identity.** Writes counted per identity across every body that
+- **A4d — declarations by identity** (also retires `shared_parents`, A2d's representative
+  parent for shared functions, and the self-creating exception with it). Writes counted per identity across every body that
   renders it, copies included, decide `let` or `const` and where: `copy_writes` /
   `relax_written_consts`, `extra_writes_from_nested_bodies`, `split_capture_and_local`,
   `drop_slot_lets_of_params` and the outer `written_first_vars` go, each with the const and

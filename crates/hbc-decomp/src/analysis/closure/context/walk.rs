@@ -1,8 +1,15 @@
 // Statement/expression walk for env stores and nested Function edges.
 use super::super::info::{ClosureInfo, ClosureSlotValue};
-use super::ClosureContext;
+use super::{ClosureContext, ScopeRef};
 use crate::ir::{AssignTarget, Binding, Expression, Statement};
 use std::collections::BTreeMap;
+
+// A store into an ancestor's slot, applied once every parent edge is known:
+// (from function, level, slot, value, the scope the access was placed in).
+// A placed store lands in its scope, not `level` hops up `parent_function`
+// (IDENTITY_PLAN.md A2d: a shared function's parent is no longer the
+// representative its levels were counted from).
+pub(super) type Deferred = (u32, u32, u32, ClosureSlotValue, Option<ScopeRef>);
 
 impl ClosureContext {
     pub(super) fn analyze_stmt_context(
@@ -12,7 +19,7 @@ impl ClosureContext {
         info: &mut ClosureInfo,
         reg_values: &mut BTreeMap<u32, ClosureSlotValue>,
         named_values: &mut BTreeMap<String, ClosureSlotValue>,
-        deferred: &mut Vec<(u32, u32, u32, ClosureSlotValue)>,
+        deferred: &mut Vec<Deferred>,
     ) {
         match stmt {
             Statement::Assign { target, value } => {
@@ -95,7 +102,9 @@ impl ClosureContext {
                                 None => self.block_at_level(current_fn, *level),
                             };
                             if let ClosureSlotValue::Function { id, .. } = &val {
-                                if !self.scope_parents.contains_key(id) {
+                                if !self.scope_parents.contains_key(id)
+                                    && !self.shared_parents.contains_key(id)
+                                {
                                     self.parent_function.insert(*id, scope);
                                 }
                             }
@@ -105,8 +114,10 @@ impl ClosureContext {
                                 .or_default()
                                 .store_slot(*slot, val);
                         } else {
-                            // Nested body writing into a parent/grandparent env.
-                            deferred.push((current_fn, *level, *slot, val));
+                            // Nested body writing into a parent/grandparent env:
+                            // the scope it was placed in, when it was, else
+                            // the one `level` hops up the parents.
+                            deferred.push((current_fn, *level, *slot, val, scope.0));
                         }
                     }
                 }

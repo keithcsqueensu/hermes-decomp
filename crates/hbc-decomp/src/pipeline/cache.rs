@@ -38,7 +38,8 @@ use super::DecompileOptionsV2;
 // 11: shared-body copies (`variant_origin`, `holder_variants`). 12: `copy_writes`.
 // 13: `ClosureContext.parked_scopes`. 14: `access_scopes`.
 // 15: block scopes keyed by creation site (`block_key`, `block_index`, `site_levels`).
-pub const CACHE_VERSION: u32 = 15;
+// 16: `ClosureContext.shared_parents`, out of `scope_parents`.
+pub const CACHE_VERSION: u32 = 16;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.
