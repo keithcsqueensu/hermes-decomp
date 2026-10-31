@@ -79,7 +79,11 @@ impl ClosureContext {
                                 v.push('2');
                             }
                         }
-                        if *level == 0 {
+                        // A closure's environment placed in another function's
+                        // scope has no level of its own (A2c3): the register's
+                        // old one, often 0, is no answer.
+                        let foreign = matches!(scope.0, Some((g, _)) if g != current_fn);
+                        if *level == 0 && !foreign {
                             trace_store(current_fn, *slot, &val);
                             info.store_slot(*slot, val);
                         } else if *level >= crate::ir::NESTED_ENV_LEVEL_BASE {
@@ -97,12 +101,7 @@ impl ClosureContext {
                                 }
                                 // A closure's environment off this function's
                                 // chain (A2c3): the scope it was placed in.
-                                Some(r) => {
-                                    if r.1.is_some() {
-                                        self.off_chain_blocks.insert(r.0);
-                                    }
-                                    Some(self.scope_id(r))
-                                }
+                                Some(r) => Some(self.scope_id(r)),
                                 None => None,
                             };
                             let scope = match placed {

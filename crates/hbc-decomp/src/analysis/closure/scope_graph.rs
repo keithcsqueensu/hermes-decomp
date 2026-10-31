@@ -265,6 +265,23 @@ impl ScopeGraph {
     }
 
     // Why `chain(f, n)` is unresolved: the first link that is missing.
+    // Why a closure's environment has no answer: the census's cause (A2c3).
+    pub fn why_closure_env(&self, f: u32, held: &Env) -> &'static str {
+        let Env::InSlot(inner, slot) = held else {
+            return "the closure is not out of a slot";
+        };
+        let Some(at) = self.resolve(f, inner) else {
+            return "the slot's scope is unresolved";
+        };
+        if self.slot_mixed.contains(&(at, *slot)) {
+            return "the slot also holds other values";
+        }
+        match self.slot_closures.get(&(at, *slot)) {
+            None => "no closure was stored in the slot",
+            Some(_) => "the slot holds closures of several scopes",
+        }
+    }
+
     pub fn why_unresolved(&self, f: u32, n: u32) -> &'static str {
         let mut from = BTreeSet::from([Scope::Fn(f)]);
         for _ in 0..n.min(MAX_HOPS) {

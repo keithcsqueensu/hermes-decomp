@@ -480,11 +480,37 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
   6,573 -> 6,562, I1 7,374 -> 7,291, I2 2,368 -> 1,807 (TwoSlots 1,040 -> 532), and its one
   unparsable module parses. Class-body stamps off the method's chain or against its body rise
   on Discord, 0 -> 54 at W6: a method reading a sibling block through a closure's environment.
-  That is the census counting what the new placement does, not a mis-stamp, for the sampled
-  ones (the block's function is on the method's chain); a local still shadows some of these
-  reads (`let closure_1` in a memo reader), which is A3/A4's. Still provisional:
-  `CLOSURE_ENV_SITE`, for a closure the builder's slot identity sees and the graph does not
-  place.
+  All 35 distinct stamps new since G0 name a block of a function on the method's chain, which is
+  what the placement does; the other 29 distinct off-chain stamps logged also occur in the G0
+  build (a slot of the enclosing function against the method's own body), and are not A2c3's. A
+  local still shadows some of these reads (`let closure_1` in a memo reader), which is A3/A4's.
+
+  **Closed (2026-10-31).** `CLOSURE_ENV_SITE` and `closure_envs` are gone: an access through a
+  closure's environment has a recorded scope or is an explicit unknown. The level left in the
+  register is no identity, so a store placed in another function's scope no longer falls into
+  the current function at level 0, and a read marks its block's function too. Against the
+  build above: v96 identical. Expensify undeclared 11,786 -> 12,677 (placeholders +896, so all
+  of it reads that named a fake block, as in A2c2), I2 997 -> 967 (TwoSlots 392 -> 360);
+  Discord 6,562 -> 6,507, I2 1,807 -> 1,786. The rise is 38 access sites, most of them
+  minified `un` (F100457), created by more than ten functions with slots of their own. Reading
+  the slot's scope off the chain, when every creator agrees, placed none of them, so it was not kept.
+
+  Where every access stands, Expensify / Discord:
+
+  | bucket | count | answered by |
+  |---|---|---|
+  | closure's environment placed, on / off the chain | 6 / 416, 4 / 3,934 | recorded scope |
+  | closure's environment: slot's scope unresolved | 32 / 0 | explicit unknown |
+  | closure's environment: slot also holds other values | 6 / 1 | explicit unknown |
+  | closure's environment: closures of several scopes | 0 / 3 | explicit unknown |
+  | closure unresolved, read on the chain | 2,196 / 2,427 | chain answer |
+  | closure unresolved, creators disagree | 69 / 97 | explicit unknown |
+  | closure unresolved, chain broken | 354 / 350 | level model |
+  | `unknown` kind (disagreeing paths, nesting bound) | 146 / 39 | level model |
+  | slot-held / up from a slot unplaced | 18 / 39, 44 / 70 | explicit unknown |
+  | resolved, not on the chain (closure kind) | 59 / 40 | level model |
+
+  The level model answers 559 / 429 accesses, all counted above.
 - **A2d — the shared-parent install goes.** `parent_function` is the lexical tree again; the
   hoister's shared and self-creating exceptions are re-checked on block-created functions.
   **Done in part (2026-10-30); the rest is A4d's.** Landed, byte-identical on all three

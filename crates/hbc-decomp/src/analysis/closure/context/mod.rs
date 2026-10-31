@@ -10,12 +10,6 @@ mod walk;
 use super::info::{ClosureInfo, ClosureSlotValue, NameSource};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-// The site of a block no creation made: the environment of a closure loaded out
-// of a slot (`GetClosureEnvironment`), at `NESTED_ENV_LEVEL_BASE + slot`. Kept
-// as a block of its own, keyed by this bit and the level, until A2c3 places a
-// closure's environment as the scope it was created in. No offset reaches it.
-pub const CLOSURE_ENV_SITE: u32 = 1 << 31;
-
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ClosureContext {
     pub parent_function: BTreeMap<u32, u32>,
@@ -117,8 +111,8 @@ pub struct ClosureContext {
     // identity (A4d).
     #[serde(default)]
     pub shared_parents: BTreeMap<u32, (u32, Option<u32>)>,
-    // Functions with a block another function stores into through a closure's
-    // environment (A2c3): their blocks share one namespace.
+    // Functions with a block another function reaches through a closure's
+    // environment, off its chain (A2c3): their blocks share one namespace.
     #[serde(default)]
     pub off_chain_blocks: BTreeSet<u32>,
     // The same for a block environment: (creating function, creation site) ->
@@ -221,7 +215,6 @@ impl ClosureContext {
         }
         let level = match self.site_levels.get(&(creator, site)) {
             Some(&level) => level,
-            None if site & CLOSURE_ENV_SITE != 0 => site & !CLOSURE_ENV_SITE,
             None => {
                 log::trace!(target: "slots", "block scope: F{creator}@{site} has no level");
                 return creator;
@@ -243,11 +236,8 @@ impl ClosureContext {
         id
     }
 
-    // The block scope `function`'s body addresses at builder `level`. A level
-    // no created environment claims is a closure environment's
-    // (`NESTED_ENV_LEVEL_BASE + slot`, `GetClosureEnvironment` on a closure
-    // loaded out of that slot), a block of its own until A2c3 places it. A
-    // slot-held environment has no such level since A2c2.
+    // The block scope `function`'s body addresses at builder `level`, or the
+    // function when no created environment claims that level.
     pub fn block_at_level(&mut self, function: u32, level: u32) -> u32 {
         if let Some(&id) = self.block_index.get(&(function, level)) {
             return id;
@@ -259,7 +249,10 @@ impl ClosureContext {
             .range((function, 0)..=(function, u32::MAX))
             .find(|(_, &l)| l == level)
             .map(|(&(_, site), _)| site);
-        self.block_scope_at(function, site.unwrap_or(CLOSURE_ENV_SITE | level))
+        match site {
+            Some(site) => self.block_scope_at(function, site),
+            None => function,
+        }
     }
 
     // The id a scope reference stands for: the function, or its block scope.
@@ -435,7 +428,7 @@ impl ClosureContext {
                         visible.extend(names.values().cloned());
                     }
                 }
-                // Blocks reached from off their chain (A2c3) are inlined helpers'
+                // Blocks reached from off their chain are inlined helpers'
                 // scopes, printed flat in one body: siblings there are one
                 // namespace (two memo helpers, each with a slot 1). Other blocks
                 // keep their own JS block, where a sibling's name is free.

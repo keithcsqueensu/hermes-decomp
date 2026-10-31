@@ -298,8 +298,7 @@ impl Step<'_> {
             "GetEnvironment" => Some(Env::Closure(imm(inst, 1).unwrap_or(0) + 1)),
             "GetClosureEnvironment" => match Self::env_of(state, reg(inst, 1)) {
                 Env::Function { env, .. } => Some(*env),
-                held @ Env::InSlot(..) => Some(Env::OfClosure(Box::new(held))),
-                _ => Some(Env::Unknown),
+                held => Some(Env::OfClosure(Box::new(held))),
             },
             "LoadConstUndefined" | "LoadConstEmpty" => Some(Env::NoValue),
             "LoadFromEnvironment" | "LoadFromEnvironmentL" => {

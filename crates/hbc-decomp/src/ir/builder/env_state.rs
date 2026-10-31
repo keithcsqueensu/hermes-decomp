@@ -73,10 +73,6 @@ pub struct EnvRegMap {
     /// (slot-held); holding a closure, the closure whose environment
     /// `GetClosureEnvironment` takes
     slot_held: BTreeMap<u32, u32>,
-    /// registers holding the environment of a closure loaded out of a slot,
-    /// with that slot: addressed at `NESTED_ENV_LEVEL_BASE + slot` until the
-    /// scope graph places them (IDENTITY_PLAN.md A2c3)
-    closure_envs: BTreeMap<u32, u32>,
     /// registers holding an environment this function just created
     created_envs: HashSet<u32>,
     /// created environment register -> the offset that created it: its
@@ -137,7 +133,6 @@ impl EnvRegMap {
     pub fn set_level(&mut self, reg: u32, level: u32) {
         self.reg_level.insert(reg, level);
         self.slot_held.remove(&reg);
-        self.closure_envs.remove(&reg);
         self.created_envs.remove(&reg);
     }
 
@@ -208,24 +203,10 @@ impl EnvRegMap {
     /// `level`. If that value turns out to be an environment itself, it is one
     /// parked there, which only the scope graph can place.
     pub fn set_source_slot(&mut self, reg: u32, level: u32, slot: u32) {
-        self.closure_envs.remove(&reg);
         if level < NESTED_ENV_LEVEL_BASE {
             self.slot_held.insert(reg, slot);
         } else {
             self.slot_held.remove(&reg);
-        }
-    }
-
-    /// `dst` = the environment of the closure in `closure`. One loaded out of
-    /// a slot is told apart from another by that slot, a provisional identity
-    /// until the scope graph places a closure's environment as the scope it
-    /// was created in (IDENTITY_PLAN.md A2c3). Before A2c2 it had the
-    /// slot-held identity by accident, the register keeping the closure's
-    /// provenance.
-    pub fn set_closure_env(&mut self, dst: u32, closure: u32) {
-        if let Some(&slot) = self.slot_held.get(&closure) {
-            self.slot_held.remove(&dst);
-            self.closure_envs.insert(dst, slot);
         }
     }
 
@@ -262,9 +243,6 @@ impl EnvRegMap {
     // parked in a slot of that number shared and which a created block of the
     // same level number collided with (IDENTITY_PLAN.md A2c2).
     pub fn env_level_of(&self, reg: u32) -> u32 {
-        if let Some(&slot) = self.closure_envs.get(&reg) {
-            return (NESTED_ENV_LEVEL_BASE + slot).min(MAX_LEVEL);
-        }
         if self.slot_held.contains_key(&reg) {
             return UNKNOWN_ENV_LEVEL;
         }
@@ -284,14 +262,6 @@ impl EnvRegMap {
             }
             None => {
                 self.slot_held.remove(&dst);
-            }
-        }
-        match self.closure_envs.get(&src).copied() {
-            Some(slot) => {
-                self.closure_envs.insert(dst, slot);
-            }
-            None => {
-                self.closure_envs.remove(&dst);
             }
         }
         if self.created_envs.contains(&src) {
@@ -351,19 +321,6 @@ mod tests {
         assert_eq!(m.env_level_of(4), UNKNOWN_ENV_LEVEL);
         m.set_level(4, 1);
         assert_eq!(m.env_level_of(4), 1);
-    }
-
-    // The environment of a closure loaded out of a slot keeps that slot's
-    // provisional identity; it is not a parked environment.
-    #[test]
-    fn a_closure_environment_is_told_apart_by_its_slot() {
-        let mut m = EnvRegMap::new();
-        m.set_source_slot(3, 0, 26);
-        m.set_closure_env(3, 3);
-        assert_eq!(m.env_level_of(3), NESTED_ENV_LEVEL_BASE + 26);
-        m.set_source_slot(5, 0, 27);
-        m.set_closure_env(5, 5);
-        assert_eq!(m.env_level_of(5), NESTED_ENV_LEVEL_BASE + 27);
     }
 
     #[test]

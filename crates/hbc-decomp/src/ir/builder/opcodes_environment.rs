@@ -75,22 +75,14 @@ pub fn handle_get_environment(
 }
 
 // GetClosureEnvironment rDst, rClosure, env of a closure value.
-// The closure's environment is the scope it was created in, which only the
-// scope graph can place (IDENTITY_PLAN.md A2c3). Until then the register keeps
-// what it held: written over its own closure loaded out of a slot, that slot's
-// provisional identity; otherwise its earlier level (level_of defaults to 0).
-// Giving every destination the slot's identity moved lodash's `baseCreate`
-// off its own `object` (Discord undeclared doubled). Still a no-op for IR
-// statements.
+// The environment stored with that closure, which only the scope graph can
+// place (IDENTITY_PLAN.md A2c3): each access records the scope, or is an explicit
+// unknown. The level the register keeps is no identity. A no-op for IR statements.
 pub fn handle_get_closure_environment(
     inst: &crate::Instruction,
     env_map: &mut EnvRegMap,
 ) -> Option<FlowResult> {
-    let dst = get_reg(&inst.operands, 0)?;
-    let closure = get_reg(&inst.operands, 1)?;
-    if dst == closure {
-        env_map.set_closure_env(dst, closure);
-    }
+    let _ = (inst, env_map);
     Some(FlowResult::Noop)
 }
 

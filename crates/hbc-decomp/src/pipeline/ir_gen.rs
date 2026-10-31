@@ -867,6 +867,11 @@ fn plan_env_levels(
                         Err(false) => count("unresolved closure: chain broken, level model"),
                     }
                 }
+                if let crate::ir::env_values::Env::OfClosure(held) = through {
+                    let why = graph.why_closure_env(*f, held);
+                    log::trace!(target: "slots", "closure env: F{f} @{off} {through}: {why}");
+                    count(&format!("unresolved closure's environment: {why}"));
+                }
                 // S3.4: an access through an environment loaded out of a
                 // slot that the graph cannot place has no scope to name; the
                 // level model would address a fake block scope keyed by the
@@ -874,7 +879,9 @@ fn plan_env_levels(
                 // parked in a slot of that number. An explicit unknown.
                 if matches!(
                     through,
-                    crate::ir::env_values::Env::InSlot(..) | crate::ir::env_values::Env::Up(..)
+                    crate::ir::env_values::Env::InSlot(..)
+                        | crate::ir::env_values::Env::Up(..)
+                        | crate::ir::env_values::Env::OfClosure(_)
                 ) {
                     levels.insert(*off, crate::ir::UNKNOWN_ENV_LEVEL);
                     count(&format!("access: unknown, {}", through.kind()));
@@ -903,6 +910,9 @@ fn plan_env_levels(
                 // its name and stamp from it.
                 (None, Some(r)) if matches!(through, crate::ir::env_values::Env::OfClosure(_)) => {
                     scopes.insert((*f, *off), (r, old));
+                    if r.1.is_some() {
+                        ctx.off_chain_blocks.insert(r.0);
+                    }
                     count("access: closure's environment, off the chain");
                     tally(true);
                 }
