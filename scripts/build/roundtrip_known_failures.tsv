@@ -13,3 +13,13 @@ v62	nested_destr	same as v59
 v71	nested_destr	same as v59
 v98	async_loop	the state machine is not recombined at all, the raw switch on state is emitted (state_machine_v98 bails)
 v96	capture_vs_local	a capture beside a local of the same name (closure model I2): the ancestor slot `a` and `read`'s fresh array are both `items`, so `a[1]` reads the local; K4.7 renames one side (v98 names them apart and passes)
+v98	gen_if	raw generator machine: a case whose suspend sits under an if is not a straight run, state_machine_v98 bails (GENERATOR_LIFT_PLAN G2)
+v98	gen_for	raw generator machine: a yield in a for loop, the loop split across cases (G2)
+v98	gen_while_break	raw generator machine: a yield in a while left by break (G2)
+v98	gen_try_catch	raw generator machine: a yield inside try/catch (G3)
+v98	gen_try_finally	raw generator machine: a yield inside try/finally (G3)
+v98	gen_delegate	raw generator machine: yield* lowered to a delegation loop (G2)
+v98	async_catch	raw async machine: an await inside catch (G3, G4)
+v96	gen_if	v96 generator (real opcodes): the else branch's resume is printed `return yield 2`, so the yield after the if/else is lost
+v96	gen_try_finally	v96 generator: the finally is lowered to catch-and-rethrow, so `.return()` skips it
+v96	gen_delegate	v96 generator: yield* is not recombined, its lowered delegation loop prints with HermesBuiltin helpers

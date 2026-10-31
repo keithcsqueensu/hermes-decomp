@@ -11,7 +11,8 @@ pub use analysis::*;
 pub use cleanup::cleanup_generator_comments;
 pub use state_machine::simplify_state_machine;
 pub use state_machine_v98::{
-    is_generator_state_machine_v98, reconstruct_generator_v98, try_reconstruct_generator_v98,
+    is_generator_state_machine_v98, lift_generator_v98, reconstruct_generator_v98,
+    try_reconstruct_generator_v98,
 };
 
 use transform::*;

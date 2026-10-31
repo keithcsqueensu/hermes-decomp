@@ -1,0 +1,1 @@
+function* g(x){ var v = yield 0; if (v > x) return "big"; yield 1; return "small"; } var a=g(5); a.next(); var r1=a.next(10); var b=g(5); b.next(); b.next(1); var r2=b.next(); print(r1.value, r2.value);

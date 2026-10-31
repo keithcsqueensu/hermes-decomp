@@ -6,7 +6,7 @@
 > `../03_analysis/closure_model/IDENTITY_PLAN.md` A2e, and the catch-loop dominator change
 > (A2e3, A2e4) is ordered against this plan's G2 below.
 
-Status: planned 2026-10-29, nothing landed.
+Status: planned 2026-10-29. **G0 landed (2026-10-30).**
 
 ## 1. Where things stand
 
@@ -66,6 +66,32 @@ must not change in any stage.
 Exit: the snippets are in the corpus with their current verdicts recorded as known failures;
 the ratchet is in the gates.
 
+**Done (2026-10-30).** No output change on any bundle.
+- Snippets (`examples/react-native/expressions/`): `gen_if`, `gen_for`, `gen_while_break`,
+  `gen_try_catch`, `gen_try_finally`, `gen_two_returns`, `gen_delegate`, `async_catch`, beside
+  `async_loop`. On v98 seven fail (raw machines) and `gen_two_returns` passes; all recorded in
+  `roundtrip_known_failures.tsv` with the stage meant to fix each. On v96 three fail: G0b.
+- Census (`--log genlift=debug`, one line per run; `trace` adds each machine and its reason),
+  kept where every machine is decided (the wrapper check in W16b), by kind and reason; an
+  unparsable case is classed by the statement its suspend sits under:
+
+  | | Expensify | Discord |
+  |---|---|---|
+  | lifted | 312 | 847 |
+  | unparsable case, suspend under an `if` | 140 | 677 |
+  | unparsable case, no `return` at its top level (suspend deeper, under a `try` or a label) | 234 | 361 |
+  | unparsable case, returns at its top level and fails otherwise | 45 | 511 |
+  | two terminal cases with content | 69 | 146 |
+  | no terminal case | 3 | 10 |
+  | `emit_yield_chain` | 1 | 0 |
+
+  Every machine reports as `generator`: the bundles' async code is mostly Babel's
+  `asyncToGenerator` over a `function*`, a generator machine, and native `async` functions
+  (Expensify prints 18) are marked async only after this point. Telling those apart is G4's.
+- Ratchet: raw machines per bundle, counted by the executing-generator guard each keeps
+  (`Generator functions may not be called on executing generators`), ceilings Equinox 0,
+  Expensify 536, Discord 1,738 in `scripts/build/output_baseline.tsv`.
+
 ### G1 — The machine read off the CFG, log only (medium)
 
 On the step function's CFG: the dispatch block and its label slot, each case's entry by
@@ -116,6 +142,24 @@ flattening go). Each difference is read before the switch.
 
 The follow-ups found with the catch-loop: inside newly lifted bodies, results are kept and
 loader temporaries are not inlined, so imports are not lifted. Each is fixed with its own count.
+
+### G0b — v96 generators found wrong by G0's snippets (not this plan's lifter)
+
+§2 leaves v96 out: it has real generator opcodes and nothing to lift. But G0's snippets, which
+also run on v96, show three v96 defects that drop or change code, found 2026-10-30 and listed
+as v96 known failures:
+- `gen_if`: after `if (x) { yield 1 } else { yield 2 } yield 3`, the else branch's resume is
+  printed `return yield 2`, so the trailing `yield 3` is gone from that branch.
+- `gen_try_finally`: the `finally` is printed as catch-and-rethrow (its body copied after the
+  `try` and into the `catch`), so `.return()` on a suspended generator skips it.
+- `gen_delegate`: `yield*` is not recombined; the lowered delegation loop prints with
+  `HermesBuiltin.ensureObject`, `getMethod` and `generatorSetDelegated`.
+
+Equinox is v96, and its patch sites are found by reading decompiled code. **Until these are
+fixed, read a decompiled v96 generator or `async` function against its disassembly before
+trusting a branch's contents.** They want their own stage in structure recovery for v96
+generators (the resume after a yield inside a branch, `finally` on the generator return path,
+`yield*`); each snippet leaves the known-failure list when its stage lands.
 
 ## 4. Order and size
 

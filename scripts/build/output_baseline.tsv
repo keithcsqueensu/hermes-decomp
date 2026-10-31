@@ -3,11 +3,12 @@
 # (`quick` runs in every gates run, `large` only with --bundles), bundle path
 # (absolute, or relative to the repo root), unparsable modules, consts written
 # (scripts/measure/const_assign.mjs: a `const` the program assigns, a TypeError
-# when that line runs; it parses and is declared, so nothing else counts it).
+# when that line runs; it parses and is declared, so nothing else counts it),
+# raw generator machines (GENERATOR_LIFT_PLAN.md G0, 2026-10-30).
 # A bundle not on this machine is skipped. Lower a ceiling whenever the real
 # count drops.
 # 2026-10-28, after S3.4: Discord's one unparsable module is `_fireSurveyAction`
 # (a response slot named like the parameter it is sent under).
-equinox-11.43.0	quick	C:/apks/equinox/com.equinoxfitness.equinox_11.43.0/hermes_bundle/assets/index.android.bundle.backup	0	1
-expensify-9.5.14-3	large	C:/apks/expensify/org.me.mobiexpensifyg_9.5.14-3/hermes_bundle/assets/index.android.bundle.backup	0	1
-discord-350.8	large	C:/apks/discord/com.discord_350.8/hermes_bundle/assets/index.android.bundle.backup	1	0
+equinox-11.43.0	quick	C:/apks/equinox/com.equinoxfitness.equinox_11.43.0/hermes_bundle/assets/index.android.bundle.backup	0	1	0
+expensify-9.5.14-3	large	C:/apks/expensify/org.me.mobiexpensifyg_9.5.14-3/hermes_bundle/assets/index.android.bundle.backup	0	1	536
+discord-350.8	large	C:/apks/discord/com.discord_350.8/hermes_bundle/assets/index.android.bundle.backup	1	0	1738

@@ -45,6 +45,14 @@ pub fn reconstruct_generator_v98(body: Vec<Statement>) -> Vec<Statement> {
 // whose data flow they can read, and on a machine that did not lift they delete
 // code they cannot see through.
 pub fn try_reconstruct_generator_v98(body: &[Statement]) -> Option<Vec<Statement>> {
+    try_reconstruct(body).ok()
+}
+
+// The same, with why a machine did not lift (GENERATOR_LIFT_PLAN.md G0): the
+// census the lifting pass keeps by machine kind and reason. An unparsable case
+// carries the statement its suspend sits under (`if`, a loop, `switch`, `try`),
+// the shape a lift off the CFG (G2) has to handle.
+pub fn lift_generator_v98(body: &[Statement]) -> Result<Vec<Statement>, String> {
     try_reconstruct(body)
 }
 
@@ -65,19 +73,16 @@ struct ParsedCase {
     done: bool,
 }
 
-fn try_reconstruct(body: &[Statement]) -> Option<Vec<Statement>> {
+fn try_reconstruct(body: &[Statement]) -> Result<Vec<Statement>, String> {
     let Some(dispatch) = find_label_dispatch(body) else {
-        log::trace!(target: "genlift", "bail: no label dispatch");
-        return None;
+        return Err("no label dispatch".into());
     };
     let Some(cases) = collect_label_cases(dispatch) else {
-        log::trace!(target: "genlift", "bail: no label cases");
-        return None;
+        return Err("no label cases".into());
     };
     // A real state machine has at least one yield label plus the terminal case.
     if cases.len() < 2 {
-        log::trace!(target: "genlift", "bail: only {} case", cases.len());
-        return None;
+        return Err("only one case".into());
     }
 
     // Variables compared against an integer literal anywhere in the machine are
@@ -94,9 +99,10 @@ fn try_reconstruct(body: &[Statement]) -> Option<Vec<Statement>> {
     // `yield; yield; return` with no catch label in the middle.
     if parsed.iter().all(|p| p.is_some()) {
         let all: Vec<ParsedCase> = parsed.iter().flatten().cloned().collect();
-        let (last, rest) = all.split_last()?;
+        let (last, rest) = all.split_last().ok_or("no cases")?;
         if last.done && rest.iter().all(|c| !c.done) {
-            return emit_yield_chain(&all[..all.len() - 1], last);
+            return emit_yield_chain(&all[..all.len() - 1], last)
+                .ok_or_else(|| "emit_yield_chain".to_string());
         }
     }
 
@@ -126,8 +132,7 @@ fn try_reconstruct(body: &[Statement]) -> Option<Vec<Statement>> {
                         // Two terminals with real content: which one runs is a
                         // control flow question this pass does not answer, so the
                         // raw machine stays.
-                        log::trace!(target: "genlift", "bail: two terminal cases with content");
-                        return None;
+                        return Err("two terminal cases with content".into());
                     }
                 } else {
                     terminal = Some(c);
@@ -135,20 +140,59 @@ fn try_reconstruct(body: &[Statement]) -> Option<Vec<Statement>> {
             }
             None if is_catch_label(raw) => {}
             None => {
-                log::trace!(target: "genlift", "bail: unparsable case with no throw");
-                return None;
+                return Err(format!(
+                    "unparsable case, suspend under {}",
+                    suspend_shape(raw)
+                ));
             }
         }
     }
     let Some(t) = terminal.as_ref() else {
-        log::trace!(target: "genlift", "bail: no terminal case ({} suspends)", suspends.len());
-        return None;
+        return Err("no terminal case".into());
     };
-    let out = emit_yield_chain(&suspends, t);
-    if out.is_none() {
-        log::trace!(target: "genlift", "bail: emit_yield_chain ({} suspends)", suspends.len());
+    emit_yield_chain(&suspends, t).ok_or_else(|| "emit_yield_chain".to_string())
+}
+
+// The statement a case's suspend sits under, once the resume protocol is off:
+// the outermost `if`, loop, `switch` or `try` holding a `return`, or
+// `straight` when the case returns at its top level (and failed for another
+// reason).
+fn suspend_shape(case_body: &[Statement]) -> &'static str {
+    fn returns(s: &Statement) -> bool {
+        use crate::ir::Visitor;
+        struct R(bool);
+        impl<'b> Visitor<'b> for R {
+            fn visit_statement(&mut self, s: &'b Statement) {
+                if matches!(s, Statement::Return(_)) {
+                    self.0 = true;
+                }
+                self.walk_statement(s);
+            }
+        }
+        let mut r = R(false);
+        r.visit_statement(s);
+        r.0
     }
-    out
+    let (_, real) = strip_arg_protocol(case_body);
+    for s in real {
+        let shape = match s {
+            Statement::Return(_) => return "straight",
+            Statement::If { .. } => "if",
+            Statement::While { .. }
+            | Statement::DoWhile { .. }
+            | Statement::For { .. }
+            | Statement::ForIn { .. }
+            | Statement::ForOf { .. } => "a loop",
+            Statement::Switch { .. } => "a switch",
+            Statement::TryCatch { .. } => "a try",
+            Statement::Block(_) => "a block",
+            _ => continue,
+        };
+        if returns(s) {
+            return shape;
+        }
+    }
+    "no return"
 }
 
 // A case the parser did not understand may be skipped only when it is a catch

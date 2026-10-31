@@ -806,6 +806,8 @@ impl PipelineContext {
         // `generator_wrapper_target` only matches Function{is_generator:true}, so
         // the inner is a generator even if analysis missed marking it earlier.
         let mut replacements: Vec<(u32, u32, Vec<Statement>)> = Vec::new();
+        // Machines lifted and left raw, by kind and reason (GENERATOR_LIFT_PLAN.md G0).
+        let mut genlift: std::collections::BTreeMap<String, u32> = Default::default();
         let mut raw: Vec<(u32, u32)> = Vec::new();
         for (&fid, body) in all_ir.iter() {
             if let Some(inner) = generator_wrapper_target(body) {
@@ -816,8 +818,25 @@ impl PipelineContext {
                 // declared afresh on every call (`let c0; if (c0 === 2)`),
                 // 1 750 of them on Discord.
                 let stays_raw = all_ir.get(&inner).is_some_and(|b| {
-                    transforms::is_generator_state_machine_v98(b)
-                        && transforms::try_reconstruct_generator_v98(b).is_none()
+                    if !transforms::is_generator_state_machine_v98(b) {
+                        return false;
+                    }
+                    // Every machine is decided here, so the census is kept
+                    // here: by kind and, for one that stays raw, why
+                    // (GENERATOR_LIFT_PLAN.md G0).
+                    let async_ = closure_ctx.is_async(fid) || closure_ctx.is_async(inner);
+                    let kind = if async_ { "async" } else { "generator" };
+                    match transforms::lift_generator_v98(b) {
+                        Ok(_) => {
+                            *genlift.entry(format!("{kind}: lifted")).or_default() += 1;
+                            false
+                        }
+                        Err(why) => {
+                            log::trace!(target: "genlift", "F{inner} ({kind}) bail: {why}");
+                            *genlift.entry(format!("{kind}: {why}")).or_default() += 1;
+                            true
+                        }
+                    }
                 });
                 if inner != fid && stays_raw {
                     raw.push((fid, inner));
@@ -941,6 +960,9 @@ impl PipelineContext {
                 body = drop_duplicate_bare_requires(body);
                 all_ir.insert(fid, body);
             }
+        }
+        if !genlift.is_empty() {
+            log::debug!(target: "genlift", "census: {genlift:?}");
         }
 
         // W14 ran before reconstruct, so v98 machines had no `yield` yet and
