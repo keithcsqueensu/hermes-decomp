@@ -583,6 +583,7 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
       bodies, so that count is no evidence. Read the cases as a graph instead: G1 and G2 of
       `../../04_transforms/GENERATOR_LIFT_PLAN.md` do. Exit: the experiment's lifted counts
       back at 312 and 847 or better, every lift free of the machine. Do this with or after G2.
+      G2 has landed (2026-11-01); its effect on this experiment is not measured yet.
   - **A2e4 — the catch-loop fix lands**: catch blocks get their protected blocks as
     predecessors in `compute_dominators`, with the test from the finding above, and raw
     machines not rising (536 and 1,738 before; the change alone made them 581 and 1,919).

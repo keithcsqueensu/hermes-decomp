@@ -59,7 +59,23 @@ pub fn lift_generator_v98(body: &[Statement]) -> Result<Vec<Statement>, String> 
 // `body` is an HBC >= 97 generator state machine: it dispatches on a label
 // slot. A v96 generator has real `yield`s and no dispatch.
 pub fn is_generator_state_machine_v98(body: &[Statement]) -> bool {
-    find_label_dispatch(body).is_some()
+    // A body with suspends already (lifted off the CFG, G2) is no machine, even
+    // with a test like `1 === x` at its top.
+    find_label_dispatch(body).is_some() && !body.iter().any(has_suspend_deep)
+}
+
+fn has_suspend_deep(s: &Statement) -> bool {
+    use crate::ir::Visitor;
+    struct Find(bool);
+    impl<'b> Visitor<'b> for Find {
+        fn visit_expression(&mut self, e: &'b Expression) {
+            self.0 |= matches!(e, Expression::Yield { .. } | Expression::Await(_));
+            self.walk_expression(e);
+        }
+    }
+    let mut f = Find(false);
+    f.visit_statement(s);
+    f.0
 }
 
 // A parsed state-machine case: the value the case resumes with (`x = <resume>`),
@@ -74,6 +90,9 @@ struct ParsedCase {
 }
 
 fn try_reconstruct(body: &[Statement]) -> Result<Vec<Statement>, String> {
+    if body.iter().any(has_suspend_deep) {
+        return Err("suspends already".into());
+    }
     let lifted = lift_cases(body)?;
     // A label copy in a loop form (`let tmp = label; if (2 === tmp)`) ends the
     // case chain early, and the rest reads as the done case: a "lift" with the

@@ -70,17 +70,66 @@ pub fn generate_ir(
         }
     }
 
-    // The machine as the CFG shows it, against the lifter's reading of the
-    // statements (GENERATOR_LIFT_PLAN.md G1). Log only.
-    let machine_reading = log::log_enabled!(target: "genlift", log::Level::Debug)
-        .then(|| transforms::generator::machine_cfg::read(&cfg));
+    let statements = statements_from_cfg(
+        &cfg,
+        file,
+        format,
+        function_id,
+        options,
+        closure_ctx,
+        perform_resolve,
+    )?;
 
+    // A machine the statement lifter refuses, read whole off the CFG, lifts here:
+    // each suspend a `yield` (GENERATOR_LIFT_PLAN.md G2). Every other body stays as
+    // it is. `is_generator_state_machine_v98` is cheap and false on most bodies.
+    if !options.recover_structures || !transforms::is_generator_state_machine_v98(&statements) {
+        return Ok(statements);
+    }
+    use transforms::generator::machine_cfg;
+    let reading = machine_cfg::read(&cfg);
+    if log::log_enabled!(target: "genlift", log::Level::Debug) {
+        machine_cfg::record(function_id, &reading, &statements);
+    }
+    if transforms::lift_generator_v98(&statements).is_ok() {
+        return Ok(statements);
+    }
+    let Ok(machine) = reading else {
+        return Ok(statements);
+    };
+    match machine_cfg::rewrite(&mut cfg, &machine) {
+        Ok(()) => statements_from_cfg(
+            &cfg,
+            file,
+            format,
+            function_id,
+            options,
+            closure_ctx,
+            perform_resolve,
+        ),
+        Err(why) => {
+            log::trace!(target: "genlift", "F{function_id}: no CFG lift: {why}");
+            Ok(statements)
+        }
+    }
+}
+
+// Structure recovery and everything after it.
+fn statements_from_cfg(
+    cfg: &crate::ir::CFG,
+    file: &BytecodeFile,
+    format: &BytecodeFormat,
+    function_id: u32,
+    options: &DecompileOptionsV2,
+    closure_ctx: Option<&ClosureContext>,
+    perform_resolve: bool,
+) -> Result<Vec<Statement>> {
     // STAGE F5: Structure Recovery (CFG -> if/while/for/switch/try)
     let statements = if options.recover_structures {
-        let analysis = StructureAnalysis::analyze(&cfg);
+        let analysis = StructureAnalysis::analyze(cfg);
         // The `f.call === functionPrototypeCall` diamonds hermesc emits are
         // still plain if/else here; fold them before anything reshapes them.
-        transforms::fold_builtin_guards(analysis.root.to_statements(&cfg))
+        transforms::fold_builtin_guards(analysis.root.to_statements(cfg))
     } else {
         // Flatten blocks without structure recovery
         let mut stmts = Vec::new();
@@ -283,10 +332,6 @@ pub fn generate_ir(
                         .0;
             }
         }
-    }
-
-    if let Some(reading) = &machine_reading {
-        transforms::generator::machine_cfg::record(function_id, reading, &statements);
     }
     Ok(statements)
 }

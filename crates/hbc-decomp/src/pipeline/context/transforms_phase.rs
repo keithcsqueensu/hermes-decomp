@@ -654,15 +654,38 @@ impl PipelineContext {
         // step's reads take the usage name (`attachmentID`) later. Split, a read
         // saw a variable the wrapper's store never reached. The most used
         // readable name wins, and the clash test below sees only that one.
+        // A machine lifted into its wrapper also reads slots of the functions
+        // folded into that body (the wrapper's own, or an async unwrap's), split
+        // the same way (`items = self`, `closure_4.items`). Those are the body's
+        // now, so they take one name too, where it is free in every body using them.
+        let wrappers: HashSet<u32> = ctx
+            .parked_scopes
+            .iter()
+            .map(|&scope| ctx.scope_function(scope))
+            .collect();
         let mut spellings: BTreeMap<SlotRef, BTreeMap<String, u32>> = BTreeMap::new();
-        for body in all_ir.values() {
+        let mut used_in: BTreeMap<SlotRef, BTreeSet<u32>> = BTreeMap::new();
+        let mut folded: HashSet<SlotRef> = HashSet::new();
+        for &fid in &wrappers {
+            let Some(body) = all_ir.get(&fid) else {
+                continue;
+            };
+            let ancestors: HashSet<u32> = ctx.ancestors_of(fid).into_iter().collect();
+            for (_, s) in crate::analysis::closure::stamps::var_refs(body) {
+                if let Some(s) = s.filter(|s| !ancestors.contains(&s.owner)) {
+                    folded.insert(s);
+                }
+            }
+        }
+        for (&fid, body) in all_ir.iter() {
             for (n, s) in crate::analysis::closure::stamps::var_refs(body) {
-                if let Some(s) = s.filter(is_step_env) {
+                if let Some(s) = s.filter(|s| is_step_env(s) || folded.contains(s)) {
                     *spellings
                         .entry(s)
                         .or_default()
                         .entry(n.to_string())
                         .or_default() += 1;
+                    used_in.entry(s).or_default().insert(fid);
                 }
             }
         }
@@ -670,16 +693,37 @@ impl PipelineContext {
             n.strip_prefix(prefix)
                 .is_some_and(|d| d.chars().all(|c| c.is_ascii_digit()))
         };
+        let free_for = |slot: SlotRef, name: &str| {
+            used_in.get(&slot).is_some_and(|bodies| {
+                bodies.iter().all(|b| {
+                    !param_names
+                        .get(b)
+                        .is_some_and(|ps| ps.iter().flatten().any(|p| p == name))
+                        && all_ir.get(b).is_some_and(|stmts| {
+                            crate::analysis::closure::stamps::var_refs(stmts)
+                                .into_iter()
+                                .all(|(n, s)| n != name || s == Some(slot))
+                        })
+                })
+            })
+        };
         let one_name: BTreeMap<SlotRef, String> = spellings
             .into_iter()
             .filter(|(_, names)| names.len() > 1)
             .filter_map(|(slot, names)| {
-                let best = names.iter().max_by_key(|(n, &count)| {
+                let mut ranked: Vec<(&String, u32)> =
+                    names.iter().map(|(n, &count)| (n, count)).collect();
+                ranked.sort_by_key(|&(n, count)| {
                     let weak = crate::ir::placeholder::is_slot_placeholder(n)
                         || is_counter(n, "c")
                         || is_counter(n, "_undefined");
-                    (!weak, count, std::cmp::Reverse(n.as_str()))
-                })?;
+                    (weak, std::cmp::Reverse(count), n.clone())
+                });
+                let best = if is_step_env(&slot) {
+                    ranked.first()
+                } else {
+                    ranked.iter().find(|(n, _)| free_for(slot, n))
+                }?;
                 Some((slot, best.0.clone()))
             })
             .collect();

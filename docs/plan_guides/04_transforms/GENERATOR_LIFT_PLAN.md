@@ -6,7 +6,7 @@
 > `../03_analysis/closure_model/IDENTITY_PLAN.md` A2e, and the catch-loop dominator change
 > (A2e3, A2e4) is ordered against this plan's G2 below.
 
-Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).**
+Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).** **G2 landed (2026-11-01).**
 
 ## 1. Where things stand
 
@@ -140,6 +140,43 @@ alone (A2e4).
 
 Exit: raw machines down on both v98 bundles, with the remainder classified. The snippets for
 `if`, loops and two returns pass. Unparsable, undeclared and consts written do not rise.
+
+**Done (2026-11-01).** `machine_cfg::rewrite` runs in `generate_ir` on a machine the CFG reads
+and the statement lifter refuses, then structure recovery runs again on the result. Each resume
+entry has its own register for the resume value; a block read from two entries stays raw.
+
+| | Expensify | Discord |
+|---|---|---|
+| raw machines | 536 -> 401 | 1,738 -> 1,247 |
+| undeclared | 12,677 -> 12,713 | 6,507 -> 5,824 |
+| I1 | 2,096 -> 2,047 | 6,866 -> 6,641 |
+| I2 | 948 -> 943 | 1,728 -> 1,723 |
+
+v96 is byte-identical. Unparsable and consts written do not rise. `gen_if`, `gen_for`,
+`gen_while_break` and v98 `async_loop` pass and left the known failures; `gen_two_returns`
+already passed. Ratchets lowered to 401 and 1,247.
+
+Expensify's undeclared rise is the counter, not new bad reads. `undeclared.mjs` ignores a name
+declared at the top of any module, and an unrelated module's top-level `tmp17`, `tmp22`, `tmp23`,
+`tmp25`, `tmp28` and `tmp30` hid 227 reads of those names on lines this stage did not change
+(React's `while (null !== tmp22)`, a wrong name in its own right). Those declarations moved. The
+rest of the difference is -191.
+
+Three things this stage changed or found:
+- The two lifters are compared at different times: the statement lifter's answer in
+  `generate_ir` is not its answer at W16b. Machines it refused early but lifted late now go
+  through the rewrite (W16b's lifted count on Expensify 312 -> 249, Discord 847 -> 759), so this
+  stage does change some existing lifts' output. They read better, but G5 should compare them.
+- Slots of functions folded into a wrapper's body take one name too (`separate_step_env_names`):
+  a lifted body split them (`items = self`, `closure_4.items`).
+- `yield` now reaches operand positions, so `!(yield x)` and `"a" + (yield x)` print parentheses.
+- Refused by the rewrite on Expensify: 11 where a register from the dispatch reaches the body,
+  1 with no suspend. Three of 151 sampled new Discord `function*` bodies still show `arg0 === 1`
+  with no nested raw machine: `function*(arg0, value)` shapes the statement lifter let through,
+  not this rewrite, which drops the protocol. G5 reads those.
+
+What stays raw is mostly G3's: a `try` in the source (G1's table). `raw_async` now lifts, so it
+no longer covers a raw machine; `gen_try_catch` and `gen_try_finally` do.
 
 ### G3 — try/catch/finally inside a machine (medium)
 

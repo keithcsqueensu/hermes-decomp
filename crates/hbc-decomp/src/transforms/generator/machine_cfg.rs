@@ -1,7 +1,8 @@
 // A v98 generator machine read off the step function's CFG, before structure
 // recovery (GENERATOR_LIFT_PLAN.md G1). There a loop around a suspend is still a
 // graph: a suspend is an edge from its block to the resume entry of the label it
-// stores. This module reads and counts; it rewrites nothing.
+// stores. `read` and the census change nothing; `rewrite` (G2) makes each such
+// edge a `yield`.
 //
 // `hermesc` lowers the step to: a guard on the status slot (2 running, 3 done);
 // `status = 2`; a chain of tests on the label slot, the last label being the
@@ -11,8 +12,8 @@
 // a register read is resolved through its single definition.
 
 use crate::ir::{
-    AssignTarget, BinaryOp, Binding, BlockId, Constant, Expression, PropertyKey, Statement,
-    Terminator, Value, Visitor, CFG,
+    AssignTarget, BinaryOp, Binding, BlockId, Constant, Expression, MutVisitor, PropertyKey,
+    Statement, Terminator, Value, Visitor, CFG,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Mutex;
@@ -523,6 +524,323 @@ pub fn read(cfg: &CFG) -> Result<Machine, &'static str> {
     })
 }
 
+// --- the rewrite (G2) ---
+
+// Reads of the resume value, and registers read against those defined.
+#[derive(Default)]
+struct Regs {
+    read: BTreeSet<u32>,
+    defined: BTreeSet<u32>,
+    resume_read: bool,
+    max: u32,
+}
+
+impl<'a> Visitor<'a> for Regs {
+    fn visit_expression(&mut self, e: &'a Expression) {
+        match e {
+            Expression::Value(Value::Binding(Binding::Register(r))) => {
+                self.read.insert(*r);
+                self.max = self.max.max(*r);
+            }
+            Expression::Value(Value::Parameter(RESUME)) => self.resume_read = true,
+            _ => {}
+        }
+        self.walk_expression(e);
+    }
+    fn visit_assign_target(&mut self, t: &'a AssignTarget) {
+        if let AssignTarget::Binding(Binding::Register(r)) = t {
+            self.defined.insert(*r);
+            self.max = self.max.max(*r);
+        }
+        self.walk_assign_target(t);
+    }
+}
+
+// A register from the dropped dispatch becomes what it held, and the resume
+// value becomes the register each `yield` assigns.
+struct Subst<'s> {
+    alias: &'s HashMap<u32, Src>,
+    defined: &'s BTreeSet<u32>,
+    resume: u32,
+}
+
+impl MutVisitor for Subst<'_> {
+    fn visit_expression(&mut self, e: &mut Expression) {
+        let held = match e {
+            Expression::Value(Value::Binding(Binding::Register(r)))
+                if !self.defined.contains(r) =>
+            {
+                self.alias.get(r).copied()
+            }
+            Expression::Value(Value::Parameter(RESUME)) => Some(Src::Param(RESUME)),
+            _ => None,
+        };
+        match held {
+            Some(Src::Int(k)) => *e = Expression::constant(Constant::Integer(k)),
+            Some(Src::Param(RESUME)) => {
+                *e = Expression::Value(Value::Binding(Binding::Register(self.resume)))
+            }
+            _ => self.walk_expression(e),
+        }
+    }
+}
+
+fn terminator_expressions(t: &mut Terminator) -> Vec<&mut Expression> {
+    match t {
+        Terminator::Branch { condition, .. } => vec![condition],
+        Terminator::Throw(e) | Terminator::Return(Some(e)) => vec![e],
+        Terminator::Switch { value, cases, .. } => {
+            let mut out = vec![value];
+            out.extend(cases.iter_mut().map(|(c, _)| c));
+            out
+        }
+        _ => vec![],
+    }
+}
+
+// Turn a machine read by `read` into an ordinary function's CFG: each suspend a
+// `yield` and a jump to the resume entry of the label it stores, each completion
+// a plain return, the dispatch and the protocols gone (`.throw` and `.return` are
+// what `yield` itself does). The structurer then runs on it as on any function.
+pub fn rewrite(cfg: &mut CFG, m: &Machine) -> Result<(), &'static str> {
+    if m.suspends.is_empty() {
+        return Err("no suspend");
+    }
+    if m.body.contains(&cfg.entry) {
+        return Err("the entry is in the body");
+    }
+    let alias = aliases(cfg);
+    // The fresh register is past every register of the function.
+    let mut all = Regs::default();
+    for b in cfg.blocks() {
+        for s in &b.statements {
+            all.visit_statement(s);
+        }
+    }
+    let mut regs = Regs {
+        max: all.max,
+        ..Regs::default()
+    };
+    for &id in &m.body {
+        let Some(b) = cfg.get(id) else { continue };
+        for s in &b.statements {
+            regs.visit_statement(s);
+        }
+        match &b.terminator {
+            Terminator::Branch { condition: e, .. }
+            | Terminator::Throw(e)
+            | Terminator::Return(Some(e))
+            | Terminator::Switch { value: e, .. } => regs.visit_expression(e),
+            _ => {}
+        }
+    }
+    for &r in regs.read.difference(&regs.defined) {
+        match alias.get(&r) {
+            Some(Src::Int(_)) | Some(Src::Param(RESUME)) => {}
+            _ => return Err("a register from the dispatch reaches the body"),
+        }
+    }
+    let defined = regs.defined.clone();
+    // Each resume entry has a register for its resume value, read in the blocks
+    // it reaches before the next suspend. One register for the whole machine
+    // would be declared in the first branch that assigned it, out of scope of
+    // the rest. A block read from two entries has no single answer: it stays raw.
+    let reads_resume = |id: BlockId| {
+        let mut one = Regs::default();
+        if let Some(b) = cfg.get(id) {
+            for s in &b.statements {
+                one.visit_statement(s);
+            }
+            match &b.terminator {
+                Terminator::Branch { condition: e, .. }
+                | Terminator::Throw(e)
+                | Terminator::Return(Some(e))
+                | Terminator::Switch { value: e, .. } => one.visit_expression(e),
+                _ => {}
+            }
+        }
+        one.resume_read
+            || one
+                .read
+                .iter()
+                .any(|r| !defined.contains(r) && alias.get(r) == Some(&Src::Param(RESUME)))
+    };
+    let stores: BTreeSet<BlockId> = m.suspends.iter().map(|s| s.stores).collect();
+    let returns_of: BTreeMap<BlockId, BlockId> =
+        m.suspends.iter().map(|s| (s.stores, s.returns)).collect();
+    let entries: BTreeSet<BlockId> = m.resumes.values().copied().collect();
+    let mut owner: BTreeMap<BlockId, BlockId> = BTreeMap::new();
+    let mut resume_of: BTreeMap<BlockId, u32> = BTreeMap::new();
+    let mut next_reg = regs.max + 1;
+    for &entry in &entries {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![entry];
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if reads_resume(id) {
+                if owner.insert(id, entry).is_some_and(|o| o != entry) {
+                    return Err("a block reads the resume value of two entries");
+                }
+                resume_of.entry(entry).or_insert_with(|| {
+                    next_reg += 1;
+                    next_reg - 1
+                });
+            }
+            if stores.contains(&id) {
+                // The suspend's own block, if apart, is folded into this one.
+                if let Some(&r) = returns_of.get(&id).filter(|&&r| r != id) {
+                    if reads_resume(r) {
+                        if owner.insert(r, entry).is_some_and(|o| o != entry) {
+                            return Err("a block reads the resume value of two entries");
+                        }
+                        resume_of.entry(entry).or_insert_with(|| {
+                            next_reg += 1;
+                            next_reg - 1
+                        });
+                    }
+                }
+                continue;
+            }
+            if let Some(b) = cfg.get(id) {
+                stack.extend(b.successors());
+            }
+        }
+    }
+    let new_blocks = {
+        let reader = Reader {
+            cfg,
+            alias: alias.clone(),
+        };
+        let is_machine_store = |s: &Statement| matches!(reader.slot_of(s), Some((sl, _)) if sl == m.status || sl == m.label);
+        // What a block holds once the machine's stores and, where it returns a
+        // result, the result object are gone.
+        let kept = |id: BlockId| -> Vec<Statement> {
+            let Some(b) = cfg.get(id) else { return vec![] };
+            let object = match &b.terminator {
+                Terminator::Return(Some(Expression::Value(Value::Binding(Binding::Register(
+                    r,
+                )))))
+                    if m.completes.contains(&id) || m.suspends.iter().any(|s| s.returns == id) =>
+                {
+                    Some(*r)
+                }
+                _ => None,
+            };
+            b.statements
+                .iter()
+                .filter(|s| !is_machine_store(s))
+                .filter(|s| match (s, object) {
+                    (
+                        Statement::Assign {
+                            target: AssignTarget::Binding(Binding::Register(t)),
+                            ..
+                        },
+                        Some(o),
+                    ) => *t != o,
+                    (
+                        Statement::Assign {
+                            target: AssignTarget::Index { object: t, .. },
+                            ..
+                        },
+                        Some(o),
+                    ) => {
+                        !matches!(t, Expression::Value(Value::Binding(Binding::Register(r))) if *r == o)
+                    }
+                    _ => true,
+                })
+                .cloned()
+                .collect()
+        };
+        let mut new_blocks: Vec<(BlockId, Vec<Statement>, Terminator)> = Vec::new();
+        let suspending: BTreeSet<BlockId> = m.suspends.iter().map(|s| s.stores).collect();
+        for s in &m.suspends {
+            let mut stmts = kept(s.stores);
+            if s.returns != s.stores {
+                stmts.extend(kept(s.returns));
+            }
+            let suspend = Expression::Yield {
+                value: Box::new(s.value.clone()),
+                delegate: false,
+            };
+            let to = *m.resumes.get(&s.label).ok_or("a suspend to no label")?;
+            stmts.push(match resume_of.get(&to) {
+                Some(&reg) => Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Register(reg)),
+                    value: suspend,
+                },
+                None => Statement::Expr(suspend),
+            });
+            new_blocks.push((s.stores, stmts, Terminator::Jump(to)));
+        }
+        for &id in &m.body {
+            if suspending.contains(&id) {
+                continue;
+            }
+            let Some(b) = cfg.get(id) else { continue };
+            let terminator = if m.completes.contains(&id) {
+                let Terminator::Return(Some(e)) = &b.terminator else {
+                    return Err("a completion that does not return");
+                };
+                let (v, _) = reader.result(id, e).ok_or("a completion with no result")?;
+                let undefined =
+                    matches!(v, Expression::Value(Value::Constant(Constant::Undefined)));
+                Terminator::Return((!undefined).then_some(v))
+            } else {
+                b.terminator.clone()
+            };
+            new_blocks.push((id, kept(id), terminator));
+        }
+        new_blocks
+    };
+    let entry_to = *m.resumes.get(&0).ok_or("no entry label")?;
+    // The rewrite is sure of itself from here on.
+    for (id, mut stmts, mut terminator) in new_blocks {
+        // The block's entry; a block reading no resume value never needs it. A
+        // suspend's folded block reads through the block storing the label.
+        let folded = returns_of.get(&id).and_then(|r| owner.get(r));
+        let resume = owner
+            .get(&id)
+            .or(folded)
+            .and_then(|e| resume_of.get(e))
+            .copied()
+            .unwrap_or(next_reg);
+        let mut subst = Subst {
+            alias: &alias,
+            defined: &defined,
+            resume,
+        };
+        for s in &mut stmts {
+            subst.visit_statement(s);
+        }
+        for e in terminator_expressions(&mut terminator) {
+            subst.visit_expression(e);
+        }
+        if let Some(b) = cfg.get_mut(id) {
+            b.statements = stmts;
+            b.terminator = terminator;
+        }
+    }
+    let entry = cfg.entry;
+    let first_resume = resume_of.get(&entry_to).copied();
+    if let Some(b) = cfg.get_mut(entry) {
+        // Before the first suspend the resume value is what `next()` was given,
+        // which a generator cannot see.
+        b.statements = first_resume
+            .map(|reg| Statement::Assign {
+                target: AssignTarget::Binding(Binding::Register(reg)),
+                value: Expression::constant(Constant::Undefined),
+            })
+            .into_iter()
+            .collect();
+        b.terminator = Terminator::Jump(entry_to);
+    }
+    cfg.exception_handlers.clear();
+    cfg.retain_reachable();
+    Ok(())
+}
+
 // --- the census: this reading against the lifter's (G1's exit) ---
 
 static VERDICTS: Mutex<BTreeMap<u32, String>> = Mutex::new(BTreeMap::new());
@@ -707,6 +1025,20 @@ mod tests {
             .statements
             .push(Statement::Expr(param(ACTION)));
         assert_eq!(read(&c).unwrap_err(), "the body reads the action");
+    }
+
+    #[test]
+    fn a_rewritten_machine_has_yields_and_no_machine_left() {
+        let (mut c, _) = machine();
+        let m = read(&c).unwrap();
+        rewrite(&mut c, &m).unwrap();
+        let text = format!("{:?}", c.blocks().collect::<Vec<_>>());
+        assert_eq!(text.matches("Yield").count(), 2, "{text}");
+        assert!(!text.contains("done"), "{text}");
+        assert!(!text.contains("Parameter"), "{text}");
+        assert!(!text.contains("slot: 1,"), "status left: {text}");
+        assert!(!text.contains("slot: 2,"), "label left: {text}");
+        assert!(text.contains("slot: 5,"), "{text}");
     }
 
     #[test]

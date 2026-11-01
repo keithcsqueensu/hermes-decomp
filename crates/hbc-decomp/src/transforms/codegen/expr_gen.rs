@@ -111,6 +111,7 @@ impl Codegen {
                     // would read as `-a + b`.
                     Expression::Conditional { .. }
                     | Expression::Assignment { .. }
+                    | Expression::Yield { .. }
                     | Expression::Binary { .. } => {
                         format!("{op}({})", self.generate_expr(operand))
                     }
@@ -303,8 +304,14 @@ impl Codegen {
                     let is_call = callee_str.ends_with(".call");
                     // .call(thisArg, arg1, arg2, ...) → thisArg + arg1 + arg2 + ...
                     // direct(arg1, arg2, ...) → arg1 + arg2 + ...
-                    let parts: Vec<String> =
-                        arguments.iter().map(|a| self.generate_expr(a)).collect();
+                    let parts: Vec<String> = arguments
+                        .iter()
+                        .map(|a| match a {
+                            // `"a" + yield b` does not parse.
+                            Expression::Yield { .. } => format!("({})", self.generate_expr(a)),
+                            _ => self.generate_expr(a),
+                        })
+                        .collect();
                     if parts.is_empty() {
                         return "\"\"".to_string();
                     }

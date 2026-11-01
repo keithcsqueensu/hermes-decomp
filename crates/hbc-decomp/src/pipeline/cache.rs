@@ -41,7 +41,8 @@ use super::DecompileOptionsV2;
 // 16: `ClosureContext.shared_parents`, out of `scope_parents`.
 // 17: `ClosureContext.off_chain_blocks`. 18: no closure-environment block scopes.
 // 19: one name per parked slot. 20: parked slots' clash test by slot.
-pub const CACHE_VERSION: u32 = 20;
+// 21: machines lifted off the CFG.
+pub const CACHE_VERSION: u32 = 21;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.

@@ -142,6 +142,12 @@ impl CFG {
         out
     }
 
+    // Drop the blocks `reverse_postorder` no longer reaches.
+    pub fn retain_reachable(&mut self) {
+        let live: HashSet<BlockId> = self.reverse_postorder().into_iter().collect();
+        self.blocks.retain(|id, _| live.contains(id));
+    }
+
     pub fn postorder(&self) -> Vec<BlockId> {
         let mut visited = HashSet::new();
         let mut result = Vec::new();
