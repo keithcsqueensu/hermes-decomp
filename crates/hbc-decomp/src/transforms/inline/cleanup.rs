@@ -45,6 +45,10 @@ fn is_self_assign_value(var: &crate::ir::Var, value: &Expression) -> bool {
 #[derive(Default)]
 struct Merge {
     depth: u32,
+    // Whether the end of the list being cleaned is the end of the function. A
+    // trailing `return;` is only noise there: at the end of an `if` arm with code
+    // after the `if`, of a loop body or of a `case`, it is what stops that code.
+    tail: bool,
     // Names the whole body writes without a stamp: its own locals.
     local_writes: std::collections::HashSet<String>,
     // Stores into a slot dropped as `x = x` where only the target is stamped.
@@ -60,6 +64,7 @@ pub fn cleanup_noise(stmts: Vec<Statement>) -> Vec<Statement> {
         let mut m = m.borrow_mut();
         if m.depth == 0 {
             m.local_writes = unstamped_writes(&stmts);
+            m.tail = true;
         }
         m.depth += 1;
     });
@@ -165,6 +170,7 @@ fn stamp_merged(stmts: &mut [Statement], dropped: &[(String, crate::ir::SlotRef)
 
 fn cleanup_noise_here(stmts: Vec<Statement>) -> Vec<Statement> {
     let mut result = Vec::new();
+    let tail = MERGE.with(|m| m.borrow().tail);
 
     for (i, stmt) in stmts.iter().enumerate() {
         match stmt {
@@ -206,6 +212,8 @@ fn cleanup_noise_here(stmts: Vec<Statement>) -> Vec<Statement> {
             Statement::Return(Some(expr)) => {
                 if is_undefined_expr(expr) {
                     // If this is the last statement, drop it entirely
+                    // TODO(GENERATOR_LIFT_PLAN G3c): wrong under `!tail` too, where
+                    // it lets the code after an `if` arm run.
                     if i == stmts.len() - 1 {
                         continue;
                     }
@@ -216,7 +224,7 @@ fn cleanup_noise_here(stmts: Vec<Statement>) -> Vec<Statement> {
                 }
             }
             // Remove trailing bare `return;` if it's the last statement
-            Statement::Return(None) if i == stmts.len() - 1 => {
+            Statement::Return(None) if tail && i == stmts.len() - 1 => {
                 continue;
             }
             // Remove dead `while (x !== x)` loops (NaN check artifact from Hermes bytecode)
@@ -257,9 +265,18 @@ fn cleanup_noise_here(stmts: Vec<Statement>) -> Vec<Statement> {
     result = inline_hoisted_aliases_and_trim(result);
 
     // Recurse into sub-blocks
-    for stmt in &mut result {
+    let last = result.len().wrapping_sub(1);
+    for (i, stmt) in result.iter_mut().enumerate() {
+        let inner = tail
+            && i == last
+            && matches!(
+                stmt,
+                Statement::If { .. } | Statement::TryCatch { .. } | Statement::Block(_)
+            );
+        MERGE.with(|m| m.borrow_mut().tail = inner);
         cleanup_noise_recurse(stmt);
     }
+    MERGE.with(|m| m.borrow_mut().tail = tail);
 
     // Post-recursion: remove empty loops, empty if blocks, and empty blocks
     result.retain(|stmt| match stmt {
@@ -328,6 +345,31 @@ fn cleanup_noise_recurse(stmt: &mut Statement) {
 mod tests {
     use super::*;
     use crate::ir::{Constant, VarKind};
+
+    #[test]
+    fn a_bare_return_stops_the_code_after_its_arm() {
+        let call = || {
+            Statement::Expr(Expression::Value(Value::Binding(Binding::Variable(
+                "f".into(),
+            ))))
+        };
+        let arm = |then_body| Statement::If {
+            condition: Expression::Value(Value::Binding(Binding::Variable("a".into()))),
+            then_body,
+            else_body: vec![],
+        };
+        let kept = cleanup_noise(vec![arm(vec![call(), Statement::Return(None)]), call()]);
+        assert!(
+            matches!(&kept[0], Statement::If { then_body, .. } if then_body.len() == 2),
+            "code follows the arm: {kept:?}"
+        );
+        // Nothing follows: the function ends here anyway.
+        let dropped = cleanup_noise(vec![arm(vec![call(), Statement::Return(None)])]);
+        assert!(
+            matches!(&dropped[0], Statement::If { then_body, .. } if then_body.len() == 1),
+            "in tail position: {dropped:?}"
+        );
+    }
 
     #[test]
     fn test_let_self_assign_variable_removed() {

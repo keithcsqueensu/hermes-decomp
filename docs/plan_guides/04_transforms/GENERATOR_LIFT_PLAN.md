@@ -6,7 +6,7 @@
 > `../03_analysis/closure_model/IDENTITY_PLAN.md` A2e, and the catch-loop dominator change
 > (A2e3, A2e4) is ordered against this plan's G2 below.
 
-Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).** **G2 landed (2026-11-01).**
+Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).** **G2 landed (2026-11-01).** **G3a landed (2026-11-01);** G3b and G3c are open.
 
 ## 1. Where things stand
 
@@ -187,6 +187,48 @@ statements around the resumed regions they protect. A `finally` that runs on `.r
 kept as a `finally`.
 
 Exit: the `try` snippets pass; the census row for catch-carrying cases is 0.
+
+Split on 2026-11-01. `finally` needs a different read, and a bug outside generators turned up.
+
+**G3a, `try`/`catch`. Done (2026-11-01).** `machine_cfg` reads the shared catch block's test chain
+on the try-state slot, splits blocks at its stores, and pushes one handler per state, outermost
+first, marked `exact_range` so that structure recovery ends the body at the region's one exit.
+
+| | Expensify before | after | Discord before | after |
+|---|---|---|---|---|
+| raw machines | 401 | 326 | 1247 | 678 |
+| undeclared | 12713 | 12635 | 5824 | 5254 |
+| unparsable modules | 0 | 0 | 0 | 0 |
+
+v96 is byte-identical. `gen_try_catch` and `async_catch` round-trip. The strings lost are not code:
+`"attempt:"` and `"viewed_user:"` now print inside templates, and the rest are unused module-path
+arguments to `require`.
+
+- The old lifter now refuses a catch label and any lift with machine code left in it. Skipping the
+  label lost the handler: a small test printed `2 eundefined 4`. A machine with a `try` takes the
+  CFG lift or stays raw.
+- `cleanup_noise` no longer drops a bare `return;` that code follows. A tail copied by
+  `reemit_exit` relies on it: Expensify's onboarding handler called its navigation twice without
+  it. That restored 125 returns in Expensify's lifted code and 178 in Discord's.
+
+Still raw, by CFG-lift refusal (Expensify, Discord): "several ways out" 24, 62; "a register from
+the dispatch" 13, 37; "no suspend" 6, 10. The bigger group by reading is G3b's.
+
+**G3b, `finally`, and the refusals above. Open.** A `finally` is lowered as catch-and-rethrow with
+copies of its body on each exit, including the `.return` side of the protocol, so the read fails
+with "protocol: unexpected branch" (18, 170). `gen_try_finally` is the test. "several ways out"
+is a `return` inside a `try` next to its fallthrough; the dispatch register
+is untraced.
+
+**G3c, the same bug in ordinary code. Open, and more urgent than the rest of this plan.**
+`cleanup_noise` also drops a trailing `return undefined` from any nested list, code after it or
+not (`TODO` in `transforms/inline/cleanup.rs`). G3a fixed only the bare form because the fix for
+this one changes v96 output. Applied to Equinox v96 it changes 3093 lines and adds 943 `return;`,
+644 of them with code after the arm by a line-level count that was not checked site by site. So
+the printed code can run what the bytecode returned before, and an `if` whose arm empties is
+removed with its condition: `if (!window.dispatchEvent(e)) return;` printed as nothing, the call
+gone. It needs its own stage, with v96 output expected to change and round-trip snippets for an
+arm, a loop body and a `case`.
 
 ### G4 — async (medium)
 

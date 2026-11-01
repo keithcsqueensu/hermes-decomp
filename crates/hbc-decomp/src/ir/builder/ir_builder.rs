@@ -194,6 +194,7 @@ impl<'a> IRBuilder<'a> {
                     try_block_start: try_start,
                     catch_block,
                     try_blocks,
+                    exact_range: false,
                 });
             }
         }

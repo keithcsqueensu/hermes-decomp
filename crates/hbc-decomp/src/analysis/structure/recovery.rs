@@ -160,12 +160,13 @@ pub(super) fn recover_structure(
             .exception_edge_sources(catch_block_id)
             .into_iter()
             .collect();
-        let exit = try_region_exit(ctx.cfg, &region, catch_block_id).filter(|e| {
-            !ctx.visited.contains(e)
-                && !loop_stack
-                    .iter()
-                    .any(|l| l.header == *e || l.exit == Some(*e))
-        });
+        let exit =
+            try_region_exit(ctx.cfg, &region, catch_block_id, handler.exact_range).filter(|e| {
+                !ctx.visited.contains(e)
+                    && !loop_stack
+                        .iter()
+                        .any(|l| l.header == *e || l.exit == Some(*e))
+            });
         if let Some(exit) = exit {
             ctx.visited.insert(exit);
         }
@@ -525,7 +526,12 @@ fn recover_switch_cases(
 // (a `return` the compiler left just outside the range) is the tail of the
 // try body and stays there. More than one exit (a `break` out of the try
 // next to its fallthrough, say) is ambiguous and yields nothing.
-fn try_region_exit(cfg: &CFG, region: &HashSet<BlockId>, catch: BlockId) -> Option<BlockId> {
+fn try_region_exit(
+    cfg: &CFG,
+    region: &HashSet<BlockId>,
+    catch: BlockId,
+    exact_range: bool,
+) -> Option<BlockId> {
     let mut exits: Vec<BlockId> = Vec::new();
     for &b in region {
         let Some(block) = cfg.get(b) else { continue };
@@ -539,6 +545,9 @@ fn try_region_exit(cfg: &CFG, region: &HashSet<BlockId>, catch: BlockId) -> Opti
         [only] => *only,
         _ => return None,
     };
+    if exact_range {
+        return Some(exit);
+    }
     let mut seen: HashSet<BlockId> = HashSet::new();
     let mut stack = vec![catch];
     while let Some(b) = stack.pop() {

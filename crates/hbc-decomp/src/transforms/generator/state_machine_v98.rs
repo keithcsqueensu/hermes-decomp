@@ -94,16 +94,11 @@ fn try_reconstruct(body: &[Statement]) -> Result<Vec<Statement>, String> {
         return Err("suspends already".into());
     }
     let lifted = lift_cases(body)?;
-    // A label copy in a loop form (`let tmp = label; if (2 === tmp)`) ends the
-    // case chain early, and the rest reads as the done case: a "lift" with the
-    // machine still inside. Such a machine stays raw (IDENTITY_PLAN.md A2e3).
-    let looped = find_label_dispatch(body).is_some_and(|d| {
-        find_dispatch_anywhere(body)
-            .and_then(|g| find_dispatch_in_loop(body, g))
-            .is_some_and(|l| std::ptr::eq(d, l))
-    });
-    if looped && lifted.iter().any(keeps_machine) {
-        return Err("loop form, machine left in the lift".into());
+    // A label copy (`let tmp = label; if (2 === tmp)`) ends the case chain early,
+    // and the rest reads as the done case: a "lift" with the machine still inside.
+    // Such a machine stays raw (IDENTITY_PLAN.md A2e3, GENERATOR_LIFT_PLAN.md G3).
+    if lifted.iter().any(keeps_machine) {
+        return Err("machine left in the lift".into());
     }
     Ok(lifted)
 }
@@ -192,7 +187,13 @@ fn lift_cases(body: &[Statement]) -> Result<Vec<Statement>, String> {
                     terminal = Some(c);
                 }
             }
-            None if is_catch_label(raw) => {}
+            // A catch's label (GENERATOR_LIFT_PLAN.md G3): skipped, the catch and
+            // whatever it does were lost (`yield "e" + e` of a `try` printed
+            // after it, the handler gone). The CFG reads what it can; the rest
+            // stays raw.
+            None if is_catch_label(raw) => {
+                return Err("a catch label".into());
+            }
             None => {
                 return Err(format!(
                     "unparsable case, suspend under {}",
@@ -1101,7 +1102,7 @@ mod tests {
     }
 
     #[test]
-    fn reconstructs_async_try_catch_skipping_error_label() {
+    fn a_catch_label_is_refused() {
         // forgotPassword shape: label 0 yields, label 1 is the catch handler
         // (throw / early return), trailing else is the resume after the yield.
         let yield_case = arg_protocol(vec![
@@ -1159,18 +1160,11 @@ mod tests {
             }],
         }];
 
+        // Skipping it lost the handler: the machine goes to the CFG lift, or stays raw.
         let out = reconstruct_generator_v98(body);
         let dump = format!("{out:?}");
-        assert!(
-            out.iter().any(stmt_has_yield_deep),
-            "expected yield, got {dump}"
-        );
-        assert!(!dump.contains("throwTypeError"), "raw guard leaked: {dump}");
-        assert!(
-            dump.contains("dispatchRequest"),
-            "lost request dispatch: {dump}"
-        );
-        assert!(dump.contains("dispatchSent"), "lost sent dispatch: {dump}");
+        assert!(!out.iter().any(stmt_has_yield_deep), "lifted: {dump}");
+        assert!(dump.contains("throwTypeError"), "not raw: {dump}");
     }
 
     // A two-case machine's dispatch: `first` then a suspend, `last` then done.

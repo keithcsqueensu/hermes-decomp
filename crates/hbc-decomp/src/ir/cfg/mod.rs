@@ -43,6 +43,9 @@ pub struct CfgExceptionHandler {
     // dataflow has to feed the catch from all of them, not from a predecessor
     // list that only knows about jumps.
     pub try_blocks: Vec<BlockId>,
+    // The range is the `try` exactly (a generator machine's, whose try state says
+    // so): its one way out follows the statement even if the catch never rejoins.
+    pub exact_range: bool,
 }
 
 #[derive(Debug)]

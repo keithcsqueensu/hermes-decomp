@@ -91,12 +91,14 @@ pub fn generate_ir(
     if log::log_enabled!(target: "genlift", log::Level::Debug) {
         machine_cfg::record(function_id, &reading, &statements);
     }
-    if transforms::lift_generator_v98(&statements).is_ok() {
-        return Ok(statements);
-    }
     let Ok(machine) = reading else {
         return Ok(statements);
     };
+    // The statement lifter skips a catch's label, so a machine with a `try` goes
+    // this way even where it would lift (G3).
+    if machine.catches.is_empty() && transforms::lift_generator_v98(&statements).is_ok() {
+        return Ok(statements);
+    }
     match machine_cfg::rewrite(&mut cfg, &machine) {
         Ok(()) => statements_from_cfg(
             &cfg,

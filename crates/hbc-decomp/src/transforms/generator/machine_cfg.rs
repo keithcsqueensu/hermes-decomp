@@ -48,7 +48,12 @@ pub struct Suspend {
 pub struct Machine {
     pub status: Slot,
     pub label: Slot,
-    // Label -> the block its resume protocol runs on to.
+    // The source's `try`s (G3): the try-state slot, the one catch block, and
+    // (state, catch label). Empty without a `try`.
+    pub try_slot: Option<Slot>,
+    pub catch_block: Option<BlockId>,
+    pub catches: Vec<(i32, i32)>,
+    // Label -> the block its resume protocol runs on to; a catch label's entry.
     pub resumes: BTreeMap<i32, BlockId>,
     pub suspends: Vec<Suspend>,
     // Blocks returning `{ value, done: true }` from the body.
@@ -98,9 +103,14 @@ fn direct(e: &Expression) -> Option<Src> {
     }
 }
 
+// The try-state slot, its tested (state, catch label) arms, and the default arm's label.
+type CatchChain = (Slot, Vec<(i32, i32)>, i32);
+
 struct Reader<'a> {
     cfg: &'a CFG,
     alias: HashMap<u32, Src>,
+    // The slot holding which `try` the machine is in, 0 for none (G3).
+    try_slot: Option<Slot>,
 }
 
 impl Reader<'_> {
@@ -147,8 +157,37 @@ impl Reader<'_> {
                 value,
             } => self.src(value).is_some(),
             Statement::Comment(_) => true,
-            _ => matches!(self.slot_of(s), Some((sl, Some(Src::Int(_)))) if sl == status),
+            _ => {
+                matches!(self.slot_of(s), Some((sl, Some(Src::Int(_))))
+                    if sl == status || Some(sl) == self.try_slot)
+            }
         }
+    }
+
+    fn stores_try(&self, id: BlockId) -> bool {
+        self.cfg.get(id).is_some_and(|b| {
+            b.statements
+                .iter()
+                .any(|s| matches!(self.slot_of(s), Some((sl, _)) if Some(sl) == self.try_slot))
+        })
+    }
+
+    // A jump through trivial blocks, stopping at a store of the try state: that
+    // store is the program's, where the protocol's sides only mark it finished.
+    fn skip_to_protocol(&self, mut id: BlockId, status: Slot) -> BlockId {
+        for _ in 0..8 {
+            let Some(b) = self.cfg.get(id) else { return id };
+            match &b.terminator {
+                Terminator::Jump(t)
+                    if !self.stores_try(id)
+                        && b.statements.iter().all(|s| self.trivial(s, status)) =>
+                {
+                    id = *t
+                }
+                _ => return id,
+            }
+        }
+        id
     }
 
     fn skip(&self, mut id: BlockId, status: Slot) -> BlockId {
@@ -243,11 +282,11 @@ impl Reader<'_> {
 
     // The block a label's resume protocol runs on to.
     fn protocol(&self, entry: BlockId, status: Slot) -> Result<BlockId, &'static str> {
-        let mut n = self.skip(entry, status);
+        let mut n = self.skip_to_protocol(entry, status);
         let (mut threw, mut returned) = (false, false);
         while !(threw && returned) {
             let b = self.cfg.get(n).ok_or("protocol: no block")?;
-            if !b.statements.iter().all(|s| self.trivial(s, status)) {
+            if self.stores_try(n) || !b.statements.iter().all(|s| self.trivial(s, status)) {
                 return Err("protocol: code in front");
             }
             let Some((Src::Param(ACTION), k, on, off)) = self.test(n) else {
@@ -258,9 +297,51 @@ impl Reader<'_> {
                 2 if !returned && self.return_side(on, status) => returned = true,
                 _ => return Err("protocol: unexpected branch"),
             }
-            n = self.skip(off, status);
+            n = if threw && returned {
+                off
+            } else {
+                self.skip_to_protocol(off, status)
+            };
         }
         Ok(n)
+    }
+
+    // The block a catch's arm stores a label in and rejoins the dispatch from.
+    fn catch_arm(&self, id: BlockId, label: Slot, dispatch: BlockId) -> Option<i32> {
+        let b = self.cfg.get(id)?;
+        matches!(b.terminator, Terminator::Jump(t) if t == dispatch)
+            .then(|| self.label_store(id, label))
+            .flatten()
+    }
+
+    // The source's `try`s, all through one catch: it keeps the exception in a
+    // slot, then tests the try state: 0 rethrows, k stores k's catch label and
+    // rejoins the dispatch. The last arm is the chain's default, its state known
+    // only from the stores in the body.
+    fn read_catch(
+        &self,
+        catch: BlockId,
+        status: Slot,
+        label: Slot,
+        dispatch: BlockId,
+    ) -> Result<CatchChain, &'static str> {
+        const NOT: &str = "a try in the source: not one catch chain";
+        let Some((Src::Slot(slot), 0, on, mut n)) = self.test(catch) else {
+            return Err(NOT);
+        };
+        if slot == status || slot == label || !self.own_catch(on, status) {
+            return Err(NOT);
+        }
+        let mut arms = Vec::new();
+        while let Some((Src::Slot(s), k, on, off)) = self.test(n) {
+            if s != slot {
+                return Err(NOT);
+            }
+            arms.push((k, self.catch_arm(on, label, dispatch).ok_or(NOT)?));
+            n = off;
+        }
+        let default = self.catch_arm(n, label, dispatch).ok_or(NOT)?;
+        Ok((slot, arms, default))
     }
 
     fn slot_of(&self, s: &Statement) -> Option<(Slot, Option<Src>)> {
@@ -316,6 +397,7 @@ struct Scan<'r> {
     reader: &'r Reader<'r>,
     status: Slot,
     label: Slot,
+    try_slot: Option<Slot>,
     action: bool,
     slots_read: bool,
     label_stores: usize,
@@ -331,6 +413,10 @@ impl<'a> Visitor<'a> for Scan<'_> {
             }
             if sl == self.status {
                 self.bad_status |= !matches!(v, Some(Src::Int(1 | 3)));
+                return;
+            }
+            if Some(sl) == self.try_slot {
+                self.bad_status |= !matches!(v, Some(Src::Int(_)));
                 return;
             }
         }
@@ -349,7 +435,11 @@ impl<'a> Visitor<'a> for Scan<'_> {
     fn visit_expression(&mut self, e: &'a Expression) {
         match self.reader.src(e) {
             Some(Src::Param(ACTION)) => self.action = true,
-            Some(Src::Slot(s)) if s == self.status || s == self.label => self.slots_read = true,
+            Some(Src::Slot(s))
+                if s == self.status || s == self.label || Some(s) == self.try_slot =>
+            {
+                self.slots_read = true
+            }
             _ => {}
         }
         self.walk_expression(e);
@@ -357,9 +447,10 @@ impl<'a> Visitor<'a> for Scan<'_> {
 }
 
 pub fn read(cfg: &CFG) -> Result<Machine, &'static str> {
-    let r = Reader {
+    let mut r = Reader {
         cfg,
         alias: aliases(cfg),
+        try_slot: None,
     };
     // The status guard.
     let mut n = cfg.entry;
@@ -372,16 +463,6 @@ pub fn read(cfg: &CFG) -> Result<Machine, &'static str> {
         n = off;
     }
     let status = status.ok_or("not a machine: no status guard")?;
-    // A `try` in the source: its catch stores a label and rejoins the dispatch,
-    // and that label has no resume protocol. G3 reads those; the machine's own
-    // catch only marks it done and rethrows.
-    if cfg
-        .exception_handlers
-        .iter()
-        .any(|h| !r.own_catch(h.catch_block, status))
-    {
-        return Err("a try in the source");
-    }
     // `status = 2`, then the chain of label tests.
     n = r.skip(n, status);
     let running = cfg.get(n).is_some_and(|b| {
@@ -392,6 +473,7 @@ pub fn read(cfg: &CFG) -> Result<Machine, &'static str> {
     if !running {
         return Err("no running store after the guard");
     }
+    let dispatch = n;
     let mut entries: BTreeMap<i32, BlockId> = BTreeMap::new();
     let mut label = None;
     while let Some((Src::Slot(s), k, on, off)) = r.test(n) {
@@ -403,12 +485,53 @@ pub fn read(cfg: &CFG) -> Result<Machine, &'static str> {
         n = r.skip(off, status);
     }
     let label = label.ok_or("no label test")?;
+    // A `try` in the source: its catch stores a label and rejoins the dispatch,
+    // and that label has no resume protocol. The machine's own catch only marks
+    // it done and rethrows.
+    let mut catch_blocks: BTreeSet<BlockId> = BTreeSet::new();
+    for h in &cfg.exception_handlers {
+        if !r.own_catch(h.catch_block, status) {
+            catch_blocks.insert(h.catch_block);
+        }
+    }
+    if catch_blocks.len() > 1 {
+        return Err("a try in the source: several catch blocks");
+    }
+    let catch_block = catch_blocks.into_iter().next();
+    let mut arms = Vec::new();
+    let mut default_arm = None;
+    if let Some(c) = catch_block {
+        let (slot, a, d) = r.read_catch(c, status, label, dispatch)?;
+        r.try_slot = Some(slot);
+        arms = a;
+        default_arm = Some(d);
+    }
+    let catch_labels: BTreeSet<i32> = arms.iter().map(|&(_, k)| k).chain(default_arm).collect();
     let mut resumes = BTreeMap::new();
     for (&k, &e) in &entries {
-        resumes.insert(k, r.protocol(e, status)?);
+        if catch_labels.contains(&k) {
+            resumes.insert(k, e);
+        } else {
+            resumes.insert(k, r.protocol(e, status)?);
+        }
+    }
+    // A catch label the chain does not test is its default.
+    let mut default_used = false;
+    for &k in &catch_labels {
+        if !entries.contains_key(&k) {
+            if default_used {
+                return Err("several labels the chain does not test");
+            }
+            default_used = true;
+            resumes.insert(k, n);
+        }
     }
     // The body, from the resume entries.
-    let default_resume = r.protocol(n, status);
+    let default_resume = if default_used {
+        Err("the default label is a catch's")
+    } else {
+        r.protocol(n, status)
+    };
     let mut body = BTreeSet::new();
     let mut stack: Vec<BlockId> = resumes.values().copied().collect();
     stack.extend(default_resume.iter().copied());
@@ -480,10 +603,35 @@ pub fn read(cfg: &CFG) -> Result<Machine, &'static str> {
     if !resumes.contains_key(&0) {
         return Err("no entry label");
     }
+    // The states the body stores: the one no arm tests is the default arm's.
+    let mut catches = arms;
+    if let (Some(slot), Some(d)) = (r.try_slot, default_arm) {
+        let mut states = BTreeSet::new();
+        for &id in &body {
+            let Some(b) = cfg.get(id) else { continue };
+            for s in &b.statements {
+                if let Some((sl, Some(Src::Int(k)))) = r.slot_of(s) {
+                    if sl == slot && k != 0 {
+                        states.insert(k);
+                    }
+                }
+            }
+        }
+        let mut untested = states
+            .into_iter()
+            .filter(|k| !catches.iter().any(|&(s, _)| s == *k));
+        if let Some(k) = untested.next() {
+            if untested.next().is_some() {
+                return Err("a try in the source: several states no arm tests");
+            }
+            catches.push((k, d));
+        }
+    }
     let mut scan = Scan {
         reader: &r,
         status,
         label,
+        try_slot: r.try_slot,
         action: false,
         slots_read: false,
         label_stores: 0,
@@ -514,9 +662,13 @@ pub fn read(cfg: &CFG) -> Result<Machine, &'static str> {
     if scan.label_stores != stores.len() {
         return Err("a label store away from a suspend");
     }
+    let try_slot = r.try_slot;
     Ok(Machine {
         status,
         label,
+        try_slot,
+        catch_block,
+        catches,
         resumes,
         suspends,
         completes,
@@ -634,10 +786,21 @@ pub fn rewrite(cfg: &mut CFG, m: &Machine) -> Result<(), &'static str> {
             _ => {}
         }
     }
+    // The catch block's statements move into each catch's head.
+    if let Some(b) = m.catch_block.and_then(|c| cfg.get(c)) {
+        let mut head = Regs::default();
+        for s in &b.statements {
+            head.visit_statement(s);
+        }
+        regs.defined.extend(head.defined);
+    }
     for &r in regs.read.difference(&regs.defined) {
         match alias.get(&r) {
             Some(Src::Int(_)) | Some(Src::Param(RESUME)) => {}
-            _ => return Err("a register from the dispatch reaches the body"),
+            held => {
+                log::trace!(target: "genlift", "register {r} from the dispatch, held {held:?}");
+                return Err("a register from the dispatch reaches the body");
+            }
         }
     }
     let defined = regs.defined.clone();
@@ -672,6 +835,11 @@ pub fn rewrite(cfg: &mut CFG, m: &Machine) -> Result<(), &'static str> {
     let mut owner: BTreeMap<BlockId, BlockId> = BTreeMap::new();
     let mut resume_of: BTreeMap<BlockId, u32> = BTreeMap::new();
     let mut next_reg = regs.max + 1;
+    let catch_entries: BTreeSet<BlockId> = m
+        .catches
+        .iter()
+        .filter_map(|(_, k)| m.resumes.get(k).copied())
+        .collect();
     for &entry in &entries {
         let mut seen = BTreeSet::new();
         let mut stack = vec![entry];
@@ -712,6 +880,7 @@ pub fn rewrite(cfg: &mut CFG, m: &Machine) -> Result<(), &'static str> {
         let reader = Reader {
             cfg,
             alias: alias.clone(),
+            try_slot: m.try_slot,
         };
         let is_machine_store = |s: &Statement| matches!(reader.slot_of(s), Some((sl, _)) if sl == m.status || sl == m.label);
         // What a block holds once the machine's stores and, where it returns a
@@ -794,8 +963,35 @@ pub fn rewrite(cfg: &mut CFG, m: &Machine) -> Result<(), &'static str> {
         }
         new_blocks
     };
+    if catch_entries.iter().any(|e| resume_of.contains_key(e)) {
+        return Err("a catch reads the resume value");
+    }
     let entry_to = *m.resumes.get(&0).ok_or("no entry label")?;
-    // The rewrite is sure of itself from here on.
+    let catch_head: Vec<Statement> = m
+        .catch_block
+        .and_then(|c| cfg.get(c))
+        .map(|b| {
+            let reader = Reader {
+                cfg,
+                alias: alias.clone(),
+                try_slot: m.try_slot,
+            };
+            b.statements
+                .iter()
+                .filter(|s| {
+                    !matches!(
+                        s,
+                        Statement::Assign {
+                            target: AssignTarget::Binding(Binding::Register(_)),
+                            value,
+                        } if matches!(reader.src(value), Some(Src::Slot(sl)) if Some(sl) == m.try_slot)
+                    )
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    // Past here a refusal leaves `cfg` half rewritten: the caller drops it.
     for (id, mut stmts, mut terminator) in new_blocks {
         // The block's entry; a block reading no resume value never needs it. A
         // suspend's folded block reads through the block storing the label.
@@ -837,7 +1033,250 @@ pub fn rewrite(cfg: &mut CFG, m: &Machine) -> Result<(), &'static str> {
         b.terminator = Terminator::Jump(entry_to);
     }
     cfg.exception_handlers.clear();
+    if let Some(slot) = m.try_slot {
+        recover_tries(cfg, m, slot, &alias, entry_to, catch_head)?;
+    }
     cfg.retain_reachable();
+    Ok(())
+}
+
+// Hand the structurer the source's `try`s as ordinary handlers (G3). The try state
+// says which `try` each statement is in, so a block is split at each store of it,
+// the store goes, and each state's blocks are that `try`'s protected range, with
+// the ranges of the `try`s entered from inside it.
+fn recover_tries(
+    cfg: &mut CFG,
+    m: &Machine,
+    slot: Slot,
+    alias: &HashMap<u32, Src>,
+    entry_to: BlockId,
+    catch_head: Vec<Statement>,
+) -> Result<(), &'static str> {
+    const NESTING: &str = "a try in the source: regions do not nest";
+    let state_of = |s: &Statement| -> Option<i32> {
+        let Statement::Assign {
+            target: AssignTarget::Binding(Binding::ClosureVar { level, slot: n, .. }),
+            value,
+        } = s
+        else {
+            return None;
+        };
+        if *level != slot.level || *n != slot.slot {
+            return None;
+        }
+        let held = match value {
+            Expression::Value(Value::Binding(Binding::Register(r))) => alias.get(r).copied(),
+            e => direct(e),
+        };
+        match held {
+            Some(Src::Int(k)) => Some(k),
+            _ => None,
+        }
+    };
+    // Split at each store; `forced` is the state a split block starts in.
+    let mut forced: BTreeMap<BlockId, i32> = BTreeMap::new();
+    let ids: Vec<BlockId> = cfg.block_ids().collect();
+    for id in ids {
+        let Some(b) = cfg.get_mut(id) else { continue };
+        if !b.statements.iter().any(|s| state_of(s).is_some()) {
+            continue;
+        }
+        let stmts = std::mem::take(&mut b.statements);
+        let terminator = std::mem::replace(&mut b.terminator, Terminator::None);
+        let mut cur = id;
+        let mut seg: Vec<Statement> = Vec::new();
+        for s in stmts {
+            if let Some(k) = state_of(&s) {
+                let next = cfg.create_block();
+                if let Some(b) = cfg.get_mut(cur) {
+                    b.statements = std::mem::take(&mut seg);
+                    b.terminator = Terminator::Jump(next);
+                }
+                forced.insert(next, k);
+                cur = next;
+            } else {
+                seg.push(s);
+            }
+        }
+        if let Some(b) = cfg.get_mut(cur) {
+            b.statements = seg;
+            b.terminator = terminator;
+        }
+    }
+    // Each catch: a head holding the exception, then its label's entry, in the
+    // state the entry restores first.
+    let mut head_of: BTreeMap<i32, BlockId> = BTreeMap::new();
+    for &(state, label) in &m.catches {
+        let entry = *m.resumes.get(&label).ok_or(NESTING)?;
+        let mut restored = None;
+        let mut n = entry;
+        for _ in 0..4 {
+            if let Some(&k) = forced.get(&n) {
+                restored = Some(k);
+                break;
+            }
+            match cfg.get(n).map(|b| &b.terminator) {
+                Some(Terminator::Jump(t)) => n = *t,
+                _ => break,
+            }
+        }
+        let restored = restored.ok_or("a try in the source: a catch keeps its state")?;
+        let head = cfg.create_block();
+        if let Some(b) = cfg.get_mut(head) {
+            b.statements = catch_head.clone();
+            b.terminator = Terminator::Jump(entry);
+        }
+        forced.insert(head, restored);
+        head_of.insert(state, head);
+    }
+    // The state of every block, from the entry and the catch heads.
+    let mut state: BTreeMap<BlockId, i32> = BTreeMap::new();
+    let mut stack: Vec<(BlockId, i32)> = vec![(cfg.entry, 0), (entry_to, 0)];
+    stack.extend(head_of.values().map(|h| (*h, forced[h])));
+    while let Some((id, inherited)) = stack.pop() {
+        let st = forced.get(&id).copied().unwrap_or(inherited);
+        if let Some(&was) = state.get(&id) {
+            if was != st {
+                return Err("a try in the source: a block in two states");
+            }
+            continue;
+        }
+        state.insert(id, st);
+        if let Some(b) = cfg.get(id) {
+            stack.extend(b.successors().into_iter().map(|t| (t, st)));
+        }
+    }
+    // A split leaves empty blocks between a store and what follows. Jump past
+    // those in one state, so a `try` and its catch rejoin at the same block, which
+    // is what fences the code after the `try` out of it.
+    let empty: BTreeMap<BlockId, BlockId> = state
+        .keys()
+        .filter_map(|&id| {
+            let b = cfg.get(id)?;
+            match &b.terminator {
+                Terminator::Jump(t) if b.statements.is_empty() && *t != id => Some((id, *t)),
+                _ => None,
+            }
+        })
+        .filter(|(id, t)| state.get(id) == state.get(t))
+        .collect();
+    let past = |mut id: BlockId| {
+        for _ in 0..16 {
+            match empty.get(&id) {
+                Some(&t) => id = t,
+                None => break,
+            }
+        }
+        id
+    };
+    let live: Vec<BlockId> = state.keys().copied().collect();
+    for id in live {
+        if let Some(b) = cfg.get_mut(id) {
+            match &mut b.terminator {
+                Terminator::Jump(t) => *t = past(*t),
+                Terminator::Branch {
+                    true_target,
+                    false_target,
+                    ..
+                } => {
+                    *true_target = past(*true_target);
+                    *false_target = past(*false_target);
+                }
+                _ => {}
+            }
+        }
+    }
+    // Nesting: a state's parent is the state it is first entered from.
+    let mut parent: BTreeMap<i32, i32> = BTreeMap::new();
+    let mut order = vec![0];
+    let mut i = 0;
+    while i < order.len() {
+        let from = order[i];
+        i += 1;
+        for (&id, &st) in &state {
+            if st != from {
+                continue;
+            }
+            for t in cfg.get(id).map(|b| b.successors()).unwrap_or_default() {
+                let to = state.get(&t).copied().unwrap_or(st);
+                if to != 0 && !parent.contains_key(&to) && !order.contains(&to) {
+                    parent.insert(to, from);
+                    order.push(to);
+                }
+            }
+        }
+    }
+    let within = |mut s: i32, k: i32| {
+        while s != k {
+            match parent.get(&s) {
+                Some(&p) => s = p,
+                None => return false,
+            }
+        }
+        true
+    };
+    // Outermost first.
+    for &k in order.iter().skip(1) {
+        let head = *head_of
+            .get(&k)
+            .ok_or("a try in the source: a state with no arm")?;
+        let mut try_blocks: Vec<BlockId> = state
+            .iter()
+            .filter(|(_, &s)| within(s, k))
+            .map(|(&b, _)| b)
+            .collect();
+        // A `return` of a value already computed cannot throw: it may print
+        // inside, and then it is no way out.
+        let quiet: Vec<BlockId> = try_blocks
+            .iter()
+            .flat_map(|b| cfg.get(*b).map(|x| x.successors()).unwrap_or_default())
+            .filter(|t| !try_blocks.contains(t) && *t != head)
+            .filter(|t| {
+                cfg.get(*t).is_some_and(|x| {
+                    x.statements.is_empty()
+                        && matches!(
+                            &x.terminator,
+                            Terminator::Return(None)
+                                | Terminator::Return(Some(Expression::Value(_)))
+                        )
+                })
+            })
+            .collect();
+        try_blocks.extend(quiet);
+        try_blocks.sort();
+        try_blocks.dedup();
+        let inside: BTreeSet<BlockId> = try_blocks.iter().copied().collect();
+        // Dropped blocks (a protocol, the dispatch) still jump to resume entries,
+        // and have no state.
+        let mut starts = try_blocks.iter().copied().filter(|&b| {
+            cfg.predecessors(b)
+                .iter()
+                .any(|p| state.contains_key(p) && !inside.contains(p))
+        });
+        let start = starts.next().ok_or(NESTING)?;
+        if starts.next().is_some() {
+            return Err("a try in the source: a region with two ways in");
+        }
+        // One way out at most, or the code after the `try` cannot be told from
+        // it and would print inside, where its throws would be caught.
+        let mut exits = BTreeSet::new();
+        for &b in &try_blocks {
+            for t in cfg.get(b).map(|x| x.successors()).unwrap_or_default() {
+                if !inside.contains(&t) && t != head {
+                    exits.insert(t);
+                }
+            }
+        }
+        if exits.len() > 1 {
+            return Err("a try in the source: several ways out");
+        }
+        cfg.exception_handlers.push(crate::ir::CfgExceptionHandler {
+            try_block_start: start,
+            catch_block: head,
+            try_blocks,
+            exact_range: true,
+        });
+    }
     Ok(())
 }
 

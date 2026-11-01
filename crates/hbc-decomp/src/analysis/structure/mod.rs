@@ -227,11 +227,13 @@ mod switch_tests {
             try_block_start: entry,
             catch_block: catch,
             try_blocks: vec![entry],
+            exact_range: false,
         });
         cfg.exception_handlers.push(crate::ir::CfgExceptionHandler {
             try_block_start: entry,
             catch_block: finally,
             try_blocks: vec![entry, catch],
+            exact_range: false,
         });
 
         let analysis = StructureAnalysis::analyze(&cfg);
