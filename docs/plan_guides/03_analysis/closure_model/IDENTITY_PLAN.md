@@ -541,7 +541,19 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
     read in the step take one name, decided per slot (`SlotRef`), not per spelling: today the
     wrapper binds `c0` while the step's reads take the usage name (`attachmentID`), +3
     undeclared on Expensify. Counted: parked slots whose references print under more than
-    one name, to 0.
+    one name, to 0. **Done (2026-10-31).** `separate_step_env_names` first gives each parked
+    slot its most used readable name, by stamp, so its clash test sees that one. Split slots,
+    Expensify / Discord: 62 of 1,415 -> 0, 421 of 4,855 -> 0 (`parked slots:` in the `slots`
+    log at codegen). I1 2,158 -> 2,096 and 7,287 -> 6,866; I2 967 and 1,786 -> 1,784; undeclared
+    12,677 and 6,507 unchanged, raw machines unchanged. v96 changes 14 lines, one real fix: `_prepareFile`'s collapsed
+    machine stored into `c0` and read `path`, so the store never reached its reads; both are
+    `path2` now.
+    Lift census with c7 (GENERATOR_LIFT_PLAN.md G0), Expensify / Discord: lifted 312 / 847;
+    unparsable case 419 / 1,549 (suspend under `if` 140 / 677, no return 234 / 361, straight
+    45 / 511); two terminals with content 69 / 146; no terminal 3 / 10; other 1 / 0. Every
+    machine counts as `generator`, none as `async`, on both bundles, so the census's kind does
+    not separate them yet (cause not traced). None of the reasons is a dispatch in a loop, so
+    A2e3 and A2e4 guard against a rise rather than lower the count; the drop is the lift plan's.
   - **A2e2 — `separate_step_env_names` keyed by slot.** Its clash test reads names; with A2e1
     it compares slots, so a slot reached two ways is not split and two slots under one
     name are. Undeclared and unparsable on both v98 bundles must not rise.

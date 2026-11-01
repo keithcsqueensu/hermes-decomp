@@ -649,6 +649,44 @@ impl PipelineContext {
         use crate::ir::{AssignTarget, Binding, Expression, MutVisitor, SlotRef, Value, Var};
         use std::collections::{BTreeSet, HashSet};
         let is_step_env = |s: &SlotRef| ctx.parked_scopes.contains(&s.owner);
+        // One name per parked slot first (IDENTITY_PLAN.md A2e1): the wrapper
+        // binds the name the slot had when the machine was kept (`c0`), and the
+        // step's reads take the usage name (`attachmentID`) later. Split, a read
+        // saw a variable the wrapper's store never reached. The most used
+        // readable name wins, and the clash test below sees only that one.
+        let mut spellings: BTreeMap<SlotRef, BTreeMap<String, u32>> = BTreeMap::new();
+        for body in all_ir.values() {
+            for (n, s) in crate::analysis::closure::stamps::var_refs(body) {
+                if let Some(s) = s.filter(is_step_env) {
+                    *spellings
+                        .entry(s)
+                        .or_default()
+                        .entry(n.to_string())
+                        .or_default() += 1;
+                }
+            }
+        }
+        let is_counter = |n: &str, prefix: &str| {
+            n.strip_prefix(prefix)
+                .is_some_and(|d| d.chars().all(|c| c.is_ascii_digit()))
+        };
+        let one_name: BTreeMap<SlotRef, String> = spellings
+            .into_iter()
+            .filter(|(_, names)| names.len() > 1)
+            .filter_map(|(slot, names)| {
+                let best = names.iter().max_by_key(|(n, &count)| {
+                    let weak = crate::ir::placeholder::is_slot_placeholder(n)
+                        || is_counter(n, "c")
+                        || is_counter(n, "_undefined");
+                    (!weak, count, std::cmp::Reverse(n.as_str()))
+                })?;
+                Some((slot, best.0.clone()))
+            })
+            .collect();
+        let mut canonical = Rename(&one_name);
+        for body in all_ir.values_mut() {
+            canonical.visit_statement_list(body);
+        }
         // Every body that references a machine slot, with its references:
         // the wrapper, the step and the closures the step creates. A clash in
         // any of them counts, the step's own parameters included (a loop

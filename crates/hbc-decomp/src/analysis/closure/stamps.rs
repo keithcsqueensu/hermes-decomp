@@ -339,6 +339,11 @@ static RENDERED: Mutex<Census> = Mutex::new(Census {
     dropped: 0,
 });
 
+// The names each parked machine slot's references take as rendered
+// (IDENTITY_PLAN.md A2e1: one each).
+static PARKED_NAMES: Mutex<BTreeMap<SlotRef, std::collections::BTreeSet<String>>> =
+    Mutex::new(BTreeMap::new());
+
 pub fn record_render(ctx: Option<&ClosureContext>, func: u32, stmts: &[Statement]) {
     if !enabled() {
         return;
@@ -355,6 +360,13 @@ pub fn record_render(ctx: Option<&ClosureContext>, func: u32, stmts: &[Statement
     if let Ok(mut total) = RENDERED.lock() {
         total.add(c);
     }
+    if let Ok(mut names) = PARKED_NAMES.lock() {
+        for (name, slot) in var_refs(stmts) {
+            if let Some(s) = slot.filter(|s| ctx.parked_scopes.contains(&s.owner)) {
+                names.entry(s).or_default().insert(name.to_string());
+            }
+        }
+    }
 }
 
 pub fn report_render() {
@@ -363,6 +375,13 @@ pub fn report_render() {
     }
     if let Ok(total) = RENDERED.lock() {
         log_census("at codegen", *total);
+    }
+    if let Ok(names) = PARKED_NAMES.lock() {
+        let split: Vec<_> = names.iter().filter(|(_, n)| n.len() > 1).collect();
+        log::debug!(target: TARGET, "parked slots: {} rendered, {} under more than one name", names.len(), split.len());
+        for (s, n) in split {
+            log::trace!(target: TARGET, "    parked slot {} of scope {}: {n:?}", s.slot, s.owner);
+        }
     }
 }
 
