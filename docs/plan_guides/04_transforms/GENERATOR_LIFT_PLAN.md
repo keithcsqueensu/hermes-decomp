@@ -6,7 +6,7 @@
 > `../03_analysis/closure_model/IDENTITY_PLAN.md` A2e, and the catch-loop dominator change
 > (A2e3, A2e4) is ordered against this plan's G2 below.
 
-Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).** **G2 landed (2026-11-01).** **G3a landed (2026-11-01);** G3b and G3c are open.
+Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).** **G2 landed (2026-11-01).** **G3a and G3c landed (2026-11-01);** G3b is open.
 
 ## 1. Where things stand
 
@@ -220,15 +220,34 @@ with "protocol: unexpected branch" (18, 170). `gen_try_finally` is the test. "se
 is a `return` inside a `try` next to its fallthrough; the dispatch register
 is untraced.
 
-**G3c, the same bug in ordinary code. Open, and more urgent than the rest of this plan.**
-`cleanup_noise` also drops a trailing `return undefined` from any nested list, code after it or
-not (`TODO` in `transforms/inline/cleanup.rs`). G3a fixed only the bare form because the fix for
-this one changes v96 output. Applied to Equinox v96 it changes 3093 lines and adds 943 `return;`,
-644 of them with code after the arm by a line-level count that was not checked site by site. So
-the printed code can run what the bytecode returned before, and an `if` whose arm empties is
-removed with its condition: `if (!window.dispatchEvent(e)) return;` printed as nothing, the call
-gone. It needs its own stage, with v96 output expected to change and round-trip snippets for an
-arm, a loop body and a `case`.
+**G3c, the same bug in ordinary code. Done (2026-11-01).** This stage is the one exception to the
+rule that v96 output does not change: the old output was wrong. `cleanup_noise` dropped a trailing
+`return undefined` from any nested list, code after it or not. It now drops one only where the end
+of the list is the end of the function (the last statement of the body, through `if`, `try` and
+blocks, never a loop or `case`). `return_nested` is the test.
+
+| | Equinox v96 | Expensify | Discord |
+|---|---|---|---|
+| lines changed | 3093 | 8276 | 4577 |
+| strings restored / lost | 11 / 0 | 3 / 0 | 7 / 0 |
+| undeclared | 1485 -> 1488 | 12635 -> 12636 | 5254 -> 5256 |
+| raw machines | 0 | 326 | 678 |
+
+Without the `return`, the code after the arm ran. An arm that emptied took its `if` with it, and a
+loop body that emptied lost its calls: `while (readResult !== null) {}` had dropped
+`closure_8.push(readResult)`. The undeclared rise is restored reads of `window` and `__DEV__`,
+which are real globals. Hunks were sampled by kind, not read one by one.
+
+**G3d, wrong output found by G3c. Open.** Two bugs, both older than G3c.
+
+`loop_two_exits`: a `for` with a `return` inside prints as `while (i !== 1)`, losing `i < n` and the repeat.
+
+A branch whose targets were both emitted prints nothing. In
+`a && b || c`, the arm holding `b` jumps to two blocks already emitted, and structure recovery
+returns empty for both, so the test is lost. `_iterableToArray` prints `Array.from` where the
+bytecode tests `@@iterator` first. G3c did not cause it: the old output lost the same test.
+`branch_and_or` is the test, a known failure on both versions. Both are wrong-output bugs outside
+generators, so they go before G3b.
 
 ### G4 — async (medium)
 

@@ -17,3 +17,7 @@ v98	gen_delegate	raw generator machine: yield* lowered to a delegation loop (G2)
 v96	gen_if	v96 generator (real opcodes): the else branch's resume is printed `return yield 2`, so the yield after the if/else is lost
 v96	gen_try_finally	v96 generator: the finally is lowered to catch-and-rethrow, so `.return()` skips it
 v96	gen_delegate	v96 generator: yield* is not recombined, its lowered delegation loop prints with HermesBuiltin helpers
+v96	branch_and_or	a branch whose targets were both emitted prints nothing: the middle test of `a && b || c` is lost (GENERATOR_LIFT_PLAN G3d)
+v98	branch_and_or	a branch whose targets were both emitted prints nothing: the middle test of `a && b || c` is lost (GENERATOR_LIFT_PLAN G3d)
+v96	loop_two_exits	a loop with a second exit keeps only that exit's test: the `i < n` test and the repeat are lost (GENERATOR_LIFT_PLAN G3d)
+v98	loop_two_exits	a loop with a second exit keeps only that exit's test: the `i < n` test and the repeat are lost (GENERATOR_LIFT_PLAN G3d)

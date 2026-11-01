@@ -211,10 +211,8 @@ fn cleanup_noise_here(stmts: Vec<Statement>) -> Vec<Statement> {
             // `return undefined;` -> `return;` or remove if last statement
             Statement::Return(Some(expr)) => {
                 if is_undefined_expr(expr) {
-                    // If this is the last statement, drop it entirely
-                    // TODO(GENERATOR_LIFT_PLAN G3c): wrong under `!tail` too, where
-                    // it lets the code after an `if` arm run.
-                    if i == stmts.len() - 1 {
+                    // Last in the function: drop it entirely
+                    if tail && i == stmts.len() - 1 {
                         continue;
                     }
                     // Otherwise convert to bare return
@@ -345,6 +343,38 @@ fn cleanup_noise_recurse(stmt: &mut Statement) {
 mod tests {
     use super::*;
     use crate::ir::{Constant, VarKind};
+
+    #[test]
+    fn return_undefined_stops_the_code_after_its_arm() {
+        let call = || {
+            Statement::Expr(Expression::Value(Value::Binding(Binding::Variable(
+                "f".into(),
+            ))))
+        };
+        let ret = || Statement::Return(Some(Expression::constant(Constant::Undefined)));
+        let arm = |then_body| Statement::If {
+            condition: Expression::Value(Value::Binding(Binding::Variable("a".into()))),
+            then_body,
+            else_body: vec![],
+        };
+        // Only a return in the arm: the whole `if` went with it.
+        let kept = cleanup_noise(vec![arm(vec![ret()]), call()]);
+        assert_eq!(kept.len(), 2, "the `if` is gone: {kept:?}");
+        let body = vec![Statement::While {
+            condition: Expression::Value(Value::Binding(Binding::Variable("a".into()))),
+            body: vec![call(), ret()],
+        }];
+        let kept = cleanup_noise(body);
+        assert!(
+            matches!(&kept[0], Statement::While { body, .. } if body.len() == 2),
+            "a loop body's end is not the function's: {kept:?}"
+        );
+        let dropped = cleanup_noise(vec![arm(vec![call(), ret()])]);
+        assert!(
+            matches!(&dropped[0], Statement::If { then_body, .. } if then_body.len() == 1),
+            "in tail position: {dropped:?}"
+        );
+    }
 
     #[test]
     fn a_bare_return_stops_the_code_after_its_arm() {
