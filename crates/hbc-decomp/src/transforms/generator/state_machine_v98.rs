@@ -74,6 +74,41 @@ struct ParsedCase {
 }
 
 fn try_reconstruct(body: &[Statement]) -> Result<Vec<Statement>, String> {
+    let lifted = lift_cases(body)?;
+    // A label copy in a loop form (`let tmp = label; if (2 === tmp)`) ends the
+    // case chain early, and the rest reads as the done case: a "lift" with the
+    // machine still inside. Such a machine stays raw (IDENTITY_PLAN.md A2e3).
+    let looped = find_label_dispatch(body).is_some_and(|d| {
+        find_dispatch_anywhere(body)
+            .and_then(|g| find_dispatch_in_loop(body, g))
+            .is_some_and(|l| std::ptr::eq(d, l))
+    });
+    if looped && lifted.iter().any(keeps_machine) {
+        return Err("loop form, machine left in the lift".into());
+    }
+    Ok(lifted)
+}
+
+// Whether a lifted statement still holds a resume protocol or a result object.
+fn keeps_machine(s: &Statement) -> bool {
+    use crate::ir::Visitor;
+    struct Find(bool);
+    impl<'b> Visitor<'b> for Find {
+        fn visit_statement(&mut self, s: &'b Statement) {
+            self.0 |= is_protocol_guard(s);
+            self.walk_statement(s);
+        }
+        fn visit_expression(&mut self, e: &'b Expression) {
+            self.0 |= parse_result_object(e).is_some();
+            self.walk_expression(e);
+        }
+    }
+    let mut find = Find(false);
+    find.visit_statement(s);
+    find.0
+}
+
+fn lift_cases(body: &[Statement]) -> Result<Vec<Statement>, String> {
     let Some(dispatch) = find_label_dispatch(body) else {
         return Err("no label dispatch".into());
     };
@@ -568,7 +603,70 @@ fn find_label_dispatch(body: &[Statement]) -> Option<&Statement> {
             return Some(found);
         }
     }
-    find_dispatch_anywhere(body)
+    let found = find_dispatch_anywhere(body)?;
+    Some(find_dispatch_in_loop(body, found).unwrap_or(found))
+}
+
+// The dispatch of a machine whose catch rejoins it, printed as a loop
+// (IDENTITY_PLAN.md A2e3): `while (true) { status = 2; if (0 === label) ... }`,
+// perhaps in a `try` or holding one. Seen from outside, the only label test is
+// the status guard, which reads as a dispatch whose cases do not parse.
+// `guard` is what the plain search found, so this only chooses within a machine
+// already recognised. The walk follows the guard's chain on its own variable,
+// and takes a loop's test only on another variable: a `while (true)` the source
+// wrote, in a case or the done branch, is never reached, and one beside the
+// dispatch does not match: its test is the guard's, or it builds no result.
+fn find_dispatch_in_loop<'a>(body: &'a [Statement], guard: &Statement) -> Option<&'a Statement> {
+    let Statement::If { condition, .. } = guard else {
+        return None;
+    };
+    let status = label_var(condition)?;
+    fn walk<'a>(body: &'a [Statement], status: &Binding, looped: bool) -> Option<&'a Statement> {
+        body.iter().find_map(|s| match s {
+            Statement::While { condition, body } if is_truthy(condition) => {
+                walk(body, status, true)
+            }
+            Statement::TryCatch { try_body, .. } => walk(try_body, status, looped),
+            Statement::If {
+                condition,
+                else_body,
+                ..
+            } => match label_var(condition) {
+                Some(v) if v == status => walk(else_body, status, looped),
+                Some(_) if looped && holds_result(s) => Some(s),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+    walk(body, status, false)
+}
+
+// Whether a statement builds a `{ value, done }` result, as a machine's cases do.
+fn holds_result(s: &Statement) -> bool {
+    use crate::ir::Visitor;
+    struct Find(bool);
+    impl<'b> Visitor<'b> for Find {
+        fn visit_expression(&mut self, e: &'b Expression) {
+            self.0 |= parse_result_object(e).is_some();
+            self.walk_expression(e);
+        }
+    }
+    let mut find = Find(false);
+    find.visit_statement(s);
+    find.0
+}
+
+// The variable a label test reads.
+fn label_var(cond: &Expression) -> Option<&Binding> {
+    label_of_condition(cond)?;
+    let Expression::Binary { left, right, .. } = cond else {
+        return None;
+    };
+    [left, right].into_iter().find_map(|e| match e.as_ref() {
+        Expression::Value(Value::Binding(b)) => Some(b),
+        _ => None,
+    })
 }
 
 // The dispatch `if`, searched through the status-guard if/else nest that Hermes
@@ -1054,5 +1152,143 @@ mod tests {
             "lost request dispatch: {dump}"
         );
         assert!(dump.contains("dispatchSent"), "lost sent dispatch: {dump}");
+    }
+
+    // A two-case machine's dispatch: `first` then a suspend, `last` then done.
+    fn dispatch() -> Statement {
+        let call = |n: &str| {
+            Statement::Expr(Expression::Call {
+                callee: Box::new(var(n)),
+                arguments: vec![],
+            })
+        };
+        Statement::If {
+            condition: eq(int(0), var("label")),
+            then_body: arg_protocol(vec![
+                call("first"),
+                Statement::Return(Some(obj_value_done(var("a"), false))),
+            ]),
+            else_body: arg_protocol(vec![
+                call("last"),
+                Statement::Return(Some(obj_value_done(var("b"), true))),
+            ]),
+        }
+    }
+
+    fn guarded(inner: Vec<Statement>) -> Vec<Statement> {
+        vec![Statement::If {
+            condition: eq(var("status"), int(2)),
+            then_body: vec![Statement::Throw(var("busy"))],
+            else_body: inner,
+        }]
+    }
+
+    fn forever(body: Vec<Statement>) -> Statement {
+        Statement::While {
+            condition: Expression::constant(Constant::Bool(true)),
+            body,
+        }
+    }
+
+    fn try_of(try_body: Vec<Statement>) -> Statement {
+        Statement::TryCatch {
+            try_body,
+            catch_param: Some("e".into()),
+            catch_body: vec![Statement::Throw(var("e"))],
+            finally_body: vec![],
+        }
+    }
+
+    fn assert_lifts(body: Vec<Statement>) {
+        let out = lift_generator_v98(&body).expect("should lift");
+        let dump = format!("{out:?}");
+        assert!(out.iter().any(stmt_has_yield_deep), "no yield: {dump}");
+        assert!(dump.contains("first") && dump.contains("last"), "{dump}");
+        assert!(!dump.contains("busy"), "guard leaked: {dump}");
+    }
+
+    // The status store at the loop's head is the machine's own bookkeeping.
+    fn status_store() -> Statement {
+        copy("status", int(2))
+    }
+
+    #[test]
+    fn lifts_a_dispatch_in_a_loop() {
+        assert_lifts(guarded(vec![forever(vec![status_store(), dispatch()])]));
+    }
+
+    #[test]
+    fn lifts_a_loop_inside_the_try() {
+        assert_lifts(guarded(vec![try_of(vec![forever(vec![
+            status_store(),
+            dispatch(),
+        ])])]));
+    }
+
+    #[test]
+    fn lifts_a_try_inside_the_loop() {
+        assert_lifts(guarded(vec![forever(vec![try_of(vec![
+            status_store(),
+            dispatch(),
+        ])])]));
+    }
+
+    // A label copy ends the chain, so the rest reads as the done case. What
+    // would come out still holds the machine: it stays raw.
+    #[test]
+    fn a_broken_chain_in_a_loop_stays_raw() {
+        let Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } = dispatch()
+        else {
+            unreachable!()
+        };
+        let rest = vec![
+            copy("tmp", var("label")),
+            Statement::If {
+                condition: eq(int(2), var("tmp")),
+                then_body: else_body.clone(),
+                else_body: vec![],
+            },
+            Statement::Return(Some(obj_value_done(var("c"), true))),
+        ];
+        let body = guarded(vec![forever(vec![
+            status_store(),
+            Statement::If {
+                condition,
+                then_body,
+                else_body: rest,
+            },
+        ])]);
+        assert!(lift_generator_v98(&body).is_err());
+    }
+
+    // A loop the source wrote, in the done branch of a machine with no loop of
+    // its own, tests another variable and is not the dispatch.
+    #[test]
+    fn a_source_loop_is_not_the_dispatch() {
+        let source_loop = forever(vec![Statement::If {
+            condition: eq(var("i"), int(0)),
+            then_body: vec![Statement::Break(None)],
+            else_body: vec![],
+        }]);
+        let body = vec![dispatch(), source_loop];
+        let guard = find_dispatch_anywhere(&body).unwrap();
+        assert!(find_dispatch_in_loop(&body, guard).is_none());
+        // The chain followed is the guard's own: a loop under another test's
+        // branch is out of reach.
+        let body = vec![Statement::If {
+            condition: eq(int(0), var("label")),
+            then_body: vec![],
+            else_body: vec![Statement::If {
+                condition: eq(int(1), var("label")),
+                then_body: vec![forever(vec![dispatch()])],
+                else_body: vec![],
+            }],
+        }];
+        let guard = find_dispatch_anywhere(&body).unwrap();
+        assert!(find_dispatch_in_loop(&body, guard).is_none());
     }
 }

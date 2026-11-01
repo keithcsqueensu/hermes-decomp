@@ -548,12 +548,9 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
     12,677 and 6,507 unchanged, raw machines unchanged. v96 changes 14 lines, one real fix: `_prepareFile`'s collapsed
     machine stored into `c0` and read `path`, so the store never reached its reads; both are
     `path2` now.
-    Lift census with c7 (GENERATOR_LIFT_PLAN.md G0), Expensify / Discord: lifted 312 / 847;
-    unparsable case 419 / 1,549 (suspend under `if` 140 / 677, no return 234 / 361, straight
-    45 / 511); two terminals with content 69 / 146; no terminal 3 / 10; other 1 / 0. Every
-    machine counts as `generator`, none as `async`, on both bundles, so the census's kind does
-    not separate them yet (cause not traced). None of the reasons is a dispatch in a loop, so
-    A2e3 and A2e4 guard against a rise rather than lower the count; the drop is the lift plan's.
+    The lift census is unchanged from GENERATOR_LIFT_PLAN.md G0's table. No reason in it is a
+    dispatch in a loop, so A2e3 and A2e4 guard against a rise rather than lower the count; the
+    drop is the lift plan's.
   - **A2e2 — `separate_step_env_names` keyed by slot.** Its clash test reads names; with A2e1
     it compares slots, so a slot reached two ways is not split and two slots under one
     name are. Undeclared and unparsable on both v98 bundles must not rise. **Done
@@ -564,7 +561,28 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
     1,728; undeclared 1,485, 12,677 and 6,507 unchanged, unparsable 0.
   - **A2e3 — the dispatch may be a loop.** `state_machine_v98` and `keep_raw_machines` accept
     a machine whose dispatch sits in a loop (what the catch-loop dominator change makes of
-    one whose catch rejoins the dispatch), with a fixture of each shape.
+    one whose catch rejoins the dispatch), with a fixture of each shape. Split (2026-11-01):
+    - **A2e3a — the recognizer finds the dispatch in a loop (done).** `find_dispatch_in_loop`
+      looks through `while (true)` and `try`, in either order, past the status guard, which
+      otherwise reads as a dispatch whose cases do not parse. It only chooses within a machine
+      already recognised, so `is_generator_state_machine_v98` accepts nothing new. A loop-form
+      lift that still holds a resume protocol or a result object is refused
+      (`loop form, machine left in the lift`): without that, 3 Discord machines "lifted" with
+      `if (2 === tmp)` and `arg0 === 1` left in their bodies, and undeclared rose 26.
+      `keep_raw_machines` needs no change: it acts on the verdict, not the dispatch's place.
+      Output byte-identical on all three bundles. The census moves between reasons, since the
+      real dispatch is now read: Expensify under `if` 140 -> 151, no return 234 -> 221, two
+      terminals 69 -> 70, no terminal 3 -> 4; Discord under `if` 677 -> 689, no return 361 ->
+      346, refused 3. Discord's straight row and both lifted rows do not move.
+    - **A2e3b — cases that join past the dispatch (open, blocks A2e4).** With the dominator
+      change applied (experiment, not committed), raw machines stay 581 and 1,919, and lifted
+      falls 312 -> 270 and 847 -> 670: 43 and 272 machines are refused as above. Their cases
+      are no chain: `let tmp = label; if (0 === label) {..} else if (1 === tmp) {..} else if
+      (arg0 === 1) {..} else {..}`, then a shared tail and the suspend. Case parsing cannot
+      order that soundly, and dropping the refusal gives 535 and 1,640 raw by emitting such
+      bodies, so that count is no evidence. Read the cases as a graph instead: G1 and G2 of
+      `../../04_transforms/GENERATOR_LIFT_PLAN.md` do. Exit: the experiment's lifted counts
+      back at 312 and 847 or better, every lift free of the machine. Do this with or after G2.
   - **A2e4 — the catch-loop fix lands**: catch blocks get their protected blocks as
     predecessors in `compute_dominators`, with the test from the finding above, and raw
     machines not rising (536 and 1,738 before; the change alone made them 581 and 1,919).
