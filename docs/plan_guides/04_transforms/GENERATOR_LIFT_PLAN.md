@@ -162,7 +162,7 @@ declared at the top of any module, and an unrelated module's top-level `tmp17`, 
 (React's `while (null !== tmp22)`, a wrong name in its own right). Those declarations moved. The
 rest of the difference is -191.
 
-Three things this stage changed or found:
+What this stage changed or found:
 - The two lifters are compared at different times: the statement lifter's answer in
   `generate_ir` is not its answer at W16b. Machines it refused early but lifted late now go
   through the rewrite (W16b's lifted count on Expensify 312 -> 249, Discord 847 -> 759), so this
@@ -171,9 +171,11 @@ Three things this stage changed or found:
   a lifted body split them (`items = self`, `closure_4.items`).
 - `yield` now reaches operand positions, so `!(yield x)` and `"a" + (yield x)` print parentheses.
 - Refused by the rewrite on Expensify: 11 where a register from the dispatch reaches the body,
-  1 with no suspend. Three of 151 sampled new Discord `function*` bodies still show `arg0 === 1`
-  with no nested raw machine: `function*(arg0, value)` shapes the statement lifter let through,
-  not this rewrite, which drops the protocol. G5 reads those.
+  1 with no suspend. A scan of the 151 `function*` lines new on Discord flagged 6 with `arg0 ===
+  1` or a result object nearby. 3 hold a nested raw machine, and 1 is a lifted function inside an
+  outer raw machine with a `try`, whose protocol the scan ran on into. The other 2 are
+  `function*(arg0, value)`, a shape already in the old output (200 -> 197 bundle-wide), not traced
+  to their lifter. G5 reads those.
 
 What stays raw is mostly G3's: a `try` in the source (G1's table). `raw_async` now lifts, so it
 no longer covers a raw machine; `gen_try_catch` and `gen_try_finally` do.
