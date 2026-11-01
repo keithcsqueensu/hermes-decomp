@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 pub mod analysis;
 pub mod cleanup;
+pub mod machine_cfg;
 pub mod state_machine;
 pub mod state_machine_v98;
 pub mod transform;

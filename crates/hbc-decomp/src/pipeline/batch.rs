@@ -341,6 +341,7 @@ fn render_bundle(
     }
 
     crate::analysis::closure::stamps::report_render();
+    crate::transforms::generator::machine_cfg::report();
     if crate::analysis::closure::stamps::enabled() {
         if let (Some(v), Some(ctx)) = (
             pipeline.check_slot_identity(file),

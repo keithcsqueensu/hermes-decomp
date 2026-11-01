@@ -70,6 +70,11 @@ pub fn generate_ir(
         }
     }
 
+    // The machine as the CFG shows it, against the lifter's reading of the
+    // statements (GENERATOR_LIFT_PLAN.md G1). Log only.
+    let machine_reading = log::log_enabled!(target: "genlift", log::Level::Debug)
+        .then(|| transforms::generator::machine_cfg::read(&cfg));
+
     // STAGE F5: Structure Recovery (CFG -> if/while/for/switch/try)
     let statements = if options.recover_structures {
         let analysis = StructureAnalysis::analyze(&cfg);
@@ -280,6 +285,9 @@ pub fn generate_ir(
         }
     }
 
+    if let Some(reading) = &machine_reading {
+        transforms::generator::machine_cfg::record(function_id, reading, &statements);
+    }
     Ok(statements)
 }
 

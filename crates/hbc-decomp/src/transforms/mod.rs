@@ -7,7 +7,7 @@ pub mod data_flow;
 pub mod default_params;
 pub mod destructuring;
 pub mod exports;
-mod generator;
+pub mod generator;
 mod hoist_closures;
 mod inline;
 pub mod logic_patterns;

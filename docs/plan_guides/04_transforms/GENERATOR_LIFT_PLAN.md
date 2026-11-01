@@ -6,7 +6,7 @@
 > `../03_analysis/closure_model/IDENTITY_PLAN.md` A2e, and the catch-loop dominator change
 > (A2e3, A2e4) is ordered against this plan's G2 below.
 
-Status: planned 2026-10-29. **G0 landed (2026-10-30).**
+Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).**
 
 ## 1. Where things stand
 
@@ -102,6 +102,29 @@ suspends.
 
 Exit: agreement on every machine the current lifter lifts, on all three bundles; each machine
 G1 cannot read is classified.
+
+**Done (2026-11-01), the exit met only in part.** `transforms/generator/machine_cfg.rs` reads
+the CFG after F4, where status and label are slots, the action and resume value are parameters
+0 and 1, and constants are propagated. No output change. `--log genlift=debug` logs one line:
+
+| reading against the lifter (statements at `generate_ir`) | Expensify | Discord |
+|---|---|---|
+| both read, same suspends | 229 | 780 |
+| both read, suspends differ | 15 | 58 |
+| lifter lifts, CFG refuses: a `try` in the source | 43 | 270 |
+| lifter lifts, CFG refuses: body reads status or label | 2 | 1 |
+| CFG reads, lifter refuses (G2's machines) | 209 | 593 |
+| neither: a `try` in the source (G3) | 147 | 749 |
+| neither: no label test, so no suspend | 127 | 75 |
+| neither: protocol has code in front | 34 | 35 |
+| neither: other | 1 | 3 |
+| no status guard, so no machine (a top-level `K === x` test fooled the old check) | 431 | 472 |
+
+Agreement is not total, and neither gap is resolved. Where suspends differ the lifter always
+has one yield and the CFG 2 to 6: it may be dropping yields, or several suspends may share a
+resume. Read them in G5. A source `try` lowers to a catch that stores a label and rejoins the
+dispatch, a label with no resume protocol, plus a try-state slot; the lifter lifts 43 and 270
+such machines by skipping that label, which G3 and G5 must check.
 
 ### G2 — The CFG rewrite, for the machines the current lifter refuses (large)
 
