@@ -556,7 +556,12 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
     A2e3 and A2e4 guard against a rise rather than lower the count; the drop is the lift plan's.
   - **A2e2 — `separate_step_env_names` keyed by slot.** Its clash test reads names; with A2e1
     it compares slots, so a slot reached two ways is not split and two slots under one
-    name are. Undeclared and unparsable on both v98 bundles must not rise.
+    name are. Undeclared and unparsable on both v98 bundles must not rise. **Done
+    (2026-10-31).** Another slot under the name now clashes in every body using this one, unless
+    that slot was renamed away first; unstamped references still count in the wrapper only, the
+    step's often being this variable under a stamp the re-stamping missed. Equinox / Expensify
+    / Discord: TwoSlots 36 -> 35, 360 -> 343, 508 -> 459; I2 314 -> 312, 967 -> 948, 1,784 ->
+    1,728; undeclared 1,485, 12,677 and 6,507 unchanged, unparsable 0.
   - **A2e3 — the dispatch may be a loop.** `state_machine_v98` and `keep_raw_machines` accept
     a machine whose dispatch sits in a loop (what the catch-loop dominator change makes of
     one whose catch rejoins the dispatch), with a fixture of each shape.

@@ -741,17 +741,27 @@ impl PipelineContext {
                 // declared by codegen later), a local, or another machine
                 // slot already named so.
                 let n = name.name.as_str();
-                // Same-name references with another stamp count only in the
+                // Compared by slot (IDENTITY_PLAN.md A2e2). Another slot under
+                // this name clashes in any body using this one, unless that slot
+                // was itself renamed away. Unstamped references count only in the
                 // wrapper's own body: in the step they are often this very
                 // variable reached through an identity the re-stamping does
                 // not cover, and renaming the machine's references away
                 // from them split it (`x = "…" + x` read one and wrote the
                 // other). The parameters of every body using the slot count.
+                let other_slot = bodies.iter().any(|b| {
+                    refs_of.get(b).is_some_and(|r| {
+                        r.iter().any(|(x, s)| {
+                            x == n && s.is_some_and(|s| s != slot && !renames.contains_key(&s))
+                        })
+                    })
+                });
                 let clash = kept.contains(n)
+                    || other_slot
                     || bodies.iter().any(|&b| params(b).contains(n))
                     || refs_of
                         .get(&fid)
-                        .is_some_and(|r| r.iter().any(|(x, s)| x == n && *s != Some(slot)));
+                        .is_some_and(|r| r.iter().any(|(x, s)| x == n && s.is_none()));
                 if !clash {
                     kept.insert(n.to_string());
                     continue;
