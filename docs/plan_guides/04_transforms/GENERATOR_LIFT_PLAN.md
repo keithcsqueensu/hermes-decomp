@@ -6,7 +6,7 @@
 > `../03_analysis/closure_model/IDENTITY_PLAN.md` A2e, and the catch-loop dominator change
 > (A2e3, A2e4) is ordered against this plan's G2 below.
 
-Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).** **G2 landed (2026-11-01).** **G3a, G3c landed (2026-11-01); G3d landed in part: the assigning form of `a && b || c` is still wrong;** G3b is open.
+Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).** **G2 landed (2026-11-01).** **G3a, G3c and G3d landed (2026-11-01), with harder short-circuit shapes still wrong;** G3b is open in part.
 
 ## 1. Where things stand
 
@@ -244,7 +244,7 @@ loop body that emptied lost its calls: `while (readResult !== null) {}` had drop
 `closure_8.push(readResult)`. The undeclared rise is restored reads of `window` and `__DEV__`,
 which are real globals. Hunks were sampled by kind, not read one by one.
 
-**G3d, wrong output found by G3c. Partly done (2026-11-01).** Two bugs, both older than G3c. `loop_two_exits` is fixed. `a && b || c` is fixed only when the arms return: when they assign a value used later, as in `if (a && b || c) r = 1; else r = 2; return r`, the test on `b` is still lost. `branch_and_or_value` records it. Diagram: [`and_or_copy.html`](../03_analysis/diagrams/and_or_copy.html).
+**G3d, wrong output found by G3c. Partly done (2026-11-01).** Two bugs, both older than G3c. `loop_two_exits` and `a && b || c` are fixed, whether the arms return or assign (`branch_and_or_value`). **Open:** `(a && b || c) && d`, the same test in a loop when its copy is refused, and two such tests in a row (`branch_and_or_assign`). Those want short-circuit conditions recovered as such, where this only copies a tail. Diagram: [`and_or_copy.html`](../03_analysis/diagrams/and_or_copy.html).
 
 `loop_two_exits`: a `for` with a `return` inside prints as `while (i !== 1)`, losing `i < n` and the repeat.
 
@@ -258,7 +258,10 @@ generators, so they go before G3b.
 The fix: a tail reached again that ends in a branch is copied as an `if` tree, up to 16 blocks,
 stopping at the innermost merge. Each copy gets registers of its own, except one it reads before
 assigning, because later passes read a register assigned once as one value. A copy whose values
-are read past it stays empty, as before, and that is the case still open. A loop whose header has statements and whose body has one
+are read past it share that register if blocks already assign it several times, since it is then one variable. A register assigned in one block is read by later passes as one value, so that copy stays empty.
+
+Sharing registers, measured against the generator batch: no string lost, raw unchanged, output grows 0.3%, 0.4%, 0.4%. Undeclared 1500 to 1527, 13132 to 13138, 5489 to 5531: a copy reading a register assigned in a sibling arm, where the old output had dropped the test. Silent became loud, and it is open.
+ A loop whose header has statements and whose body has one
 other exit keeps the `for` test by breaking to that exit. A test against `undefined` is left alone,
 because that is the for-of and for-in form its recogniser reads.
 

@@ -227,12 +227,40 @@ pub(super) fn stays_within(cfg: &CFG, from: &[BlockId], within: impl Fn(BlockId)
         .all(|(_, b)| block_regs(b).read.is_disjoint(&assigned))
 }
 
+// What the copied blocks assign and something past them reads. In
+// `if (a && b || c) r = 1; else r = 2; return r` that is `r`: the code after the
+// copy reads it on every path, so the copy has to assign that very register. Blocks
+// assigning it already make it one variable declared above them all. A register
+// assigned in one block is read by later passes as one value, so a second
+// assignment there printed names that crash: None, and the copy stays empty.
+fn read_past(cfg: &CFG, from: &[BlockId], copied: &HashSet<BlockId>) -> Option<HashSet<u32>> {
+    let mut assigned = HashSet::new();
+    for id in from {
+        if let Some(b) = cfg.get(*id) {
+            assigned.extend(block_regs(b).assigned);
+        }
+    }
+    let mut past = HashSet::new();
+    for (id, b) in cfg.blocks_with_ids() {
+        if !copied.contains(&id) {
+            past.extend(block_regs(b).read.intersection(&assigned).copied());
+        }
+    }
+    let several = |r: &u32| {
+        cfg.blocks()
+            .filter(|b| block_regs(b).assigned.contains(r))
+            .nth(1)
+            .is_some()
+    };
+    past.iter().all(several).then_some(past)
+}
+
 // Later passes read a register assigned once as one value, an import above all:
 // assigned again by a copy, `<tmpResult.CompatView>` lost its declaration. The
-// copy gets registers of its own, which `stays_within` shows nothing else reads.
+// copy gets registers of its own, except those `read_past` says are shared.
 // One the copy reads before assigning holds a value from above and keeps its name.
 // A tail `reemit_exit` copies keeps all of its names: renamed, it lost strings.
-fn fresh_registers(ctx: &RecoveryCtx<'_>, tree: &mut Structure) {
+fn fresh_registers(ctx: &RecoveryCtx<'_>, tree: &mut Structure, shared: &HashSet<u32>) {
     use crate::ir::MutVisitor;
     let cfg = ctx.cfg;
     struct Rename(std::collections::HashMap<u32, u32>);
@@ -282,7 +310,7 @@ fn fresh_registers(ctx: &RecoveryCtx<'_>, tree: &mut Structure) {
             .map_or(0, |m| m + 1)
     });
     let mut map = std::collections::HashMap::new();
-    for r in renamable(tree) {
+    for r in renamable(tree).into_iter().filter(|r| !shared.contains(r)) {
         map.insert(r, next);
         next += 1;
     }
@@ -348,11 +376,9 @@ fn reemit(ctx: &RecoveryCtx<'_>, block_id: BlockId) -> Structure {
             let mut copied = HashSet::new();
             let tree = reemit_branches(ctx, block_id, &mut 16, &mut copied)?;
             let from: Vec<BlockId> = copied.iter().copied().collect();
-            if !stays_within(ctx.cfg, &from, |b| copied.contains(&b)) {
-                return None;
-            }
+            let shared = read_past(ctx.cfg, &from, &copied)?;
             let mut tree = tree;
-            fresh_registers(ctx, &mut tree);
+            fresh_registers(ctx, &mut tree, &shared);
             Some(tree)
         })
         .unwrap_or(Structure::Block(block_id, vec![]))

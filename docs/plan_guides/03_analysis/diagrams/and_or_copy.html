@@ -52,7 +52,7 @@ pre { margin: 0; padding: 12px 14px; background: var(--panel); overflow-x: auto;
 <main>
 <header>
   <h1>The a &amp;&amp; b || c copy</h1>
-  <p>Commit <code>48e2794</code> keeps the middle test when the arms return. It still loses that test when the arms assign a value used later. Both cases below are real <code>hermes-decomp</code> output on v98 bytecode, compared with the Hermes VM.</p>
+  <p>Commit <code>48e2794</code> keeps the middle test when the arms return. A later change keeps it when the arms assign a value used later too. Harder shapes such as <code>(a &amp;&amp; b || c) &amp;&amp; d</code> are still wrong. The cases below are real <code>hermes-decomp</code> output on v98 bytecode, compared with the Hermes VM.</p>
 </header>
 
 <section>
@@ -98,7 +98,7 @@ pre { margin: 0; padding: 12px 14px; background: var(--panel); overflow-x: auto;
   <p>A structured program cannot jump to a block that is already placed, so the fix prints <code>c</code> a second time inside the arm of <code>b</code>. It first has to know the copy's values do not leave the copy.</p>
   <figure>
     <div class="scroll">
-    <svg viewBox="0 0 760 350" role="img" aria-label="The copy decision. If the values the copy assigns are read past it, the copy is refused and test b stays lost. Otherwise the copy gets fresh registers and test b is kept.">
+    <svg viewBox="0 0 760 350" role="img" aria-label="The copy decision. A value read past the copy is shared if it is already assigned in several blocks; if it is assigned in one block the copy is refused and test b stays lost. Otherwise the copy gets fresh registers and test b is kept.">
       <defs>
         <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0L10 5L0 10z"/></marker>
         <marker id="ahl2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-lost" d="M0 0L10 5L0 10z"/></marker>
@@ -115,23 +115,23 @@ pre { margin: 0; padding: 12px 14px; background: var(--panel); overflow-x: auto;
 
       <rect class="box" x="230" y="176" width="300" height="44"/>
       <text x="380" y="195" text-anchor="middle">is a value it assigns read past it?</text>
-      <text class="note" x="380" y="212" text-anchor="middle">stays_within</text>
+      <text class="note" x="380" y="212" text-anchor="middle">read_past</text>
       <path class="edge" d="M380 140L380 176" marker-end="url(#ah2)"/>
 
       <rect class="box-kept" x="30" y="270" width="300" height="60"/>
-      <text class="t-kept" x="180" y="294" text-anchor="middle">copy, with fresh registers</text>
+      <text class="t-kept" x="180" y="294" text-anchor="middle">copy, sharing only those</text>
       <text x="180" y="316" text-anchor="middle">test b kept</text>
       <path class="edge-kept" d="M300 220L200 270" marker-end="url(#ahk2)"/>
-      <text class="t-kept" x="205" y="242">no: arms return</text>
+      <text class="t-kept" x="60" y="242">no, or it has several assignments</text>
 
       <rect class="box-lost" x="430" y="270" width="300" height="60"/>
       <text class="t-lost" x="580" y="294" text-anchor="middle">copy refused, block left empty</text>
       <text x="580" y="316" text-anchor="middle">test b still lost</text>
       <path class="edge-lost" d="M460 220L560 270" marker-end="url(#ahl2)"/>
-      <text class="t-lost" x="520" y="242">yes: arms assign</text>
+      <text class="t-lost" x="520" y="242">yes, assigned in one block</text>
     </svg>
     </div>
-    <figcaption>The refusal exists because a copy of an assigning tail printed names that crash: declared in one arm, undeclared in the other. Refusing avoids that crash and keeps the old wrong answer.</figcaption>
+    <figcaption>Later passes read a register assigned in one block as one value, so a second assignment printed names that crash. Refusing avoids that crash and keeps the old wrong answer. A register already assigned in several blocks is one variable, so the copy can assign it too.</figcaption>
   </figure>
 </section>
 
@@ -169,8 +169,8 @@ return "then";</pre></div>
 </section>
 
 <section>
-  <h2>Not fixed: the arms assign</h2>
-  <p><code>let r; if (a &amp;&amp; b || c) r = "then"; else r = "else"; return r;</code> Register <code>r0</code> is assigned in the tail and read by the <code>return</code> past it, so the copy is refused. The output is the same before and after the commit, and <code>t(1, 0, 0)</code> still returns <code>"then"</code> where the VM returns <code>"else"</code>.</p>
+  <h2>Fixed later: the arms assign</h2>
+  <p><code>let r; if (a &amp;&amp; b || c) r = "then"; else r = "else"; return r;</code> Register <code>r0</code> is assigned in the tail and read by the <code>return</code> past it. <code>48e2794</code> refused this copy and printed the code below, where <code>t(1, 0, 0)</code> returns <code>"then"</code>. Sharing <code>r0</code> now tests <code>arg1</code> and returns <code>"else"</code>, as the VM does.</p>
   <pre>let str;
 const tmp = arg0;
 if (!tmp) {
@@ -182,6 +182,6 @@ if (!tmp) {
   str = "then";   // arg1 is never tested
 }
 return str;</pre>
-  <p>The corpus test <code>branch_and_or</code> only covers the returning form, which is why the gates passed. The value form is the same bug and is still open.</p>
+  <p>Still open, recorded as <code>branch_and_or_assign</code>: <code>(a &amp;&amp; b || c) &amp;&amp; d</code>, the same test in a loop when its copy is refused, and two such tests in a row. Those need short-circuit conditions recovered as such.</p>
 </section>
 </main>
