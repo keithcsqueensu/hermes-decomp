@@ -19,7 +19,8 @@ use std::sync::Arc;
 pub(super) fn is_effectively_empty(stmts: &[Statement]) -> bool {
     stmts.iter().all(|s| match s {
         Statement::Block(inner) => inner.is_empty() || is_effectively_empty(inner),
-        Statement::Continue(_) => true,
+        // `continue` is no such thing: with code after the `if`, an `else { continue; }`
+        // left out fell into that code.
         _ => false,
     })
 }

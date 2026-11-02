@@ -12,5 +12,5 @@
 # 2026-11-01, G3d: Expensify raw 326 to 332. Module 1039's tail, 3 raw machines,
 # now prints on all 3 paths where it printed on one. None newly refused.
 equinox-11.43.0	quick	C:/apks/equinox/com.equinoxfitness.equinox_11.43.0/hermes_bundle/assets/index.android.bundle.backup	0	1	0
-expensify-9.5.14-3	large	C:/apks/expensify/org.me.mobiexpensifyg_9.5.14-3/hermes_bundle/assets/index.android.bundle.backup	0	1	305
+expensify-9.5.14-3	large	C:/apks/expensify/org.me.mobiexpensifyg_9.5.14-3/hermes_bundle/assets/index.android.bundle.backup	0	1	299
 discord-350.8	large	C:/apks/discord/com.discord_350.8/hermes_bundle/assets/index.android.bundle.backup	0	0	579

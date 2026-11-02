@@ -19,6 +19,8 @@ pub(crate) struct RecoveryCtx<'a> {
     // of the innermost `if`, or None inside a loop or `try`, whose end goes
     // somewhere else.
     pub falls_to: Vec<Option<BlockId>>,
+    // The block after each open `try`: an arm reaching it leaves the `try`.
+    pub fences: Vec<BlockId>,
     // The next register free for a copied block, once one has been copied.
     pub next_reg: std::cell::Cell<Option<u32>>,
     // try start -> the handlers whose range starts there, outermost first.

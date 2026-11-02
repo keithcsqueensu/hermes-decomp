@@ -18,7 +18,72 @@ use std::collections::{BTreeMap, HashSet};
 //    - If a node dominates 2 children that merge back, it's an `if`.
 //    - If a node is a loop header, recurse into the loop body.
 //    - Handle `break` and `continue` by checking loop stacks.
+// The first block of a `try` in a loop can be the loop's header too. The `try` opened
+// there first and the loop was never seen: `for (...) { try { ... } catch { } }` ran
+// its body once. An empty block in front takes the back edges and is the header, so
+// the loop opens and the `try` opens inside it. Not for `try { for (...) { } }`, whose
+// back edges are inside the `try`: that loop belongs inside as it stands.
+fn split_try_headers(cfg: &CFG) -> Option<CFG> {
+    let loops = detect_loops(cfg);
+    let headers: std::collections::BTreeSet<BlockId> = loops
+        .iter()
+        .filter(|l| {
+            cfg.exception_handlers.iter().any(|h| {
+                h.try_block_start == l.header
+                    && l.back_edges
+                        .iter()
+                        .all(|(from, _)| !h.try_blocks.contains(from))
+            })
+        })
+        .map(|l| l.header)
+        .collect();
+    if headers.is_empty() {
+        return None;
+    }
+    let mut out = cfg.clone();
+    for header in headers {
+        let front = out.create_block();
+        let retarget = |t: &mut BlockId| {
+            if *t == header {
+                *t = front;
+            }
+        };
+        for b in out.blocks_mut() {
+            match &mut b.terminator {
+                Terminator::Jump(t) => retarget(t),
+                Terminator::Branch {
+                    true_target,
+                    false_target,
+                    ..
+                } => {
+                    retarget(true_target);
+                    retarget(false_target);
+                }
+                Terminator::Switch { cases, default, .. } => {
+                    cases.iter_mut().for_each(|(_, t)| retarget(t));
+                    retarget(default);
+                }
+                _ => {}
+            }
+        }
+        if let Some(b) = out.get_mut(front) {
+            b.terminator = Terminator::Jump(header);
+        }
+        if out.entry == header {
+            out.entry = front;
+        }
+    }
+    Some(out)
+}
+
 pub fn analyze(cfg: &CFG) -> (Structure, Vec<LoopInfo>) {
+    match split_try_headers(cfg) {
+        Some(split) => analyze_split(&split),
+        None => analyze_split(cfg),
+    }
+}
+
+fn analyze_split(cfg: &CFG) -> (Structure, Vec<LoopInfo>) {
     let loops = detect_loops(cfg);
     let mut visited = HashSet::new();
     let loop_stack = Vec::new();
@@ -73,6 +138,7 @@ pub fn analyze(cfg: &CFG) -> (Structure, Vec<LoopInfo>) {
         visited: &mut visited,
         emitted: &mut emitted,
         falls_to: Vec::new(),
+        fences: Vec::new(),
         next_reg: std::cell::Cell::new(None),
         try_starts: &try_starts,
         open_tries: HashSet::new(),
@@ -123,12 +189,30 @@ fn reemit_exit(ctx: &RecoveryCtx<'_>, block_id: BlockId) -> Option<Structure> {
 fn reemit_branches(
     ctx: &RecoveryCtx<'_>,
     block_id: BlockId,
+    loop_stack: &[&LoopInfo],
     budget: &mut u32,
     copied: &mut HashSet<BlockId>,
 ) -> Option<Structure> {
     let merge = ctx.falls_to.last().copied().flatten();
     if merge == Some(block_id) {
         return Some(Structure::Block(block_id, vec![]));
+    }
+    // A loop's header or exit: the copy continues or breaks, as the block did. Only
+    // the innermost loop's: a pass can rewrite an outer loop and drop its label, and
+    // `continue label0` with no such label does not parse.
+    if let Some(l) = loop_stack.last() {
+        if block_id == l.header {
+            return Some(Structure::Continue(None));
+        }
+        if l.exit == Some(block_id) {
+            return Some(Structure::Break(None));
+        }
+    }
+    if loop_stack
+        .iter()
+        .any(|l| block_id == l.header || l.exit == Some(block_id))
+    {
+        return None;
     }
     if !ctx.emitted.contains(&block_id) || *budget == 0 {
         return None;
@@ -147,7 +231,7 @@ fn reemit_branches(
             Some(Structure::Block(block_id, stmts))
         }
         Terminator::Jump(next) => {
-            let next = reemit_branches(ctx, *next, budget, copied)?;
+            let next = reemit_branches(ctx, *next, loop_stack, budget, copied)?;
             Some(Structure::Sequence(vec![
                 Structure::Block(block_id, stmts),
                 next,
@@ -158,8 +242,8 @@ fn reemit_branches(
             true_target,
             false_target,
         } => {
-            let then_ = reemit_branches(ctx, *true_target, budget, copied)?;
-            let else_ = reemit_branches(ctx, *false_target, budget, copied)?;
+            let then_ = reemit_branches(ctx, *true_target, loop_stack, budget, copied)?;
+            let else_ = reemit_branches(ctx, *false_target, loop_stack, budget, copied)?;
             Some(Structure::Sequence(vec![
                 Structure::Block(block_id, stmts),
                 Structure::If {
@@ -370,11 +454,11 @@ fn renamable(tree: &Structure) -> Vec<u32> {
     out
 }
 
-fn reemit(ctx: &RecoveryCtx<'_>, block_id: BlockId) -> Structure {
+fn reemit(ctx: &RecoveryCtx<'_>, block_id: BlockId, loop_stack: &[&LoopInfo]) -> Structure {
     reemit_exit(ctx, block_id)
         .or_else(|| {
             let mut copied = HashSet::new();
-            let tree = reemit_branches(ctx, block_id, &mut 16, &mut copied)?;
+            let tree = reemit_branches(ctx, block_id, loop_stack, &mut 16, &mut copied)?;
             let from: Vec<BlockId> = copied.iter().copied().collect();
             let shared = read_past(ctx.cfg, &from, &copied)?;
             let mut tree = tree;
@@ -409,7 +493,7 @@ pub(super) fn recover_structure(
                 return Structure::Break(label);
             }
         }
-        return reemit(ctx, block_id);
+        return reemit(ctx, block_id, loop_stack);
     }
 
     let next_try = ctx.try_starts.get(&block_id).and_then(|hs| {
@@ -450,7 +534,11 @@ pub(super) fn recover_structure(
         // handler inside this one that starts at the same block opens there.
         ctx.open_tries.insert(catch_block_id);
         ctx.falls_to.push(None);
+        ctx.fences.extend(exit);
         let try_body = recover_structure(ctx, block_id, loop_stack);
+        if exit.is_some() {
+            ctx.fences.pop();
+        }
         ctx.open_tries.remove(&catch_block_id);
 
         // Now recover the catch body, temporarily un-visit the catch block
@@ -502,7 +590,7 @@ pub(super) fn recover_structure_inner(
                 return Structure::Break(label);
             }
         }
-        return reemit(ctx, block_id);
+        return reemit(ctx, block_id, loop_stack);
     }
 
     // Check if this is a loop header
@@ -618,7 +706,16 @@ pub(super) fn recover_structure_inner(
             // if. Otherwise the merge (the common tail, e.g. a shared `return`)
             // is wrongly absorbed into the `then` branch and the `else` becomes
             // empty.
-            if let Some(merge) = find_merge_point(ctx.cfg, block_id, true_target, false_target) {
+            // A merge past the open `try`'s fence is no merge inside it: an arm leaving
+            // the `try` falls out, and the other must not fall through that code.
+            let past_fence = |ctx: &RecoveryCtx<'_>, merge: BlockId| {
+                ctx.fences
+                    .last()
+                    .is_some_and(|f| *f != merge && reaches(ctx.cfg, *f, merge))
+            };
+            if let Some(merge) = find_merge_point(ctx.cfg, block_id, true_target, false_target)
+                .filter(|m| !past_fence(ctx, *m))
+            {
                 if merge != true_target || merge != false_target {
                     let merge_was_visited = ctx.visited.contains(&merge);
                     ctx.visited.insert(merge);
@@ -819,7 +916,52 @@ fn try_region_exit(
             }
         }
     }
-    let exit = match exits.as_slice() {
+    // A `try` can leave through an empty block where its catch jumps straight to what
+    // follows. Fenced at the empty block, the catch took that code for its own, and
+    // the `try` never ran it: in a loop, the increment. The fence goes past it.
+    let past_empty = |mut at: BlockId| {
+        for _ in 0..16 {
+            match cfg.get(at) {
+                Some(b) if b.statements.is_empty() => match b.terminator {
+                    Terminator::Jump(next) if next != at && !region.contains(&next) => at = next,
+                    _ => break,
+                },
+                _ => break,
+            }
+        }
+        at
+    };
+    let mut resolved: Vec<BlockId> = exits.iter().map(|e| past_empty(*e)).collect();
+    resolved.sort();
+    resolved.dedup();
+    // With a `return` inside, the code after the `try` is the exit its catch reaches
+    // without passing through another: the rest are the `try`'s own. Unfenced, that
+    // code printed inside and a throw skipped it, so a loop's increment never ran.
+    if resolved.len() > 1 && !exact_range {
+        let mut reached = Vec::new();
+        let mut seen: HashSet<BlockId> = HashSet::new();
+        let mut stack = vec![catch];
+        while let Some(b) = stack.pop() {
+            if !seen.insert(b) || region.contains(&b) {
+                continue;
+            }
+            let at = past_empty(b);
+            if resolved.contains(&at) {
+                if !reached.contains(&at) {
+                    reached.push(at);
+                }
+                continue;
+            }
+            if let Some(block) = cfg.get(at) {
+                stack.extend(block.successors());
+            }
+        }
+        return match reached.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        };
+    }
+    let exit = match resolved.as_slice() {
         [only] => *only,
         _ => return None,
     };
@@ -840,6 +982,20 @@ fn try_region_exit(
         }
     }
     None
+}
+
+fn reaches(cfg: &CFG, from: BlockId, to: BlockId) -> bool {
+    let mut seen = HashSet::new();
+    let mut stack = vec![from];
+    while let Some(b) = stack.pop() {
+        if b == to {
+            return true;
+        }
+        if seen.insert(b) {
+            stack.extend(cfg.get(b).map(|x| x.successors()).unwrap_or_default());
+        }
+    }
+    false
 }
 
 pub(super) fn find_merge_point(

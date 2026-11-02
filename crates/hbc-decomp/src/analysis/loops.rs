@@ -114,6 +114,16 @@ fn find_loop_exit(
         }
     }
 
+    // The test at the back edge decides the loop. Another way out of the body is a
+    // `return` or a `break` inside it, and taken for the exit, `break` went there.
+    for (from, _) in back_edges {
+        if let Some(block) = cfg.get(*from) {
+            if let Some(succ) = block.successors().into_iter().find(|s| !body.contains(s)) {
+                return Some(succ);
+            }
+        }
+    }
+
     for &block_id in body {
         if let Some(block) = cfg.get(block_id) {
             for succ in block.successors() {
@@ -132,14 +142,26 @@ pub fn compute_dominators(cfg: &CFG) -> BTreeMap<BlockId, HashSet<BlockId>> {
     let mut dom: BTreeMap<BlockId, HashSet<BlockId>> = BTreeMap::new();
 
     // Exception catch blocks are entered from outside normal control flow (the
-    // exception edge is not a CFG successor), so they have no normal predecessors
-    // and are unreachable from `entry`. Treat them as additional roots: without
-    // this they keep the degenerate "all blocks" dominator set, which makes their
-    // own outgoing edge (e.g. `catch -> return`) look like a back edge and
-    // spuriously flags the target as a loop header, that dropped the `return`
-    // out of `catch (e) { return e.message; }`.
+    // exception edge is not a CFG successor), so they have no normal predecessors.
+    // They are entered from the blocks of their protected range, which is where
+    // their dominators come from. As roots of their own, the block a catch rejoins
+    // was dominated by nothing above the `try`: in `for (...) { try { } catch { } }`
+    // the header did not dominate the latch, the back edge went unseen, and the loop
+    // was lost. Left with the degenerate "all blocks" set, a catch's outgoing edge
+    // (`catch -> return`) would look like a back edge. One with no range is a root.
+    let mut catch_sources: BTreeMap<BlockId, Vec<BlockId>> = BTreeMap::new();
+    for h in &cfg.exception_handlers {
+        catch_sources
+            .entry(h.catch_block)
+            .or_insert_with(|| cfg.exception_edge_sources(h.catch_block));
+    }
     let roots: HashSet<BlockId> = std::iter::once(cfg.entry)
-        .chain(cfg.exception_handlers.iter().map(|h| h.catch_block))
+        .chain(
+            catch_sources
+                .iter()
+                .filter(|(_, sources)| sources.is_empty())
+                .map(|(id, _)| *id),
+        )
         .collect();
 
     for id in cfg.block_ids() {
@@ -153,7 +175,12 @@ pub fn compute_dominators(cfg: &CFG) -> BTreeMap<BlockId, HashSet<BlockId>> {
     }
 
     // Fixed-point iteration
-    let rpo = cfg.reverse_postorder();
+    let mut rpo = cfg.reverse_postorder();
+    for id in catch_sources.keys() {
+        if !rpo.contains(id) {
+            rpo.push(*id);
+        }
+    }
     let mut changed = true;
 
     while changed {
@@ -163,7 +190,10 @@ pub fn compute_dominators(cfg: &CFG) -> BTreeMap<BlockId, HashSet<BlockId>> {
                 continue;
             }
 
-            let preds = cfg.predecessors(block_id);
+            let mut preds = cfg.predecessors(block_id);
+            if let Some(sources) = catch_sources.get(&block_id) {
+                preds.extend(sources.iter().copied());
+            }
             if preds.is_empty() {
                 continue;
             }

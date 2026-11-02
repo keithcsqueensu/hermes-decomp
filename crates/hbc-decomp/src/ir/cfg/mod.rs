@@ -48,7 +48,7 @@ pub struct CfgExceptionHandler {
     pub exact_range: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CFG {
     pub entry: BlockId,
     blocks: BTreeMap<BlockId, BasicBlock>,

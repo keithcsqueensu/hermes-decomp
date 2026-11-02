@@ -302,6 +302,25 @@ counts unchanged; no string lost; raw unchanged. `loop_body_then_break` and `loo
 pass. **Open:** a header's value read after the loop stays hoisted (`loop_header_value_after`), and a
 header branching to itself with more of the loop after it (`loop_header_self_branch`).
 
+**A `try` in a loop. Done (2026-11-02).** Wrong output outside generators: any `for` holding a `try`
+ran its body once. A catch was a root of the dominator tree, so the block it rejoins was dominated by
+nothing above the `try`, the back edge went unseen, and the loop was lost. Dominators now come from
+the protected range. Four more fixes were needed once the loop was seen. A header that starts a `try`
+gets an empty block in front, so the loop opens first. The fence after a `try` goes past empty blocks,
+and with several exits it takes the one the catch reaches first. A merge past the fence is no merge
+inside the `try`. A copied tail reaching the innermost loop's header or exit continues or breaks.
+
+`continue` no longer counts as empty, in `is_effectively_empty` and `is_effectively_empty_body`: an
+`else { continue; }` was left out and fell into the code after it. The loop's exit now prefers the
+back edge's way out.
+
+`try_in_loop`, `try_continue_in_loop` and `try_in_loop_cases` pass on v96 and v98. Against the previous
+step: undeclared 1519 to 1517, 13107 to 13077, 5530 to 5530; Expensify raw 305 to 299, Discord 579;
+0 unparsable. Output changes widely (equinox shrinks 1.8%), because code after a `try` no longer prints
+inside it and its catch: Discord's module 964 had most of its body in a `try`. Strings lost, each read:
+a dead enum (`Stopped`), `require` placeholders from those tails, a duplicate import reference. One
+real: `_NullFlags`, recorded as `switch_case_break_if`, wrong before and after in different ways.
+
 ### G4 — async (medium)
 
 `spawnAsync` wrappers and the W14 detection: an async step's suspends become `await`. The

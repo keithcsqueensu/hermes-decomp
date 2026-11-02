@@ -312,8 +312,7 @@ fn is_effectively_empty_body(stmts: &[Statement]) -> bool {
     stmts.iter().all(|s| {
         matches!(s,
             Statement::Block(inner) if inner.is_empty() || is_effectively_empty_body(inner)
-        ) || matches!(s, Statement::Continue(_))
-            || matches!(s, Statement::Comment(_))
+        ) || matches!(s, Statement::Comment(_))
     })
 }
 
