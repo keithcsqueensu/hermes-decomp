@@ -253,6 +253,25 @@ fn rename_target(
                 }
             }
         }
+        AssignTarget::DestructuringArrayRest { elements, rest } => {
+            for entry in elements.iter_mut().flatten() {
+                rename_target(&mut entry.0, reg_map, var_map);
+                if let Some(def) = &mut entry.1 {
+                    rename_expr(def, reg_map, var_map);
+                }
+            }
+            rename_target(rest, reg_map, var_map);
+        }
+        AssignTarget::DestructuringObjectRest { properties, rest } => {
+            for (_, t, def) in properties {
+                rename_target(t, reg_map, var_map);
+                if let Some(d) = def {
+                    rename_expr(d, reg_map, var_map);
+                }
+            }
+            rename_target(rest, reg_map, var_map);
+        }
+        AssignTarget::Rest(t) => rename_target(t, reg_map, var_map),
         _ => {}
     }
 }
@@ -321,6 +340,20 @@ fn rename_expr(
             rename_expr(value, reg_map, var_map);
         }
         Expression::Spread(e) => rename_expr(e, reg_map, var_map),
+        // No arm here left `function f(style) { return <A b={arg0.b} />; }`.
+        Expression::JSXElement {
+            tag,
+            attributes,
+            children,
+        } => {
+            rename_expr(tag, reg_map, var_map);
+            for (_, v) in attributes {
+                rename_expr(v, reg_map, var_map);
+            }
+            for c in children {
+                rename_expr(c, reg_map, var_map);
+            }
+        }
         Expression::TemplateLiteral { expressions, .. } => {
             for e in expressions {
                 rename_expr(e, reg_map, var_map);
@@ -345,6 +378,25 @@ fn rename_expr(
 #[cfg(test)]
 mod loop_head_tests {
     use super::rename_param_registers;
+
+    // The names printed from a parameter inside JSX, where the walk used to stop.
+    #[test]
+    fn a_parameter_read_inside_jsx_takes_the_parameter_name() {
+        use crate::ir::{Expression, Statement, Value};
+        let arg = || Expression::Value(Value::Parameter(0));
+        let mut stmts = vec![Statement::Return(Some(Expression::JSXElement {
+            tag: Box::new(Expression::member(arg(), "Row")),
+            attributes: vec![("a".to_string(), Expression::member(arg(), "a"))],
+            children: vec![arg()],
+        }))];
+        rename_param_registers(&mut stmts, &[Some("props".into())]);
+        let Statement::Return(Some(e)) = &stmts[0] else {
+            panic!()
+        };
+        let text = crate::ir::expr::display::format_expr(e);
+        assert!(!text.contains("arg0"), "{text}");
+        assert!(text.contains("<props.Row"), "{text}");
+    }
     use crate::ir::{AssignTarget, Binding, Expression, Statement, Value};
 
     #[test]

@@ -433,6 +433,7 @@ pub fn format_expr(expr: &Expression) -> String {
             } else {
                 format!(" {}", attrs.join(" "))
             };
+            let tag = tag.jsx_tag_text().unwrap_or_else(|| format_expr(tag));
 
             if children.is_empty() {
                 format!("<{tag}{attr_str} />")

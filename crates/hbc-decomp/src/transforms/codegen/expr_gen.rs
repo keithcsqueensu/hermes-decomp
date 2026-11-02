@@ -519,6 +519,15 @@ impl Codegen {
                 children,
             } => {
                 use crate::ir::{Constant, Value};
+                // Named here like any other reference. Inlining can leave a tag JSX
+                // cannot write (`<f() />`, or `<foo />`, an intrinsic), so that one is
+                // a call.
+                let Some(tag) = tag.jsx_tag_text().map(|text| match tag.as_ref() {
+                    Expression::Value(Value::Constant(_)) => text,
+                    t => self.generate_expr(t),
+                }) else {
+                    return self.jsx_as_call(tag, attributes, children);
+                };
                 let mut attrs = Vec::new();
                 for (key, val) in attributes {
                     if key == "..." {
@@ -570,6 +579,31 @@ impl Codegen {
                 format!("/* {} {} */", opcode, operands.join(", "))
             }
         }
+    }
+
+    fn jsx_as_call(
+        &self,
+        tag: &crate::ir::Expression,
+        attributes: &[(String, crate::ir::Expression)],
+        children: &[crate::ir::Expression],
+    ) -> String {
+        let props: Vec<String> = attributes
+            .iter()
+            .map(|(k, v)| {
+                let v = self.generate_expr(v);
+                if k == "..." {
+                    format!("...{v}")
+                } else {
+                    format!("{k:?}: {v}")
+                }
+            })
+            .collect();
+        let mut args = vec![
+            self.generate_expr(tag),
+            format!("{{ {} }}", props.join(", ")),
+        ];
+        args.extend(children.iter().map(|c| self.generate_expr(c)));
+        format!("React.createElement({})", args.join(", "))
     }
 
     pub(super) fn generate_expr_with_parens(

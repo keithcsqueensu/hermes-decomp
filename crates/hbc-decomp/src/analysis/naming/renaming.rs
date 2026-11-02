@@ -303,6 +303,21 @@ fn rename_expr(expr: Expression, names: &BTreeMap<u32, String>) -> Expression {
             delegate,
         },
         Expression::Await(inner) => Expression::Await(Box::new(rename_expr(*inner, names))),
+        Expression::JSXElement {
+            tag,
+            attributes,
+            children,
+        } => Expression::JSXElement {
+            tag: Box::new(rename_expr(*tag, names)),
+            attributes: attributes
+                .into_iter()
+                .map(|(k, v)| (k, rename_expr(v, names)))
+                .collect(),
+            children: children
+                .into_iter()
+                .map(|c| rename_expr(c, names))
+                .collect(),
+        },
         other => other,
     }
 }

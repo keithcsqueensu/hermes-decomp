@@ -457,7 +457,7 @@ fn resolve_expr(expr: Expression, info: &Resolver) -> Expression {
             attributes,
             children,
         } => Expression::JSXElement {
-            tag,
+            tag: Box::new(resolve_expr(*tag, info)),
             attributes: attributes
                 .into_iter()
                 .map(|(k, v)| (k, resolve_expr(v, info)))

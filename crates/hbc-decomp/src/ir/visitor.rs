@@ -228,10 +228,11 @@ pub trait Visitor<'a> {
                 }
             }
             Expression::JSXElement {
+                tag,
                 attributes,
                 children,
-                ..
             } => {
+                self.visit_expression(tag);
                 for (_, expr) in attributes {
                     self.visit_expression(expr);
                 }
@@ -509,10 +510,11 @@ pub trait MutVisitor {
                 }
             }
             Expression::JSXElement {
+                tag,
                 attributes,
                 children,
-                ..
             } => {
+                self.visit_expression(tag);
                 for (_, expr) in attributes {
                     self.visit_expression(expr);
                 }

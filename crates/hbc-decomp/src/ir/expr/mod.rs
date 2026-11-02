@@ -89,7 +89,10 @@ pub enum Expression {
     },
     Await(Box<Expression>),
     JSXElement {
-        tag: String,
+        // An expression, so a read of the tag is a read like any other. As a string
+        // no pass saw it: `x = mod; <x.Row />` lost `x =` as dead, and a rename left
+        // the tag on the old name. A string constant is an intrinsic, `""` a Fragment.
+        tag: Box<Expression>,
         attributes: Vec<(String, Expression)>,
         children: Vec<Expression>,
     },
@@ -201,6 +204,31 @@ impl Expression {
             | Expression::Await(_)
             | Expression::Unknown { .. } => true,
             _ => false,
+        }
+    }
+}
+
+impl Expression {
+    // The tag as written in JSX, or `None` if this expression cannot be one. A
+    // lowercase name would read as an intrinsic, the string, not the variable.
+    pub fn jsx_tag_text(&self) -> Option<String> {
+        fn path(e: &Expression) -> Option<String> {
+            match e {
+                Expression::Value(Value::Binding(super::types::Binding::Variable(v))) => {
+                    Some(crate::util::sanitize_identifier(&v.name))
+                }
+                Expression::Member {
+                    object,
+                    property: PropertyKey::Ident(p),
+                    ..
+                } => Some(format!("{}.{p}", path(object)?)),
+                _ => None,
+            }
+        }
+        match self {
+            Expression::Value(Value::Constant(Constant::String(s))) => Some(s.clone()),
+            Expression::Member { .. } => path(self),
+            _ => path(self).filter(|n| !n.starts_with(|c: char| c.is_ascii_lowercase())),
         }
     }
 }

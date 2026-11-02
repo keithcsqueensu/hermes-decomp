@@ -96,7 +96,7 @@ fn resolves_props_variable_one_hop() {
         Statement::Expr(Expression::JSXElement {
             tag, attributes, ..
         }) => {
-            assert_eq!(tag, "div");
+            assert_eq!(tag.jsx_tag_text().unwrap(), "div");
             assert!(attributes.iter().any(|(k, _)| k == "id"));
         }
         other => panic!("expected jsx expr, got {other:?}"),
@@ -148,7 +148,7 @@ fn test_fragment_empty_tag() {
     JSXReconstructor::new().visit_expression(&mut expr);
     match expr {
         Expression::JSXElement { tag, children, .. } => {
-            assert_eq!(tag, "");
+            assert_eq!(tag.jsx_tag_text().unwrap(), "");
             assert_eq!(children.len(), 1);
         }
         other => panic!("{other:?}"),
@@ -194,7 +194,7 @@ fn test_modern_jsx_member_factory() {
             attributes,
             children,
         } => {
-            assert_eq!(tag, "ul");
+            assert_eq!(tag.jsx_tag_text().unwrap(), "ul");
             assert_eq!(attributes.len(), 1);
             assert_eq!(children.len(), 2);
         }
@@ -282,7 +282,7 @@ fn self_referential_props_binding_terminates() {
         Statement::Return(Some(Expression::JSXElement {
             tag, attributes, ..
         })) => {
-            assert_eq!(tag, "Outer");
+            assert_eq!(tag.jsx_tag_text().unwrap(), "Outer");
             assert!(attributes.iter().any(|(k, _)| k == "accessory"));
         }
         other => panic!("expected jsx return, got {other:?}"),
@@ -437,7 +437,7 @@ fn a_variable_tag_is_sanitised_like_its_binding() {
         );
         JSXReconstructor::new().visit_expression(&mut e);
         match e {
-            Expression::JSXElement { tag, .. } => tag,
+            Expression::JSXElement { tag, .. } => tag.jsx_tag_text().unwrap(),
             other => panic!("expected JSX, got {other:?}"),
         }
     };
@@ -470,13 +470,13 @@ fn a_lowercase_variable_stays_a_call_and_a_keyed_fragment_keeps_its_name() {
         Expression::JSXElement {
             tag, attributes, ..
         } => {
-            assert_eq!(tag, "_Fragment");
+            assert_eq!(tag.jsx_tag_text().unwrap(), "_Fragment");
             assert_eq!(attributes[0].0, "key");
         }
         other => panic!("expected JSX, got {other:?}"),
     }
     match convert(vec![var("_Fragment"), props()]) {
-        Expression::JSXElement { tag, .. } => assert_eq!(tag, ""),
+        Expression::JSXElement { tag, .. } => assert_eq!(tag.jsx_tag_text().unwrap(), ""),
         other => panic!("expected JSX, got {other:?}"),
     }
 }
@@ -527,4 +527,23 @@ fn a_store_reading_a_later_assignment_is_not_folded_up() {
     ];
     let out = fold::fold_prop_assignments(stmts);
     assert_eq!(out.len(), 3, "the store stays after `p = …`: {out:?}");
+}
+
+// A pass that counts reads has to see the tag, or the definition of `x` in
+// `x = mod; <x.Row />` looks dead.
+#[test]
+fn a_tag_is_a_read_of_its_variable() {
+    let var = |n: &str| Expression::Value(Value::Binding(Binding::Variable(n.into())));
+    let mut e = Expression::call(
+        Expression::member(var("Fragment"), "jsx"),
+        vec![
+            Expression::member(var("x"), "Row"),
+            Expression::Object { properties: vec![] },
+        ],
+    );
+    JSXReconstructor::new().visit_expression(&mut e);
+    assert!(matches!(e, Expression::JSXElement { .. }));
+    let mut uses = std::collections::BTreeMap::new();
+    props::count_variable_uses(&[Statement::Expr(e)], &mut uses);
+    assert_eq!(uses.get("x"), Some(&1));
 }

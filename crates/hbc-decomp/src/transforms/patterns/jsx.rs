@@ -111,25 +111,20 @@ fn build_jsx_element(callee: &Expression, arguments: &[Expression]) -> Option<Ex
         // A lowercase tag is an intrinsic element, the string, not the
         // variable: `<closure_0 />` rendered a `closure_0` host element where
         // the bytecode passed a component. Such a name stays a call.
-        Expression::Value(Value::Binding(Binding::Variable(v))) => {
-            let name = crate::util::sanitize_identifier(&v.name);
-            if name.starts_with(|c: char| c.is_ascii_lowercase()) {
-                return None;
-            }
-            name
-        }
+        Expression::Value(Value::Binding(Binding::Variable(_))) => arguments[0].jsx_tag_text()?,
         Expression::Member {
             object, property, ..
         } => {
-            if let (
-                Expression::Value(Value::Binding(Binding::Variable(obj_name))),
-                PropertyKey::Ident(prop_name),
-            ) = (object.as_ref(), property)
-            {
-                format!("{}.{prop_name}", crate::util::sanitize_identifier(obj_name))
-            } else {
+            if !matches!(
+                (object.as_ref(), property),
+                (
+                    Expression::Value(Value::Binding(Binding::Variable(_))),
+                    PropertyKey::Ident(_),
+                )
+            ) {
                 return None;
             }
+            arguments[0].jsx_tag_text()?
         }
         _ => return None,
     };
@@ -184,13 +179,13 @@ fn build_jsx_element(callee: &Expression, arguments: &[Expression]) -> Option<Ex
 
     // A Fragment prints as `<>...</>` only without attributes: a keyed one
     // has to name itself (`< key={k}>` is not JSX).
-    let tag_name = if is_fragment && jsx_attributes.is_empty() {
-        String::new()
+    let tag = if is_fragment && jsx_attributes.is_empty() {
+        Expression::constant(Constant::String(String::new()))
     } else {
-        tag_name
+        arguments[0].clone()
     };
     Some(Expression::JSXElement {
-        tag: tag_name,
+        tag: Box::new(tag),
         attributes: jsx_attributes,
         children: jsx_children,
     })

@@ -330,8 +330,19 @@ JSX fold rely on it. `inline_past_global_write` and `inline_store_order` pass.
 Against the previous step: undeclared 1517 to 1516, 13077 to 13036, 5530 to 5520; raw unchanged; closing
 JSX tags 13624 to 13623 in Expensify. Discord gains 1552 `.call(tmp` forms where a method read no longer
 crosses a store: right, and less readable. A barrier on every store instead took undeclared to 1330, 12532,
-5312 and Discord raw to 552, but lost most JSX in Expensify (13624 to 6922). That gap is unexplained and
-may hold more wrong output worth reading.
+5312 and Discord raw to 552, but lost most JSX in Expensify (13624 to 6922). That gap is now explained, below.
+
+**The undeclared gap. Done (2026-11-02).** The broad barrier hid two bugs by keeping statements apart. A
+parameter read inside JSX kept `arg0` under a renamed signature, because `rename_expr` had no JSX arm:
+`function f(style) { return <A b={arg0.b} />; }`. And a JSX tag was a string no pass could see, so
+`x = mod; <x.Row />` lost `x =` as dead and printed `mod; <tmpResult.Row />`. The tag is now an expression;
+one JSX cannot write prints as `React.createElement`.
+
+Undeclared 1516 to 752, 13036 to 12494, 5520 to 5082, below the broad barrier in all three (1330, 12532,
+5312), no strings lost, closing tags not down. What the broad barrier appeared to fix beyond that is renumbering:
+the same reads under another temp number (`tmp229.e.r`, `tmp230.e.r`). Those are open and separate: a `for…in`
+lowered to `Object.keys()` with no argument and a read of a key nothing defines, and `tmpN.e.r` with no
+definition, both in Expensify.
 
 ### G4 — async (medium)
 

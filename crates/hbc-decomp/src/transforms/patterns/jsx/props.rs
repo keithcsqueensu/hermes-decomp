@@ -166,7 +166,7 @@ impl<'a> Visitor<'a> for WrittenNames {
     }
 }
 
-fn count_variable_uses(stmts: &[Statement], uses: &mut BTreeMap<String, usize>) {
+pub(super) fn count_variable_uses(stmts: &[Statement], uses: &mut BTreeMap<String, usize>) {
     struct C<'a>(&'a mut BTreeMap<String, usize>);
     impl<'a, 'b> Visitor<'b> for C<'a> {
         fn visit_expression(&mut self, e: &'b Expression) {

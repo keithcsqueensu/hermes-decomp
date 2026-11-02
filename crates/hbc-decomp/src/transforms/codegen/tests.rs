@@ -441,7 +441,9 @@ mod nested_write_import_tests {
 #[test]
 fn jsx_attribute_strings_print_without_escapes() {
     let element = |value: &str| Expression::JSXElement {
-        tag: "View".to_string(),
+        tag: Box::new(crate::ir::Expression::constant(
+            crate::ir::Constant::String("View".to_string()),
+        )),
         attributes: vec![(
             "label".to_string(),
             Expression::constant(Constant::String(value.to_string())),

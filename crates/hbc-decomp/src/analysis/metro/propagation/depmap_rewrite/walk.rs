@@ -211,11 +211,11 @@ fn rewrite_expr(
         Expression::Yield { value, .. } => rewrite_expr(value, deps, aliases, roles),
         Expression::Await(e) | Expression::Spread(e) => rewrite_expr(e, deps, aliases, roles),
         Expression::JSXElement {
+            tag,
             attributes,
             children,
-            ..
         } => {
-            let mut c = 0u64;
+            let mut c = rewrite_expr(tag, deps, aliases, roles);
             for (_, v) in attributes.iter_mut() {
                 c += rewrite_expr(v, deps, aliases, roles);
             }
