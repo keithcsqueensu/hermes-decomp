@@ -12,9 +12,7 @@ v60	nested_destr	same as v59
 v62	nested_destr	same as v59
 v71	nested_destr	same as v59
 v96	capture_vs_local	a capture beside a local of the same name (closure model I2): the ancestor slot `a` and `read`'s fresh array are both `items`, so `a[1]` reads the local; K4.7 renames one side (v98 names them apart and passes)
-v98	gen_try_finally	raw generator machine: a yield inside try/finally (G3b)
 v98	gen_delegate	raw generator machine: yield* lowered to a delegation loop (G2)
-v96	gen_if	v96 generator (real opcodes): the else branch's resume is printed `return yield 2`, so the yield after the if/else is lost
 v96	gen_try_finally	v96 generator: the finally is lowered to catch-and-rethrow, so `.return()` skips it
 v96	gen_delegate	v96 generator: yield* is not recombined, its lowered delegation loop prints with HermesBuiltin helpers
 v96	branch_and_or_value	`a && b || c` whose arms assign: the value is read past the copy, so the copy is refused and b is lost (G3d, open)
@@ -27,3 +25,10 @@ v96	for_of_empty_body	a for-of with an empty body is deleted, so its iterator is
 v96	try_continue_in_loop	a `continue` inside a `try` in a loop: the loop is lost and the body runs once
 v98	for_of_empty_body	a for-of with an empty body is deleted, so its iterator is not drained (cleanup.rs, very likely; v98 keeps one next call)
 v98	try_continue_in_loop	a `continue` inside a `try` in a loop: the loop is lost and the body runs once
+v96	gen_finally_cases	v96 generator: the finally stays a catch and rethrow, with its copy inside the try, so `.return` skips it
+v96	gen_try_catch_finally	v96 generator: the finally stays a catch and rethrow
+v98	gen_try_catch_finally	a try with both catch and finally in a machine stays raw: the folded form does not match its `.return` sides
+v96	try_in_loop	a `for` holding a `try` loses its loop: the body runs once
+v98	try_in_loop	a `for` holding a `try` loses its loop: the body runs once
+v96	inline_past_global_write	`var s = log.join(); log = []` inlines the read past the write to the global
+v98	inline_past_global_write	`var s = log.join(); log = []` inlines the read past the write to the global

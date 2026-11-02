@@ -275,6 +275,22 @@ returned nothing on those paths and the new one throws on the tag, so both are w
 one is loud. Copies made by `reemit_exit` keep their registers: renaming them lost 36 strings on
 Discord and did not help `tmpResult`.
 
+**G3b, `finally` on v98. Done in part (2026-11-01).** A `.return` side that leaves the try state, runs
+straight-line code and returns its value now reads. `fold_finally` turns the catch and rethrow plus the
+copy after it into a real `finally`, and every side must have run the same code, compared with registers
+renumbered, or the machine stays raw. `gen_try_finally` and `gen_finally_cases` pass. **Still raw:** a
+`try` with both `catch` and `finally` (`gen_try_catch_finally`), a `finally` with a branch or a `yield`
+of its own, and a `return` through a `finally` with a call in it (several ways out). **Still wrong on
+v96:** that lowering is read by a different path and prints the catch and rethrow, so `.return` skips
+the `finally`.
+
+`finally` and `gen_if` together: Expensify raw 307 to 305, Discord 618 to 579; undeclared 1506 to 1500,
+13134 to 13132, 5528 to 5489; no string lost. "protocol: unexpected branch" falls from 18, 170 to 8, 14.
+
+**`gen_if`, v96. Done (2026-11-01).** An exception to the rule that v96 output does not change: this is
+wrong output. `ResumeGenerator`'s return flag tested with `JmpFalse` jumps to continue, and the path
+always kept the false side, so `return yield 2` printed and the code after it was lost.
+
 ### G4 — async (medium)
 
 `spawnAsync` wrappers and the W14 detection: an async step's suspends become `await`. The

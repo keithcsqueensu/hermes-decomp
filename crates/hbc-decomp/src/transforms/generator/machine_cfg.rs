@@ -58,6 +58,8 @@ pub struct Machine {
     pub suspends: Vec<Suspend>,
     // Blocks returning `{ value, done: true }` from the body.
     pub completes: Vec<BlockId>,
+    // What the `.return` sides run on their way out: a `finally`'s copies.
+    pub finally_copies: Vec<Vec<Statement>>,
     // The blocks reached from the resume entries.
     pub body: BTreeSet<BlockId>,
 }
@@ -111,6 +113,8 @@ struct Reader<'a> {
     alias: HashMap<u32, Src>,
     // The slot holding which `try` the machine is in, 0 for none (G3).
     try_slot: Option<Slot>,
+    // What each `.return` side runs before it returns: a `finally`'s copy.
+    finally_copies: std::cell::RefCell<Vec<Vec<Statement>>>,
 }
 
 impl Reader<'_> {
@@ -280,6 +284,65 @@ impl Reader<'_> {
         matches!(self.result(id, e), Some((v, true)) if self.src(&v) == Some(Src::Param(RESUME)))
     }
 
+    // A `.return` inside a `try`/`finally`: leave the try state, run the finally,
+    // return the value. What it runs, or None if that is not all it does. A finally
+    // with a branch or a `yield` of its own has no such straight line.
+    fn finally_side(&self, id: BlockId, status: Slot) -> Option<Vec<Statement>> {
+        self.try_slot?;
+        let mut out = Vec::new();
+        let mut left_try = false;
+        let mut at = id;
+        for _ in 0..32 {
+            let b = self.cfg.get(at)?;
+            let object = match &b.terminator {
+                Terminator::Return(Some(Expression::Value(Value::Binding(Binding::Register(
+                    r,
+                ))))) => Some(*r),
+                _ => None,
+            };
+            for s in &b.statements {
+                if let Some((sl, _)) = self.slot_of(s) {
+                    if sl == status {
+                        continue;
+                    }
+                    if Some(sl) == self.try_slot {
+                        left_try = true;
+                        continue;
+                    }
+                }
+                if let Some(o) = object {
+                    let of_result = match s {
+                        Statement::Assign {
+                            target: AssignTarget::Binding(Binding::Register(t)),
+                            ..
+                        } => *t == o,
+                        Statement::Assign {
+                            target: AssignTarget::Index { object: t, .. },
+                            ..
+                        } => {
+                            matches!(t, Expression::Value(Value::Binding(Binding::Register(r))) if *r == o)
+                        }
+                        _ => false,
+                    };
+                    if of_result {
+                        continue;
+                    }
+                }
+                out.push(s.clone());
+            }
+            match &b.terminator {
+                Terminator::Jump(t) => at = *t,
+                Terminator::Return(Some(e)) => {
+                    let (v, done) = self.result(at, e)?;
+                    return (done && left_try && self.src(&v) == Some(Src::Param(RESUME)))
+                        .then_some(out);
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
     // The block a label's resume protocol runs on to.
     fn protocol(&self, entry: BlockId, status: Slot) -> Result<BlockId, &'static str> {
         let mut n = self.skip_to_protocol(entry, status);
@@ -295,6 +358,13 @@ impl Reader<'_> {
             match k {
                 1 if !threw && self.throw_side(on, status) => threw = true,
                 2 if !returned && self.return_side(on, status) => returned = true,
+                2 if !returned => {
+                    let copy = self
+                        .finally_side(on, status)
+                        .ok_or("protocol: unexpected branch")?;
+                    self.finally_copies.borrow_mut().push(copy);
+                    returned = true;
+                }
                 _ => return Err("protocol: unexpected branch"),
             }
             n = if threw && returned {
@@ -451,6 +521,7 @@ pub fn read(cfg: &CFG) -> Result<Machine, &'static str> {
         cfg,
         alias: aliases(cfg),
         try_slot: None,
+        finally_copies: Default::default(),
     };
     // The status guard.
     let mut n = cfg.entry;
@@ -672,6 +743,7 @@ pub fn read(cfg: &CFG) -> Result<Machine, &'static str> {
         resumes,
         suspends,
         completes,
+        finally_copies: r.finally_copies.take(),
         body,
     })
 }
@@ -881,6 +953,7 @@ pub fn rewrite(cfg: &mut CFG, m: &Machine) -> Result<(), &'static str> {
             cfg,
             alias: alias.clone(),
             try_slot: m.try_slot,
+            finally_copies: Default::default(),
         };
         let is_machine_store = |s: &Statement| matches!(reader.slot_of(s), Some((sl, _)) if sl == m.status || sl == m.label);
         // What a block holds once the machine's stores and, where it returns a
@@ -975,6 +1048,7 @@ pub fn rewrite(cfg: &mut CFG, m: &Machine) -> Result<(), &'static str> {
                 cfg,
                 alias: alias.clone(),
                 try_slot: m.try_slot,
+                finally_copies: Default::default(),
             };
             b.statements
                 .iter()
@@ -1307,6 +1381,197 @@ fn quiet_return(cfg: &CFG, from: BlockId) -> Option<Vec<BlockId>> {
     None
 }
 
+// --- `finally` (G3b) ---
+
+// A statement list without its copies of what nothing in the list reads.
+fn essential(stmts: &[Statement]) -> Vec<Statement> {
+    let mut read = BTreeSet::new();
+    let mut out = Vec::new();
+    for s in stmts.iter().rev() {
+        if matches!(s, Statement::Comment(_)) {
+            continue;
+        }
+        if let Statement::Assign {
+            target: AssignTarget::Binding(Binding::Register(r)),
+            value: Expression::Value(_),
+        } = s
+        {
+            if !read.contains(r) {
+                continue;
+            }
+        }
+        let mut regs = Regs::default();
+        regs.visit_statement(s);
+        read.extend(regs.read);
+        out.push(s.clone());
+    }
+    out.reverse();
+    out
+}
+
+// Two copies of a finally differ in their registers, numbered here as first met.
+fn canon(stmts: &[Statement]) -> String {
+    #[derive(Default)]
+    struct Number(HashMap<u32, u32>);
+    impl Number {
+        fn of(&mut self, r: &mut u32) {
+            let n = self.0.len() as u32;
+            *r = *self.0.entry(*r).or_insert(n);
+        }
+    }
+    impl MutVisitor for Number {
+        fn visit_expression(&mut self, e: &mut Expression) {
+            if let Expression::Value(Value::Binding(Binding::Register(r))) = e {
+                self.of(r);
+            }
+            self.walk_expression(e);
+        }
+        fn visit_assign_target(&mut self, t: &mut AssignTarget) {
+            if let AssignTarget::Binding(Binding::Register(r)) = t {
+                self.of(r);
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut number = Number::default();
+    let mut copy = stmts.to_vec();
+    for s in &mut copy {
+        number.visit_statement(s);
+    }
+    format!("{copy:?}")
+}
+
+// A catch that keeps the exception, runs some code and throws it again: that code.
+fn rethrown(param: &str, catch: &[Statement]) -> Option<Vec<Statement>> {
+    let is_reg = |e: &Expression, name: &str| matches!(e, Expression::Value(Value::Binding(Binding::Register(r))) if format!("r{r}") == name);
+    let mut body: Vec<Statement> = catch
+        .iter()
+        .filter(|s| !matches!(s, Statement::Comment(_)))
+        .cloned()
+        .collect();
+    // Where the exception is kept.
+    let mut kept_reg = BTreeSet::new();
+    let mut kept_slot = BTreeSet::new();
+    while let Some(Statement::Assign { target, value }) = body.first() {
+        if !is_reg(value, param) {
+            break;
+        }
+        match target {
+            AssignTarget::Binding(Binding::Register(r)) => kept_reg.insert(*r),
+            AssignTarget::Binding(Binding::ClosureVar { level, slot, .. }) => {
+                kept_slot.insert((*level, *slot))
+            }
+            _ => return None,
+        };
+        body.remove(0);
+    }
+    let holds = |e: &Expression, kept_reg: &BTreeSet<u32>| match e {
+        Expression::Value(Value::Binding(Binding::Register(r))) => {
+            kept_reg.contains(r) || format!("r{r}") == param
+        }
+        Expression::Value(Value::Binding(Binding::ClosureVar { level, slot, .. })) => {
+            kept_slot.contains(&(*level, *slot))
+        }
+        _ => false,
+    };
+    let Some(Statement::Throw(thrown)) = body.pop() else {
+        return None;
+    };
+    if holds(&thrown, &kept_reg) {
+        return Some(body);
+    }
+    // Read back from the slot just before the throw.
+    let Expression::Value(Value::Binding(Binding::Register(t))) = thrown else {
+        return None;
+    };
+    let at = body.iter().rposition(|s| {
+        matches!(s, Statement::Assign { target: AssignTarget::Binding(Binding::Register(r)), .. } if *r == t)
+    })?;
+    let Statement::Assign { value, .. } = &body[at] else {
+        return None;
+    };
+    if !holds(value, &kept_reg) {
+        return None;
+    }
+    body.remove(at);
+    Some(body)
+}
+
+fn fold_in(mut list: Vec<Statement>, folded: &mut Vec<String>) -> Vec<Statement> {
+    for s in &mut list {
+        crate::ir::map_nested_bodies_mut(s, |b| fold_in(b, folded));
+    }
+    let mut i = 0;
+    while i < list.len() {
+        let code = match &list[i] {
+            Statement::TryCatch {
+                catch_param: Some(p),
+                catch_body,
+                finally_body,
+                ..
+            } if finally_body.is_empty() => rethrown(p, catch_body),
+            _ => None,
+        };
+        if let Some(code) = code.map(|c| essential(&c)).filter(|c| !c.is_empty()) {
+            let want = canon(&code);
+            // The copy on the way out of the `try`, right after it.
+            let len = (1..list.len() - i).find(|&n| {
+                let e = essential(&list[i + 1..i + 1 + n]);
+                e.len() == code.len() && canon(&e) == want
+            });
+            if let Some(n) = len {
+                let mut defined = Regs::default();
+                let mut later = Regs::default();
+                for s in &list[i + 1..i + 1 + n] {
+                    defined.visit_statement(s);
+                }
+                for s in &list[i + 1 + n..] {
+                    later.visit_statement(s);
+                }
+                if defined.defined.is_disjoint(&later.read) {
+                    list.drain(i + 1..i + 1 + n);
+                    if let Statement::TryCatch {
+                        catch_param,
+                        catch_body,
+                        finally_body,
+                        ..
+                    } = &mut list[i]
+                    {
+                        *catch_param = None;
+                        catch_body.clear();
+                        *finally_body = code;
+                    }
+                    folded.push(want);
+                }
+            }
+        }
+        i += 1;
+    }
+    list
+}
+
+// `hermesc` lowers `try { B } finally { F }` in a generator to a catch that runs F
+// and rethrows, F again on the way out, and F again on each `.return` side. Printed
+// so, a `.return()` would skip F: the sides are gone, and `yield` has no way to know
+// of them. So the catch and the copy after it fold back to a `finally`, and every
+// side must have run that same F, or the machine stays raw.
+pub fn fold_finally(
+    stmts: Vec<Statement>,
+    copies: &[Vec<Statement>],
+) -> Result<Vec<Statement>, &'static str> {
+    if copies.is_empty() {
+        return Ok(stmts);
+    }
+    let mut folded = Vec::new();
+    let out = fold_in(stmts, &mut folded);
+    for copy in copies {
+        if !folded.contains(&canon(&essential(copy))) {
+            return Err("a finally: a `.return` side runs something else");
+        }
+    }
+    Ok(out)
+}
+
 // --- the census: this reading against the lifter's (G1's exit) ---
 
 static VERDICTS: Mutex<BTreeMap<u32, String>> = Mutex::new(BTreeMap::new());
@@ -1370,6 +1635,62 @@ pub fn report() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn call(name: &str) -> Statement {
+        Statement::Expr(Expression::Call {
+            callee: Box::new(Expression::Member {
+                object: Box::new(Expression::Value(Value::Global)),
+                property: PropertyKey::Ident(name.into()),
+                optional: false,
+            }),
+            arguments: vec![],
+        })
+    }
+
+    fn lowered(on_catch: &str, on_exit: &str) -> Vec<Statement> {
+        vec![
+            Statement::TryCatch {
+                try_body: vec![call("body")],
+                catch_param: Some("r7".into()),
+                catch_body: vec![
+                    call(on_catch),
+                    Statement::Throw(Expression::Value(Value::Binding(Binding::Register(7)))),
+                ],
+                finally_body: vec![],
+            },
+            call(on_exit),
+            call("after"),
+        ]
+    }
+
+    #[test]
+    fn a_catch_and_rethrow_folds_to_a_finally() {
+        let out = fold_finally(lowered("f", "f"), &[vec![call("f")]]).unwrap();
+        assert_eq!(out.len(), 2);
+        let Statement::TryCatch {
+            catch_param,
+            catch_body,
+            finally_body,
+            ..
+        } = &out[0]
+        else {
+            panic!("no try");
+        };
+        assert!(catch_param.is_none() && catch_body.is_empty());
+        assert_eq!(finally_body.len(), 1);
+    }
+
+    // The `.return` sides are gone once lifted. If one ran something the `finally`
+    // does not, `.return()` would change meaning, so the machine stays raw.
+    #[test]
+    fn a_return_side_running_something_else_refuses() {
+        assert!(fold_finally(lowered("f", "f"), &[vec![call("g")]]).is_err());
+    }
+
+    #[test]
+    fn a_different_copy_after_the_try_refuses() {
+        assert!(fold_finally(lowered("f", "g"), &[vec![call("f")]]).is_err());
+    }
 
     fn slot(n: u32) -> Expression {
         Expression::Value(Value::Binding(Binding::ClosureVar {

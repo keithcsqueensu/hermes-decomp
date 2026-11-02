@@ -70,15 +70,15 @@ pub fn generate_ir(
         }
     }
 
-    let statements = statements_from_cfg(
-        &cfg,
+    let inputs = CfgInputs {
         file,
         format,
         function_id,
         options,
         closure_ctx,
         perform_resolve,
-    )?;
+    };
+    let statements = statements_from_cfg(&cfg, &inputs, &[])?;
 
     // A machine the statement lifter refuses, read whole off the CFG, lifts here:
     // each suspend a `yield` (GENERATOR_LIFT_PLAN.md G2). Every other body stays as
@@ -99,16 +99,15 @@ pub fn generate_ir(
     if machine.catches.is_empty() && transforms::lift_generator_v98(&statements).is_ok() {
         return Ok(statements);
     }
-    match machine_cfg::rewrite(&mut cfg, &machine) {
-        Ok(()) => statements_from_cfg(
-            &cfg,
-            file,
-            format,
-            function_id,
-            options,
-            closure_ctx,
-            perform_resolve,
-        ),
+    match machine_cfg::rewrite(&mut cfg, &machine).and_then(|()| {
+        // Checked before the passes run: a refusal here keeps the raw machine.
+        if !machine.finally_copies.is_empty() {
+            let tree = StructureAnalysis::analyze(&cfg).root.to_statements(&cfg);
+            machine_cfg::fold_finally(tree, &machine.finally_copies)?;
+        }
+        Ok(())
+    }) {
+        Ok(()) => statements_from_cfg(&cfg, &inputs, &machine.finally_copies),
         Err(why) => {
             log::trace!(target: "genlift", "F{function_id}: no CFG lift: {why}");
             Ok(statements)
@@ -116,22 +115,40 @@ pub fn generate_ir(
     }
 }
 
+// What the passes after structure recovery read, the same for every lift of a body.
+struct CfgInputs<'a> {
+    file: &'a BytecodeFile,
+    format: &'a BytecodeFormat,
+    function_id: u32,
+    options: &'a DecompileOptionsV2,
+    closure_ctx: Option<&'a ClosureContext>,
+    perform_resolve: bool,
+}
+
 // Structure recovery and everything after it.
 fn statements_from_cfg(
     cfg: &crate::ir::CFG,
-    file: &BytecodeFile,
-    format: &BytecodeFormat,
-    function_id: u32,
-    options: &DecompileOptionsV2,
-    closure_ctx: Option<&ClosureContext>,
-    perform_resolve: bool,
+    inputs: &CfgInputs<'_>,
+    finally_copies: &[Vec<Statement>],
 ) -> Result<Vec<Statement>> {
+    let CfgInputs {
+        file,
+        format,
+        function_id,
+        options,
+        closure_ctx,
+        perform_resolve,
+    } = *inputs;
     // STAGE F5: Structure Recovery (CFG -> if/while/for/switch/try)
     let statements = if options.recover_structures {
         let analysis = StructureAnalysis::analyze(cfg);
         // The `f.call === functionPrototypeCall` diamonds hermesc emits are
         // still plain if/else here; fold them before anything reshapes them.
-        transforms::fold_builtin_guards(analysis.root.to_statements(cfg))
+        let tree = analysis.root.to_statements(cfg);
+        // `generate_ir` has checked this one already.
+        let tree = transforms::generator::machine_cfg::fold_finally(tree.clone(), finally_copies)
+            .unwrap_or(tree);
+        transforms::fold_builtin_guards(tree)
     } else {
         // Flatten blocks without structure recovery
         let mut stmts = Vec::new();
