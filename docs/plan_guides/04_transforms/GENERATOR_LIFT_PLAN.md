@@ -359,6 +359,33 @@ lost moved into templates or became recovered module names; I read the samples, 
 rise were not new losses: `tmp20` in Expensify's `dispatchReducerAction` is undeclared before this too (a `tmp`
 inlined away from a `while` body), and is open.
 
+**Short-circuit conditions. Done (2026-11-02).** `branch_and_or_assign` passes on v96 and v98. Three changes in
+`recovery.rs`. `collapse_tests`: a test reached only from another test, sharing one of its targets and doing nothing
+but reading what it tests, is one condition, `if (a || b)`. Before, a memo check `c[0] !== a || c[1] !== b` printed the
+whole element once per test. `past_rejoin`: the nearest block both arms reach is no merge if a path skips it and rejoins
+what follows; the merge moves on to where it does. The search does not cross a held merge, and a loop's header or exit is
+not a rejoin at all, since `break` and `continue` are statements of their own. `merge_in_loop`: the search stops at loop
+headers, because round the back edge the short arm of an `if` could pass for the merge of the long one, depending on the
+sense of the test. A raw machine keeps the old shape throughout, since the statement lifter reads it (`is_raw_machine`).
+
+With the branches printed, a naming bug showed. A slot given two object keys (`root.punycode = x; module.exports = x`) has
+no name from them, but its owner was renamed anyway: `exports = {...}` over the module's own, with the closures still
+reading `obj`. `apply_object_key_literals` now renames such a slot nowhere. Equinox I1 832 to 754, I2 313 to 319. Of the
+new Shadowed rows, 9 of 10 were I1 rows, the same wrong read counted differently; the other is a local in code now printed.
+
+Against the previous step: undeclared 765 to 821, 12595 to 11148, 5223 to 5283; output 43.8 to 43.3 MB, 150.7 to 118.0
+MB, 168.6 to 157.7 MB. Expensify raw 299 to 303 by the grep the ratchet uses, with the same 281 refusals in the lift
+trace before and after: the machines sit in code that prints a different number of times. Lifting did not regress. Many
+blocks are still reached with no structured form (`structure=trace`, "lost block"; 11-15 thousand per bundle, an
+overcount since one falling out of a `try` is fine). Not baselined against the old rules, so unread.
+
+Open:
+- **`break outer` prints as `break`. Wrong output, predates this work.** Both the build before these changes and the one
+  after print the inner `if (i === 3) break;` for `outer: for (...) { for (...) { if (i === 3) break outer; ... } }`. The
+  outer loop keeps running, and a `while (true)` form need not terminate. `lang_control_flow` passes only because its
+  limit coincides with the break.
+- `tmpN.e.r` and `Object.keys()` with a lost argument in a `for...in` in Expensify; `tmp20` in `dispatchReducerAction`.
+
 ### G4 — async (medium)
 
 `spawnAsync` wrappers and the W14 detection: an async step's suspends become `await`. The

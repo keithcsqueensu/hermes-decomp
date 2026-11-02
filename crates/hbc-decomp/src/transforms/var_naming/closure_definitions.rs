@@ -854,7 +854,6 @@ fn apply_object_key_literals(
     let stamped = stamped_slot_refs(all_ir);
     let mut names: BTreeMap<u32, std::collections::HashSet<String>> = BTreeMap::new();
     let mut readers: BTreeMap<(u32, u32), Vec<Reader>> = BTreeMap::new();
-    let mut refused = std::collections::HashSet::new();
     for ((owner, slot), key) in slot_keys.iter_mut() {
         let Some(k) = key.as_ref() else { continue };
         match slot_readers(
@@ -870,12 +869,15 @@ fn apply_object_key_literals(
             }
             None => {
                 *key = None;
-                refused.insert((*owner, *slot));
             }
         }
     }
+    // A slot with two keys, or refused, keeps its name everywhere. Renamed in the
+    // owner alone, `root.punycode = x; module.exports = x` printed the local as
+    // `exports = {...}`, over the module's own, with its closures still reading `obj`.
     var_keys.retain(|(fid, var), _| {
-        resolve_var_to_slot(*fid, var, closure_ctx).is_none_or(|s| !refused.contains(&s))
+        resolve_var_to_slot(*fid, var, closure_ctx)
+            .is_none_or(|s| matches!(slot_keys.get(&s), Some(Some(_))))
     });
 
     let mut total = 0;
@@ -1646,6 +1648,38 @@ mod tests {
             "the child's own `obj` was renamed: {:?}",
             child[0]
         );
+    }
+
+    #[test]
+    fn a_slot_with_two_object_keys_keeps_its_name_everywhere() {
+        // `root.punycode = obj; freeModule.exports = obj`: neither key names the
+        // slot. Renaming the owner's copy anyway printed the local as `exports`,
+        // over the module's own, with the child still reading `obj`.
+        let mut ctx = ClosureContext::new();
+        ctx.add_child(1, 2);
+        let mut info = ClosureInfo::new();
+        info.store_slot(0, ClosureSlotValue::Variable("obj".into()));
+        ctx.add_closure_info(1, info);
+        let stamped = || {
+            Expression::Value(Value::Binding(Binding::Variable(crate::ir::Var {
+                name: "obj".into(),
+                slot: Some(crate::ir::SlotRef { owner: 1, slot: 0 }),
+            })))
+        };
+        let store = |property: &str| Statement::Assign {
+            target: AssignTarget::Member {
+                object: var("target"),
+                property: property.into(),
+            },
+            value: stamped(),
+        };
+        let mut all_ir = BTreeMap::new();
+        all_ir.insert(1, vec![store("punycode"), store("exports")]);
+        all_ir.insert(2, vec![Statement::Return(Some(stamped()))]);
+        let mut param_names = BTreeMap::new();
+        rename_closure_variables_cross_function(&mut all_ir, &mut ctx, &mut param_names);
+        assert_eq!(all_ir[&1], vec![store("punycode"), store("exports")]);
+        assert_eq!(all_ir[&2], vec![Statement::Return(Some(stamped()))]);
     }
 
     #[test]

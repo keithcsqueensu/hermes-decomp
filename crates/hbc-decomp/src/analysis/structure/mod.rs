@@ -28,6 +28,7 @@ pub(crate) struct RecoveryCtx<'a> {
     // Catch blocks of the tries being recovered: the next handler at a start
     // is the first one not open yet.
     pub open_tries: HashSet<BlockId>,
+    pub raw_machine: bool,
 }
 
 #[derive(Debug, Clone)]

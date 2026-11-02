@@ -187,11 +187,16 @@ pub(super) fn recover_loop(
                     loop_info.header,
                     true_target,
                     false_target,
-                ) {
+                )
+                .and_then(|m| {
+                    super::recovery::past_rejoin(ctx, m, [true_target, false_target], &new_stack)
+                }) {
                     let merge_was_visited = ctx.visited.contains(&merge);
                     ctx.visited.insert(merge);
+                    ctx.falls_to.push(Some(merge));
                     let then_ = recover_structure(ctx, true_target, &new_stack);
                     let else_ = recover_structure(ctx, false_target, &new_stack);
+                    ctx.falls_to.pop();
                     if !merge_was_visited {
                         ctx.visited.remove(&merge);
                     }

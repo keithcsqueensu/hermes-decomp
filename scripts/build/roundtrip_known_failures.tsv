@@ -22,8 +22,6 @@ v98	for_of_empty_body	a for-of with an empty body is deleted, so its iterator is
 v96	gen_finally_cases	v96 generator: the finally stays a catch and rethrow, with its copy inside the try, so `.return` skips it
 v96	gen_try_catch_finally	v96 generator: the finally stays a catch and rethrow
 v98	gen_try_catch_finally	a try with both catch and finally in a machine stays raw: the folded form does not match its `.return` sides
-v96	branch_and_or_assign	`(a && b || c) && d`, the same in a loop, and two in a row: short-circuit conditions are not recovered as such (G3d, open)
-v98	branch_and_or_assign	`(a && b || c) && d`, the same in a loop, and two in a row: short-circuit conditions are not recovered as such (G3d, open)
 v96	loop_header_self_branch	a header branching back to itself with more of the loop after it: only the header prints as a do-while, so the rest falls out and the test reads a name never declared
 v96	loop_header_value_after	a loop header's value read after the loop: its statements stay hoisted and run once
 v98	loop_header_self_branch	a header branching back to itself with more of the loop after it: only the header prints as a do-while, so the rest falls out and the test reads a name never declared

@@ -9,8 +9,10 @@
 # count drops.
 # 2026-10-28, after S3.4: Discord's one unparsable module is `_fireSurveyAction`
 # (a response slot named like the parameter it is sent under).
+# 2026-11-02, short-circuit conditions: Expensify raw 299 to 303. The lift refuses the same
+# 281 functions before and after; the machines sit in code that prints a different number of times.
 # 2026-11-01, G3d: Expensify raw 326 to 332. Module 1039's tail, 3 raw machines,
 # now prints on all 3 paths where it printed on one. None newly refused.
 equinox-11.43.0	quick	C:/apks/equinox/com.equinoxfitness.equinox_11.43.0/hermes_bundle/assets/index.android.bundle.backup	0	1	0
-expensify-9.5.14-3	large	C:/apks/expensify/org.me.mobiexpensifyg_9.5.14-3/hermes_bundle/assets/index.android.bundle.backup	0	1	299
+expensify-9.5.14-3	large	C:/apks/expensify/org.me.mobiexpensifyg_9.5.14-3/hermes_bundle/assets/index.android.bundle.backup	0	1	303
 discord-350.8	large	C:/apks/discord/com.discord_350.8/hermes_bundle/assets/index.android.bundle.backup	0	0	579

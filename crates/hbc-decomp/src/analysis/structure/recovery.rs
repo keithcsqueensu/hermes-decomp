@@ -77,9 +77,202 @@ fn split_try_headers(cfg: &CFG) -> Option<CFG> {
 }
 
 pub fn analyze(cfg: &CFG) -> (Structure, Vec<LoopInfo>) {
+    let collapsed = collapse_tests(cfg);
+    let cfg = collapsed.as_ref().unwrap_or(cfg);
     match split_try_headers(cfg) {
         Some(split) => analyze_split(&split),
         None => analyze_split(cfg),
+    }
+}
+
+// Whether `r` may be read on some path from `from` before it is written.
+fn live_from(cfg: &CFG, from: Vec<BlockId>, r: u32) -> bool {
+    let mut seen = HashSet::new();
+    let mut stack = from;
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(block) = cfg.get(id) else { continue };
+        let mut written = false;
+        for stmt in &block.statements {
+            let mut regs = BlockRegs::default();
+            crate::ir::Visitor::visit_statement(&mut regs, stmt);
+            if regs.read.contains(&r) {
+                return true;
+            }
+            if regs.assigned.contains(&r) {
+                written = true;
+                break;
+            }
+        }
+        if written {
+            continue;
+        }
+        if block_regs(block).read.contains(&r) {
+            return true;
+        }
+        stack.extend(block.successors());
+    }
+    false
+}
+
+// `c2` with the block's statements put back into it, if they are nothing but the
+// pure reads it tests, each used there once and nowhere after.
+fn test_with_reads(cfg: &CFG, y: &crate::ir::BasicBlock, c2: &Expression) -> Option<Expression> {
+    use crate::ir::{AssignTarget, Binding, MutVisitor, Value, Visitor};
+    struct Count(u32, usize);
+    impl<'a> Visitor<'a> for Count {
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if matches!(e, Expression::Value(Value::Binding(Binding::Register(r))) if *r == self.0)
+            {
+                self.1 += 1;
+            }
+            self.walk_expression(e);
+        }
+    }
+    struct Put<'v>(u32, &'v Expression);
+    impl MutVisitor for Put<'_> {
+        fn visit_expression(&mut self, e: &mut Expression) {
+            if matches!(e, Expression::Value(Value::Binding(Binding::Register(r))) if *r == self.0)
+            {
+                *e = self.1.clone();
+                return;
+            }
+            self.walk_expression(e);
+        }
+    }
+    let mut cond = c2.clone();
+    for stmt in y.statements.iter().rev() {
+        let Statement::Assign {
+            target: AssignTarget::Binding(Binding::Register(r)),
+            value,
+        } = stmt
+        else {
+            return None;
+        };
+        if value.has_side_effects() {
+            return None;
+        }
+        let mut count = Count(*r, 0);
+        count.visit_expression(&cond);
+        if count.1 != 1 || live_from(cfg, y.successors(), *r) {
+            return None;
+        }
+        Put(*r, value).visit_expression(&mut cond);
+    }
+    Some(cond)
+}
+
+// A generator not lifted yet. The statement lifter reads its cases in the shape they
+// compile to: with its tests collapsed, or merges moved, it refused some it lifts as
+// they are. A body lifted off the CFG no longer has this message and gets both.
+fn is_raw_machine(cfg: &CFG) -> bool {
+    use crate::ir::{Constant, Value, Visitor};
+    struct Find(bool);
+    impl<'a> Visitor<'a> for Find {
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if let Expression::Value(Value::Constant(Constant::String(text))) = e {
+                self.0 |= text.starts_with("Generator functions may not be called");
+            }
+            self.walk_expression(e);
+        }
+    }
+    let mut find = Find(false);
+    for block in cfg.blocks() {
+        for stmt in &block.statements {
+            find.visit_statement(stmt);
+        }
+    }
+    find.0
+}
+
+// A test reached only from another test, sharing one of its targets, is one condition:
+// `if (a) T; else if (b) T; else F` is `if (a || b) T; else F`. As separate blocks T has
+// several ways in and is copied for each: a memo check `c[0] !== a || c[1] !== b || …`
+// printed the whole element once per test. A block doing anything but reading what it
+// tests stays a block.
+fn collapse_tests(cfg: &CFG) -> Option<CFG> {
+    use crate::ir::{BinaryOp, UnaryOp};
+    let or = |a: Expression, b: Expression| Expression::binary(BinaryOp::LogicalOr, a, b);
+    let and = |a: Expression, b: Expression| Expression::binary(BinaryOp::LogicalAnd, a, b);
+    let not = |e: Expression| Expression::unary(UnaryOp::Not, e);
+    let mut out: Option<CFG> = None;
+    let ids: Vec<BlockId> = cfg.blocks_with_ids().map(|(id, _)| id).collect();
+    loop {
+        let mut changed = false;
+        for x_id in &ids {
+            let g = out.as_ref().unwrap_or(cfg);
+            let Some(Terminator::Branch {
+                condition: c1,
+                true_target: t1,
+                false_target: f1,
+            }) = g.get(*x_id).map(|b| &b.terminator)
+            else {
+                continue;
+            };
+            let mut found = None;
+            for (y_id, on_true) in [(*t1, true), (*f1, false)] {
+                if y_id == *x_id || y_id == *t1 && y_id == *f1 {
+                    continue;
+                }
+                let Some(y) = g.get(y_id) else { continue };
+                let Terminator::Branch {
+                    condition: c2,
+                    true_target: t2,
+                    false_target: f2,
+                } = &y.terminator
+                else {
+                    continue;
+                };
+                if g.predecessors(y_id) != [*x_id]
+                    || g.exception_handlers.iter().any(|h| {
+                        h.catch_block == y_id
+                            || h.try_block_start == y_id
+                            || h.try_blocks.contains(&y_id) != h.try_blocks.contains(x_id)
+                    })
+                {
+                    continue;
+                }
+                let other = if on_true { *f1 } else { *t1 };
+                let shared_true = *t2 == other;
+                if !shared_true && *f2 != other || t2 == f2 {
+                    continue;
+                }
+                let Some(c2) = test_with_reads(g, y, c2) else {
+                    continue;
+                };
+                let (cond, t, f) = match (on_true, shared_true) {
+                    (true, false) => (and(c1.clone(), c2), *t2, *f1),
+                    (true, true) => (and(c1.clone(), not(c2)), *f2, *f1),
+                    (false, true) => (or(c1.clone(), c2), *t1, *f2),
+                    (false, false) => (or(c1.clone(), not(c2)), *t1, *t2),
+                };
+                found = Some((y_id, cond, t, f));
+                break;
+            }
+            if let Some((y_id, condition, true_target, false_target)) = found {
+                if out.is_none() && is_raw_machine(cfg) {
+                    return None;
+                }
+                let g = out.get_or_insert_with(|| cfg.clone());
+                if let Some(x) = g.get_mut(*x_id) {
+                    x.terminator = Terminator::Branch {
+                        condition,
+                        true_target,
+                        false_target,
+                    };
+                }
+                if let Some(y) = g.get_mut(y_id) {
+                    y.statements.clear();
+                    y.terminator = Terminator::None;
+                }
+                changed = true;
+            }
+        }
+        if !changed {
+            return out;
+        }
     }
 }
 
@@ -142,6 +335,7 @@ fn analyze_split(cfg: &CFG) -> (Structure, Vec<LoopInfo>) {
         next_reg: std::cell::Cell::new(None),
         try_starts: &try_starts,
         open_tries: HashSet::new(),
+        raw_machine: is_raw_machine(cfg),
     };
 
     let root = recover_structure(&mut ctx, cfg.entry, &loop_stack);
@@ -470,7 +664,27 @@ fn reemit(ctx: &RecoveryCtx<'_>, block_id: BlockId, loop_stack: &[&LoopInfo]) ->
             fresh_registers(ctx, &mut tree, &shared);
             Some(tree)
         })
-        .unwrap_or(Structure::Block(block_id, vec![]))
+        .unwrap_or_else(|| {
+            // Reached again with no structured form: whatever this block does is lost
+            // on this path. A trace, so a count can say how often.
+            if log::log_enabled!(target: "structure", log::Level::Trace) {
+                let held = ctx.falls_to.last().copied().flatten() == Some(block_id);
+                let empty = ctx.cfg.get(block_id).is_none_or(|b| {
+                    b.statements.is_empty() && matches!(b.terminator, Terminator::Jump(_))
+                });
+                if !held && !empty {
+                    let first = ctx
+                        .cfg
+                        .get(block_id)
+                        .and_then(|b| b.statements.first())
+                        .map(|s| format!("{s:?}"))
+                        .unwrap_or_default();
+                    let first: String = first.chars().take(90).collect();
+                    log::trace!(target: "structure", "lost block {}: emitted {}: {first}", block_id.0, ctx.emitted.contains(&block_id));
+                }
+            }
+            Structure::Block(block_id, vec![])
+        })
 }
 
 pub(super) fn recover_structure(
@@ -718,7 +932,8 @@ pub(super) fn recover_structure_inner(
                     .last()
                     .is_some_and(|f| *f != merge && reaches(ctx.cfg, *f, merge))
             };
-            if let Some(merge) = find_merge_point(ctx.cfg, block_id, true_target, false_target)
+            if let Some(merge) = merge_in_loop(ctx, block_id, true_target, false_target, loop_stack)
+                .and_then(|m| past_rejoin(ctx, m, [true_target, false_target], loop_stack))
                 .filter(|m| !past_fence(ctx, *m))
                 .filter(|m| !bypassed_tail(ctx, *m, [true_target, false_target], loop_stack))
             {
@@ -806,7 +1021,9 @@ pub(super) fn recover_switch(
     if let Some(m) = merge {
         ctx.visited.insert(m);
     }
+    ctx.falls_to.push(merge);
     let switch = recover_switch_cases(ctx, value, cases, default, loop_stack);
+    ctx.falls_to.pop();
     match merge {
         Some(m) => {
             ctx.visited.remove(&m);
@@ -1004,6 +1221,84 @@ fn reaches(cfg: &CFG, from: BlockId, to: BlockId) -> bool {
     false
 }
 
+// The nearest block both arms reach is not their merge if a path skips it and rejoins
+// what follows it. In `(a && b || c) && d` the test of `c` is reached from both arms of
+// `a`, but `b` true goes straight on to `d`; held back as the merge, `c` printed on every
+// path or not at all. The merge moves on to where the skipping path rejoins. If that is
+// where this `if` already falls out to, the `if` has no merge of its own, and each arm
+// runs to that point.
+pub(super) fn past_rejoin(
+    ctx: &RecoveryCtx<'_>,
+    mut merge: BlockId,
+    arms: [BlockId; 2],
+    loop_stack: &[&LoopInfo],
+) -> Option<BlockId> {
+    // Every boundary around this `if`, not just the innermost: a `switch` is an entry
+    // on the stack with no exit, and walking past its merge and round the real loop no
+    // search settled.
+    let held = |b: BlockId| ctx.falls_to.contains(&Some(b));
+    let edge = |b: BlockId| {
+        held(b)
+            || loop_stack
+                .iter()
+                .any(|l| l.header == b || l.exit == Some(b))
+    };
+    if edge(merge) {
+        return Some(merge);
+    }
+    let near = merge;
+    if ctx.raw_machine {
+        return Some(near);
+    }
+    for _ in 0..16 {
+        // What follows the merge, as far as this region goes.
+        let mut after = HashSet::new();
+        let mut stack: Vec<BlockId> = ctx.cfg.get(merge)?.successors();
+        while let Some(b) = stack.pop() {
+            if b == merge || !after.insert(b) || edge(b) {
+                continue;
+            }
+            if let Some(block) = ctx.cfg.get(b) {
+                stack.extend(block.successors());
+            }
+        }
+        // Nearest block a path from the arms reaches around the merge.
+        let mut seen = HashSet::new();
+        let mut queue: std::collections::VecDeque<BlockId> = arms.iter().copied().collect();
+        let mut rejoin = None;
+        while let Some(b) = queue.pop_front() {
+            if b == merge || !seen.insert(b) {
+                continue;
+            }
+            // A `break` or `continue` is a statement of its own and needs no merge to
+            // get there. Taken for a rejoin, `continue outer` beside `i++` left the inner
+            // `if` with no merge, and the loop after it without its increment.
+            let boundary = loop_stack
+                .iter()
+                .any(|l| l.header == b || l.exit == Some(b));
+            if boundary {
+                continue;
+            }
+            if after.contains(&b) {
+                rejoin = Some(b);
+                break;
+            }
+            if held(b) {
+                continue;
+            }
+            if let Some(block) = ctx.cfg.get(b) {
+                queue.extend(block.successors());
+            }
+        }
+        match rejoin {
+            None => return Some(merge),
+            Some(z) if held(z) => return None,
+            Some(z) => merge = z,
+        }
+    }
+    Some(near)
+}
+
 // A `return` or `throw` tail both arms can reach is no merge when one can also get
 // around it, to the merge that follows or the loop's next step. Held back and printed
 // after the `if`, the tail ran on every path: `case "0": if (x) break; default: throw`
@@ -1068,6 +1363,45 @@ fn bypassed_tail(
         }
     }
     false
+}
+
+// The nearest block both arms reach on this run of the loop. Around the back edge every
+// block reaches every other, so the short arm of an `if` could pass for the merge of the
+// long one, which then took the whole tail and ended there. Which arm that happened to
+// was down to the sense of the test.
+fn merge_in_loop(
+    ctx: &RecoveryCtx<'_>,
+    block_id: BlockId,
+    a: BlockId,
+    b: BlockId,
+    loop_stack: &[&LoopInfo],
+) -> Option<BlockId> {
+    use std::collections::VecDeque;
+    if loop_stack.is_empty() || ctx.raw_machine {
+        return find_merge_point(ctx.cfg, block_id, a, b);
+    }
+    let is_header = |n: BlockId| loop_stack.iter().any(|l| l.header == n);
+    let walk = |from: BlockId| {
+        let mut seen = Vec::new();
+        let mut set = HashSet::new();
+        let mut queue = VecDeque::from([from]);
+        while let Some(n) = queue.pop_front() {
+            if n == block_id || !set.insert(n) {
+                continue;
+            }
+            seen.push(n);
+            if is_header(n) {
+                continue;
+            }
+            if let Some(blk) = ctx.cfg.get(n) {
+                queue.extend(blk.successors());
+            }
+        }
+        (seen, set)
+    };
+    let (_, reach_a) = walk(a);
+    let (order_b, _) = walk(b);
+    order_b.into_iter().find(|n| reach_a.contains(n))
 }
 
 pub(super) fn find_merge_point(

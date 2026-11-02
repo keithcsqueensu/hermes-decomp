@@ -1,6 +1,9 @@
 # Per-bundle ceilings on slot identity violations (closure model K4.3), checked by
 # tests/slot_identity.rs against HBC_CORPUS_BUNDLE. Columns: SHA-256 of the bundle,
 # label, I1, I2, I3. Lower a ceiling whenever the real count drops.
+# Short-circuit conditions (2026-11-02): equinox I1 835 -> 754, I2 313 -> 319. A slot with two
+# object keys no longer renames its owner alone, which took I1 down. Of the 10 new Shadowed rows
+# 9 were I1 rows, the same wrong read counted differently; one is a local in code now printed.
 # JSX tags as expressions (2026-11-02): equinox I1 811 -> 835, I3 6 -> 11; only additions, all
 # reads through a tag the check could not see while it was a string (`react-native`). None
 # undeclared in the output. Ceilings also lowered to the measured I1 and I2.
@@ -9,7 +12,7 @@
 # the new I1 rows are a parent keeping an unused `let closure_0 = param` alias while
 # its child reads the parameter, and the I2 rows are 11 former I3 undeclared captures
 # a body now declares.
-085c10a82cd273a1c9e9f7b84bc2c8f2571eae4e92a6c9d5226418cd7a73e75e	equinox 11.43.0 (v96)	835	313	11
+085c10a82cd273a1c9e9f7b84bc2c8f2571eae4e92a6c9d5226418cd7a73e75e	equinox 11.43.0 (v96)	754	319	11
 # Oracle fixes (2026-10-29): I1 1237 -> 883, I2 425 -> 410, I3 7 -> 6. A slot named from an
 # object key (W10) is renamed in every body that reads it, not in its owner alone, so the
 # owner's binding and its captures stop spelling one slot two ways.
