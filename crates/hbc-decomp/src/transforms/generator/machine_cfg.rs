@@ -1226,33 +1226,30 @@ fn recover_tries(
             .map(|(&b, _)| b)
             .collect();
         // A `return` of a value already computed cannot throw: it may print
-        // inside, and then it is no way out.
-        let quiet: Vec<BlockId> = try_blocks
+        // inside, and then it is no way out. The stores before it are the state
+        // machine's own, and its block may be shared with other paths.
+        let quiet: BTreeSet<BlockId> = try_blocks
             .iter()
             .flat_map(|b| cfg.get(*b).map(|x| x.successors()).unwrap_or_default())
             .filter(|t| !try_blocks.contains(t) && *t != head)
-            .filter(|t| {
-                cfg.get(*t).is_some_and(|x| {
-                    x.statements.is_empty()
-                        && matches!(
-                            &x.terminator,
-                            Terminator::Return(None)
-                                | Terminator::Return(Some(Expression::Value(_)))
-                        )
-                })
-            })
+            .filter_map(|t| quiet_return(cfg, t))
+            .flatten()
             .collect();
-        try_blocks.extend(quiet);
+        try_blocks.extend(quiet.iter().copied());
         try_blocks.sort();
         try_blocks.dedup();
         let inside: BTreeSet<BlockId> = try_blocks.iter().copied().collect();
         // Dropped blocks (a protocol, the dispatch) still jump to resume entries,
         // and have no state.
-        let mut starts = try_blocks.iter().copied().filter(|&b| {
-            cfg.predecessors(b)
-                .iter()
-                .any(|p| state.contains_key(p) && !inside.contains(p))
-        });
+        let mut starts = try_blocks
+            .iter()
+            .copied()
+            .filter(|b| !quiet.contains(b))
+            .filter(|&b| {
+                cfg.predecessors(b)
+                    .iter()
+                    .any(|p| state.contains_key(p) && !inside.contains(p))
+            });
         let start = starts.next().ok_or(NESTING)?;
         if starts.next().is_some() {
             return Err("a try in the source: a region with two ways in");
@@ -1278,6 +1275,36 @@ fn recover_tries(
         });
     }
     Ok(())
+}
+
+// The blocks from `from` to a `return`, if nothing on the way can throw.
+fn quiet_return(cfg: &CFG, from: BlockId) -> Option<Vec<BlockId>> {
+    let mut chain = Vec::new();
+    let mut at = from;
+    for _ in 0..8 {
+        let block = cfg.get(at)?;
+        let plain = block.statements.iter().all(|s| {
+            matches!(
+                s,
+                Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Register(_)),
+                    value: Expression::Value(_),
+                }
+            )
+        });
+        if !plain {
+            return None;
+        }
+        chain.push(at);
+        match &block.terminator {
+            Terminator::Return(None) | Terminator::Return(Some(Expression::Value(_))) => {
+                return Some(chain);
+            }
+            Terminator::Jump(next) => at = *next,
+            _ => return None,
+        }
+    }
+    None
 }
 
 // --- the census: this reading against the lifter's (G1's exit) ---

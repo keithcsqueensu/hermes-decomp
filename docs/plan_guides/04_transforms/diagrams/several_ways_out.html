@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Several Ways Out</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column; a before/after of the try region's boundary, then the real output. */
+:root {
+  --bg: #f5f7f8; --fg: #1b2529; --muted: #56656c; --line: #c5d0d5; --panel: #e9eef0;
+  --lost: #b3261e; --kept: #17693f;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12191c; --fg: #e4ebee; --muted: #9aaab1; --line: #3b4a50; --panel: #1c262a;
+  --lost: #ff8a80; --kept: #6fd6a0; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12191c; --fg: #e4ebee; --muted: #9aaab1; --line: #3b4a50; --panel: #1c262a;
+  --lost: #ff8a80; --kept: #6fd6a0; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font: 16px/1.6 var(--sans); }
+main { max-width: 800px; margin: 0 auto; display: grid; gap: 28px; padding-block: 36px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1 { font: 600 32px/1.2 var(--mono); margin: 0; text-wrap: balance; }
+h2 { font-size: 20px; line-height: 1.3; margin: 0; text-wrap: balance; }
+p { margin: 0; max-width: 65ch; }
+section, header { display: grid; gap: 14px; min-width: 0; }
+code { font: 0.92em var(--mono); }
+figure { margin: 0; display: grid; gap: 10px; min-width: 0; }
+figcaption { color: var(--muted); font-size: 14px; max-width: 65ch; }
+.scroll { overflow-x: auto; }
+svg { display: block; width: 100%; min-width: 660px; height: auto; }
+svg text { font: 13px var(--mono); fill: var(--fg); }
+svg text.note { font-size: 12px; fill: var(--muted); }
+svg text.t-lost { fill: var(--lost); font-weight: 600; }
+svg text.t-kept { fill: var(--kept); font-weight: 600; }
+.box { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
+.quiet { fill: var(--panel); stroke: var(--kept); stroke-width: 2; }
+.bad { fill: var(--panel); stroke: var(--lost); stroke-width: 2; }
+.region { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 7 5; }
+.region-new { fill: none; stroke: var(--kept); stroke-width: 2; stroke-dasharray: 7 5; }
+.edge { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.edge-lost { stroke: var(--lost); stroke-width: 2; fill: none; }
+.edge-kept { stroke: var(--kept); stroke-width: 2; fill: none; }
+.head { fill: var(--muted); } .head-lost { fill: var(--lost); } .head-kept { fill: var(--kept); }
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.pair > div { min-width: 0; display: grid; gap: 6px; align-content: start; }
+.label { font-size: 14px; font-weight: 600; }
+.label.b { color: var(--lost); } .label.g { color: var(--kept); }
+pre { margin: 0; padding: 12px 14px; background: var(--panel); overflow-x: auto; font: 13px/1.5 var(--mono); }
+</style>
+
+<main>
+<header>
+  <h1>Several ways out</h1>
+  <p>The lifter refuses a <code>try</code> whose region has more than one exit, because it cannot tell which exit is the code after the <code>try</code>. A <code>return</code> inside the <code>try</code> looked like a second exit.</p>
+  <p>The example is <code>g1</code> from the corpus test <code>gen_return_in_try</code>, on v98:</p>
+  <pre>function* g1(x) { try { if (x) return 1; yield 2; } catch (e) { yield 3; } yield 4; return 5; }</pre>
+</header>
+
+<section>
+  <h2>The boundary moves past the return</h2>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 780 340" role="img" aria-label="Before, two edges cross the try region's boundary, so the machine is refused. After, the return chain cannot throw and moves inside the region, leaving one exit, the code after the try.">
+      <defs>
+        <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="al" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-lost" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="ak" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-kept" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+
+      <text x="20" y="22">before</text>
+      <rect class="region" x="20" y="36" width="340" height="110"/>
+      <text class="note" x="30" y="54">try region</text>
+      <rect class="box" x="40" y="64" width="130" height="62"/>
+      <text x="105" y="90" text-anchor="middle">if (x)</text>
+      <text x="105" y="110" text-anchor="middle">yield 2</text>
+      <path class="edge-lost" d="M105 126L105 196" marker-end="url(#al)"/>
+      <text class="t-lost" x="114" y="172">exit 1</text>
+      <path class="edge-lost" d="M170 110L285 196" marker-end="url(#al)"/>
+      <text class="t-lost" x="236" y="172">exit 2</text>
+      <rect class="box" x="40" y="196" width="130" height="62"/>
+      <text x="105" y="222" text-anchor="middle">yield 4</text>
+      <text x="105" y="242" text-anchor="middle">return 5</text>
+      <rect class="bad" x="220" y="196" width="130" height="62"/>
+      <text x="285" y="222" text-anchor="middle">r = 3</text>
+      <text x="285" y="242" text-anchor="middle">return 1</text>
+      <text class="t-lost" x="190" y="296" text-anchor="middle">2 exits: machine stays raw</text>
+
+      <text x="420" y="22">after</text>
+      <rect class="region-new" x="420" y="36" width="340" height="232"/>
+      <text class="note" x="430" y="54">try region</text>
+      <rect class="box" x="440" y="64" width="130" height="62"/>
+      <text x="505" y="90" text-anchor="middle">if (x)</text>
+      <text x="505" y="110" text-anchor="middle">yield 2</text>
+      <path class="edge-kept" d="M570 110L620 186" marker-end="url(#ak)"/>
+      <text class="note" x="608" y="140">inside now</text>
+      <rect class="quiet" x="620" y="186" width="130" height="62"/>
+      <text x="685" y="212" text-anchor="middle">r = 3</text>
+      <text x="685" y="232" text-anchor="middle">return 1</text>
+      <path class="edge" d="M480 126L480 280" marker-end="url(#a)"/>
+      <text class="t-kept" x="490" y="212">the one exit</text>
+      <rect class="box" x="415" y="280" width="130" height="52"/>
+      <text x="480" y="302" text-anchor="middle">yield 4</text>
+      <text x="480" y="321" text-anchor="middle">return 5</text>
+      <text class="t-kept" x="568" y="310">1 exit: machine lifts</text>
+    </svg>
+    </div>
+    <figcaption><code>quiet_return</code> accepts a chain of up to 8 blocks that holds only plain register assignments and ends in returning an already computed value. Nothing in such a chain can throw, so printing it inside the <code>try</code> cannot change what the <code>catch</code> sees.</figcaption>
+  </figure>
+  <p>The old check accepted only an empty block ending in a return. The generator's state store leaves <code>r = 3</code> in that block, so it never matched.</p>
+</section>
+
+<section>
+  <h2>Why a real call in the return is still safe</h2>
+  <p>In <code>return f(x)</code>, the call runs before the exit, while the <code>try</code> is still active. Only the return of its result moves. If <code>f</code> throws, the <code>catch</code> still runs: the test's <code>g2(2)</code> returns <code>7</code> in the VM and in the decompiled code.</p>
+  <p>A shared return block can also have predecessors outside the region. Those blocks are left out of the check for a second way in, otherwise a shared return would turn this refusal into a &#8220;two ways in&#8221; refusal.</p>
+</section>
+
+<section>
+  <h2>What it prints</h2>
+  <div class="pair">
+    <div><span class="label b">Before: about 90 lines of raw state machine</span>
+<pre>return HermesBuiltin.createGenerator(
+  function g1(arg0, value) {
+    if (c1 === 2) {
+      c1 = 3;
+      throw new TypeError("Generator
+        functions may not be called
+        on executing generators");
+    } else if (c1 === 3) {
+      ...</pre></div>
+    <div><span class="label g">After: the source's shape</span>
+<pre>function* g1(arg0) {
+  let closure_0 = arg0;
+  try {
+    if (closure_0) {
+      return 1;
+    } else {
+      yield 2;
+    }
+  } catch (tmp2) {
+    let closure_3 = tmp2;
+    yield 3;
+  }
+  yield 4;
+  return 5;
+}</pre></div>
+  </div>
+  <p>This fix only widens what counts as a harmless exit. A <code>try</code> with two exits that can really throw is still refused and stays raw, and that is the safe result.</p>
+</section>
+</main>

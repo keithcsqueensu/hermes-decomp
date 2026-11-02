@@ -6,7 +6,7 @@
 > `../03_analysis/closure_model/IDENTITY_PLAN.md` A2e, and the catch-loop dominator change
 > (A2e3, A2e4) is ordered against this plan's G2 below.
 
-Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).** **G2 landed (2026-11-01).** **G3a, G3c and G3d landed (2026-11-01);** G3b is open.
+Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).** **G2 landed (2026-11-01).** **G3a, G3c landed (2026-11-01); G3d landed in part: the assigning form of `a && b || c` is still wrong;** G3b is open.
 
 ## 1. Where things stand
 
@@ -216,9 +216,15 @@ the dispatch" 13, 37; "no suspend" 6, 10. The bigger group by reading is G3b's.
 
 **G3b, `finally`, and the refusals above. Open.** A `finally` is lowered as catch-and-rethrow with
 copies of its body on each exit, including the `.return` side of the protocol, so the read fails
-with "protocol: unexpected branch" (18, 170). `gen_try_finally` is the test. "several ways out"
-is a `return` inside a `try` next to its fallthrough; the dispatch register
+with "protocol: unexpected branch" (18, 170). `gen_try_finally` is the test. The dispatch register
 is untraced.
+
+**"Several ways out". Done (2026-11-01).** A `return` inside a `try` left the region as a second exit,
+because the block before it holds the state store's `r = 3` and only an empty block counted as quiet.
+A chain of plain register assignments ending in the return of a computed value cannot throw, so it now
+prints inside. A call in `return f(x)` runs before the exit and is still caught. `gen_return_in_try`
+is the test. Expensify raw 332 to 307, Discord 678 to 618; undeclared 13159 to 13134, 5588 to 5528; no
+string lost; equinox unchanged. The refusal stays for exits that can throw. Diagram: [`several_ways_out.html`](diagrams/several_ways_out.html).
 
 **G3c, the same bug in ordinary code. Done (2026-11-01).** This stage is the one exception to the
 rule that v96 output does not change: the old output was wrong. `cleanup_noise` dropped a trailing
@@ -238,7 +244,7 @@ loop body that emptied lost its calls: `while (readResult !== null) {}` had drop
 `closure_8.push(readResult)`. The undeclared rise is restored reads of `window` and `__DEV__`,
 which are real globals. Hunks were sampled by kind, not read one by one.
 
-**G3d, wrong output found by G3c. Done (2026-11-01).** Two bugs, both older than G3c.
+**G3d, wrong output found by G3c. Partly done (2026-11-01).** Two bugs, both older than G3c. `loop_two_exits` is fixed. `a && b || c` is fixed only when the arms return: when they assign a value used later, as in `if (a && b || c) r = 1; else r = 2; return r`, the test on `b` is still lost. `branch_and_or_value` records it. Diagram: [`and_or_copy.html`](../03_analysis/diagrams/and_or_copy.html).
 
 `loop_two_exits`: a `for` with a `return` inside prints as `while (i !== 1)`, losing `i < n` and the repeat.
 
@@ -252,7 +258,7 @@ generators, so they go before G3b.
 The fix: a tail reached again that ends in a branch is copied as an `if` tree, up to 16 blocks,
 stopping at the innermost merge. Each copy gets registers of its own, except one it reads before
 assigning, because later passes read a register assigned once as one value. A copy whose values
-are read past it stays empty, as before. A loop whose header has statements and whose body has one
+are read past it stays empty, as before, and that is the case still open. A loop whose header has statements and whose body has one
 other exit keeps the `for` test by breaking to that exit. A test against `undefined` is left alone,
 because that is the for-of and for-in form its recogniser reads.
 

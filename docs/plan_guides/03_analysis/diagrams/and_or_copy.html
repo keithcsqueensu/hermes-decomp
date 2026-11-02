@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The a && b || c Copy</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column; each figure is a control-flow drawing with the real decompiler output beneath it. */
+:root {
+  --bg: #f5f7f8; --fg: #1b2529; --muted: #56656c; --line: #c5d0d5; --panel: #e9eef0;
+  --lost: #b3261e; --kept: #17693f;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12191c; --fg: #e4ebee; --muted: #9aaab1; --line: #3b4a50; --panel: #1c262a;
+  --lost: #ff8a80; --kept: #6fd6a0; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12191c; --fg: #e4ebee; --muted: #9aaab1; --line: #3b4a50; --panel: #1c262a;
+  --lost: #ff8a80; --kept: #6fd6a0; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font: 16px/1.6 var(--sans); }
+main { max-width: 800px; margin: 0 auto; display: grid; gap: 28px; padding-block: 36px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1 { font: 600 32px/1.2 var(--mono); margin: 0; text-wrap: balance; }
+h2 { font-size: 20px; line-height: 1.3; margin: 0; text-wrap: balance; }
+p { margin: 0; max-width: 65ch; }
+section, header { display: grid; gap: 14px; min-width: 0; }
+code { font: 0.92em var(--mono); }
+figure { margin: 0; display: grid; gap: 10px; min-width: 0; }
+figcaption { color: var(--muted); font-size: 14px; max-width: 65ch; }
+.scroll { overflow-x: auto; }
+svg { display: block; width: 100%; min-width: 640px; height: auto; }
+svg text { font: 13px var(--mono); fill: var(--fg); }
+svg text.note { font-size: 12px; fill: var(--muted); }
+svg text.t-lost { fill: var(--lost); font-weight: 600; }
+svg text.t-kept { fill: var(--kept); font-weight: 600; }
+.box { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
+.box-lost { fill: var(--panel); stroke: var(--lost); stroke-width: 2; }
+.box-kept { fill: var(--panel); stroke: var(--kept); stroke-width: 2; }
+.edge { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.edge-lost { stroke: var(--lost); stroke-width: 2; fill: none; stroke-dasharray: 6 4; }
+.edge-kept { stroke: var(--kept); stroke-width: 2; fill: none; }
+.head { fill: var(--muted); } .head-lost { fill: var(--lost); } .head-kept { fill: var(--kept); }
+.pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.pair > div { min-width: 0; display: grid; gap: 6px; align-content: start; }
+.label { font-size: 14px; font-weight: 600; }
+.label.bad { color: var(--lost); } .label.good { color: var(--kept); }
+pre { margin: 0; padding: 12px 14px; background: var(--panel); overflow-x: auto; font: 13px/1.5 var(--mono); }
+</style>
+
+<main>
+<header>
+  <h1>The a &amp;&amp; b || c copy</h1>
+  <p>Commit <code>48e2794</code> keeps the middle test when the arms return. It still loses that test when the arms assign a value used later. Both cases below are real <code>hermes-decomp</code> output on v98 bytecode, compared with the Hermes VM.</p>
+</header>
+
+<section>
+  <h2>Why the test was lost</h2>
+  <p>Hermes compiles the condition to three tests. Structure recovery follows the false arm of <code>a</code> first, which places <code>c</code>, <code>else</code> and <code>then</code>. When it finally reaches <code>b</code>, nothing is left to place.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 760 330" role="img" aria-label="Control flow of a and b or c. Test b has two targets, then and c, and both were placed before b was reached, so b printed nothing.">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="ahl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-lost" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect class="box" x="210" y="20" width="120" height="40"/><text x="270" y="45" text-anchor="middle">test a</text>
+      <rect class="box-lost" x="60" y="130" width="120" height="40"/><text x="120" y="155" text-anchor="middle">test b</text>
+      <rect class="box" x="360" y="130" width="120" height="40"/><text x="420" y="155" text-anchor="middle">test c</text>
+      <rect class="box" x="60" y="260" width="120" height="40"/><text x="120" y="285" text-anchor="middle">"then"</text>
+      <rect class="box" x="360" y="260" width="120" height="40"/><text x="420" y="285" text-anchor="middle">"else"</text>
+
+      <path class="edge" d="M240 60L140 130" marker-end="url(#ah)"/><text x="150" y="92">true</text>
+      <path class="edge" d="M300 60L400 130" marker-end="url(#ah)"/><text x="360" y="92">false</text>
+      <path class="edge" d="M390 170L160 260" marker-end="url(#ah)"/><text x="288" y="205">true</text>
+      <path class="edge" d="M420 170L420 260" marker-end="url(#ah)"/><text x="428" y="220">false</text>
+      <path class="edge-lost" d="M120 170L120 260" marker-end="url(#ahl)"/><text class="t-lost" x="36" y="220">true</text>
+      <path class="edge-lost" d="M180 150L360 150" marker-end="url(#ahl)"/><text class="t-lost" x="250" y="142">false</text>
+
+      <text class="note" x="530" y="40">order placed</text>
+      <text x="530" y="66">1  test a</text>
+      <text x="530" y="90">2  test c</text>
+      <text x="530" y="114">3  "else"</text>
+      <text x="530" y="138">4  "then"</text>
+      <text class="t-lost" x="530" y="162">5  test b</text>
+      <text class="note" x="530" y="196">both red targets are</text>
+      <text class="note" x="530" y="214">already placed, and each</text>
+      <text class="note" x="530" y="232">was recovered as empty</text>
+    </svg>
+    </div>
+    <figcaption>Before the fix, test <code>b</code> became an <code>if</code> with two empty arms, and that printed as nothing.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>What the copy does, and when it refuses</h2>
+  <p>A structured program cannot jump to a block that is already placed, so the fix prints <code>c</code> a second time inside the arm of <code>b</code>. It first has to know the copy's values do not leave the copy.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 760 350" role="img" aria-label="The copy decision. If the values the copy assigns are read past it, the copy is refused and test b stays lost. Otherwise the copy gets fresh registers and test b is kept.">
+      <defs>
+        <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="ahl2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-lost" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="ahk2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-kept" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect class="box" x="230" y="16" width="300" height="44"/>
+      <text x="380" y="35" text-anchor="middle">reach a block already placed</text>
+      <text class="note" x="380" y="52" text-anchor="middle">reemit()</text>
+
+      <rect class="box" x="230" y="96" width="300" height="44"/>
+      <text x="380" y="115" text-anchor="middle">build an if tree from it</text>
+      <text class="note" x="380" y="132" text-anchor="middle">reemit_branches: 16 blocks, stops at the merge</text>
+      <path class="edge" d="M380 60L380 96" marker-end="url(#ah2)"/>
+
+      <rect class="box" x="230" y="176" width="300" height="44"/>
+      <text x="380" y="195" text-anchor="middle">is a value it assigns read past it?</text>
+      <text class="note" x="380" y="212" text-anchor="middle">stays_within</text>
+      <path class="edge" d="M380 140L380 176" marker-end="url(#ah2)"/>
+
+      <rect class="box-kept" x="30" y="270" width="300" height="60"/>
+      <text class="t-kept" x="180" y="294" text-anchor="middle">copy, with fresh registers</text>
+      <text x="180" y="316" text-anchor="middle">test b kept</text>
+      <path class="edge-kept" d="M300 220L200 270" marker-end="url(#ahk2)"/>
+      <text class="t-kept" x="205" y="242">no: arms return</text>
+
+      <rect class="box-lost" x="430" y="270" width="300" height="60"/>
+      <text class="t-lost" x="580" y="294" text-anchor="middle">copy refused, block left empty</text>
+      <text x="580" y="316" text-anchor="middle">test b still lost</text>
+      <path class="edge-lost" d="M460 220L560 270" marker-end="url(#ahl2)"/>
+      <text class="t-lost" x="520" y="242">yes: arms assign</text>
+    </svg>
+    </div>
+    <figcaption>The refusal exists because a copy of an assigning tail printed names that crash: declared in one arm, undeclared in the other. Refusing avoids that crash and keeps the old wrong answer.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Fixed: the arms return</h2>
+  <p><code>if (a &amp;&amp; b || c) return "then"; return "else";</code> The tail assigns nothing that is read later, so the copy goes through. <code>t(1, 0, 0)</code> is the call that separates them: the VM returns <code>"else"</code>.</p>
+  <div class="pair">
+    <div><span class="label bad">Before: b is gone, returns "then"</span>
+<pre>const tmp = arg0;
+if (!tmp) {
+  const tmp3 = arg2;
+  if (!tmp3) {
+    return "else";
+  }
+}
+return "then";</pre></div>
+    <div><span class="label good">After: b kept, c copied, returns "else"</span>
+<pre>const tmp = arg0;
+if (!tmp) {
+  const tmp3 = arg2;
+  if (!tmp3) {
+    return "else";
+  }
+} else {
+  const tmp2 = arg1;
+  if (!tmp2) {
+    const tmp4 = arg2;
+    if (!tmp4) {
+      return "else";
+    }
+  }
+}
+return "then";</pre></div>
+  </div>
+</section>
+
+<section>
+  <h2>Not fixed: the arms assign</h2>
+  <p><code>let r; if (a &amp;&amp; b || c) r = "then"; else r = "else"; return r;</code> Register <code>r0</code> is assigned in the tail and read by the <code>return</code> past it, so the copy is refused. The output is the same before and after the commit, and <code>t(1, 0, 0)</code> still returns <code>"then"</code> where the VM returns <code>"else"</code>.</p>
+  <pre>let str;
+const tmp = arg0;
+if (!tmp) {
+  str = "then";
+  if (!arg2) {
+    str = "else";
+  }
+} else {
+  str = "then";   // arg1 is never tested
+}
+return str;</pre>
+  <p>The corpus test <code>branch_and_or</code> only covers the returning form, which is why the gates passed. The value form is the same bug and is still open.</p>
+</section>
+</main>
