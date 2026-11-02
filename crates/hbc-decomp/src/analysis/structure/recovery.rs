@@ -166,6 +166,11 @@ fn reemit_exit(ctx: &RecoveryCtx<'_>, block_id: BlockId) -> Option<Structure> {
         if !seen.insert(at) || seen.len() > 16 {
             return None;
         }
+        // The merge that follows runs anyway: copied too, it ran twice in print and
+        // its registers had two definitions, which blocked inlining them.
+        if at != block_id && ctx.falls_to.last().copied().flatten() == Some(at) {
+            return Some(Structure::Block(block_id, all));
+        }
         let block = ctx.cfg.get(at)?;
         all.extend(block.statements.iter().cloned());
         match &block.terminator {
@@ -715,6 +720,7 @@ pub(super) fn recover_structure_inner(
             };
             if let Some(merge) = find_merge_point(ctx.cfg, block_id, true_target, false_target)
                 .filter(|m| !past_fence(ctx, *m))
+                .filter(|m| !bypassed_tail(ctx, *m, [true_target, false_target], loop_stack))
             {
                 if merge != true_target || merge != false_target {
                     let merge_was_visited = ctx.visited.contains(&merge);
@@ -993,6 +999,72 @@ fn reaches(cfg: &CFG, from: BlockId, to: BlockId) -> bool {
         }
         if seen.insert(b) {
             stack.extend(cfg.get(b).map(|x| x.successors()).unwrap_or_default());
+        }
+    }
+    false
+}
+
+// A `return` or `throw` tail both arms can reach is no merge when one can also get
+// around it, to the merge that follows or the loop's next step. Held back and printed
+// after the `if`, the tail ran on every path: `case "0": if (x) break; default: throw`
+// lost its tests and always threw. Left as an arm, the second path copies the tail.
+fn bypassed_tail(
+    ctx: &RecoveryCtx<'_>,
+    merge: BlockId,
+    arms: [BlockId; 2],
+    loop_stack: &[&LoopInfo],
+) -> bool {
+    let mut at = merge;
+    let mut tail = HashSet::new();
+    loop {
+        if !tail.insert(at) || tail.len() > 16 {
+            return false;
+        }
+        match ctx.cfg.get(at).map(|b| &b.terminator) {
+            Some(Terminator::Return(_) | Terminator::Throw(_)) => break,
+            Some(Terminator::Jump(next)) => at = *next,
+            _ => return false,
+        }
+    }
+    let header = loop_stack.last().map(|l| l.header);
+    // Going on to the tail from there is still every path through it, so a true merge.
+    // Around the loop does not count: that is the tail's next run, not this one.
+    let leads_to_tail = |from: BlockId| {
+        let mut seen = HashSet::new();
+        let mut stack = vec![from];
+        while let Some(b) = stack.pop() {
+            if b == merge {
+                return true;
+            }
+            if Some(b) == header || !seen.insert(b) {
+                continue;
+            }
+            if let Some(block) = ctx.cfg.get(b) {
+                stack.extend(block.successors());
+            }
+        }
+        false
+    };
+    let beyond = |b: BlockId| {
+        ctx.falls_to.last().copied().flatten() == Some(b)
+            || loop_stack
+                .last()
+                .is_some_and(|l| l.header == b || l.exit == Some(b))
+    };
+    let mut seen = HashSet::new();
+    let mut stack = arms.to_vec();
+    while let Some(b) = stack.pop() {
+        if b == merge || !seen.insert(b) {
+            continue;
+        }
+        if beyond(b) {
+            if !leads_to_tail(b) {
+                return true;
+            }
+            continue;
+        }
+        if let Some(block) = ctx.cfg.get(b) {
+            stack.extend(block.successors());
         }
     }
     false

@@ -344,6 +344,21 @@ the same reads under another temp number (`tmp229.e.r`, `tmp230.e.r`). Those are
 lowered to `Object.keys()` with no argument and a read of a key nothing defines, and `tmpN.e.r` with no
 definition, both in Expensify.
 
+**A tail one arm gets around. Done (2026-11-02).** `case "0": if (x) break; default: throw` is an `if` whose
+two arms both reach the `throw`, so the `throw` was taken for their merge and printed after the `if`, on every
+path. One arm also reaches the merge that follows, or the loop's next step, without passing it. `bypassed_tail`
+leaves such a tail as an arm and the second path copies it. A way around that then runs into the tail is no way
+around: `value = {default: x}` followed by the module's `Object.keys` is a true merge, and treating it otherwise
+lost 51 `export *`. A copy stops at the merge it falls into, for the same module. Common outside `switch`: a Ukrainian
+date-fns `lastWeek` gave Monday the feminine text before this, and the wildcard interop ran `value = {default: x}`
+on every path, hidden by the `export *` fold.
+
+`switch_case_break_if` and the new `branch_bypassed_tail` pass on v96 and v98. Undeclared 752 to 765, 12494 to
+12595, 5082 to 5223, with `export *` 187, 710, 5 to 187, 710, 6, and output 0.1 to 0.4% larger. Strings listed as
+lost moved into templates or became recovered module names; I read the samples, not every name. Samples of the
+rise were not new losses: `tmp20` in Expensify's `dispatchReducerAction` is undeclared before this too (a `tmp`
+inlined away from a `while` body), and is open.
+
 ### G4 — async (medium)
 
 `spawnAsync` wrappers and the W14 detection: an async step's suspends become `await`. The

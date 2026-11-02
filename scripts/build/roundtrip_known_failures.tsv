@@ -28,5 +28,3 @@ v96	loop_header_self_branch	a header branching back to itself with more of the l
 v96	loop_header_value_after	a loop header's value read after the loop: its statements stay hoisted and run once
 v98	loop_header_self_branch	a header branching back to itself with more of the loop after it: only the header prints as a do-while, so the rest falls out and the test reads a name never declared
 v98	loop_header_value_after	a loop header's value read after the loop: its statements stay hoisted and run once
-v96	switch_case_break_if	a `case` holding `if (x) break;` that falls through to `default`: the case's test and the `if` are lost
-v98	switch_case_break_if	a `case` holding `if (x) break;` that falls through to `default`: the case's test and the `if` are lost
