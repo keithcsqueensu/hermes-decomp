@@ -493,6 +493,63 @@ pub fn stmt_has_side_effects(stmt: &Statement) -> bool {
     }
 }
 
+// Object and array literals nothing else has seen yet. A store into one cannot
+// change what any other read evaluates to, so reads may still move past the slot
+// fills that build props. Any other store can: as no barrier at all, a read moved past
+// it, and `s = log.join(); log = []` printed `log = []` first.
+#[derive(Default)]
+pub struct FreshObjects(std::collections::HashSet<u32>);
+
+impl FreshObjects {
+    // Whether `stmt` stores into a property of something that may be read elsewhere.
+    pub fn stores_to_shared(&self, stmt: &Statement) -> bool {
+        let object = match stmt {
+            Statement::Assign {
+                target: AssignTarget::Member { object, .. } | AssignTarget::Index { object, .. },
+                ..
+            } => object,
+            Statement::Assign { .. } => return false,
+            Statement::Delete { .. } => return true,
+            _ => return false,
+        };
+        !matches!(object, Expression::Value(Value::Binding(Binding::Register(r))) if self.0.contains(r))
+    }
+
+    // Takes in `stmt`: a literal assigned makes a register fresh, and a read of it
+    // anywhere but as the object of a store lets it escape.
+    pub fn step(&mut self, stmt: &Statement) {
+        struct Reads<'f>(&'f mut std::collections::HashSet<u32>);
+        impl<'a> crate::ir::Visitor<'a> for Reads<'_> {
+            fn visit_expression(&mut self, e: &'a Expression) {
+                if let Expression::Value(Value::Binding(Binding::Register(r))) = e {
+                    self.0.remove(r);
+                }
+                self.walk_expression(e);
+            }
+        }
+        match stmt {
+            Statement::Assign {
+                target: AssignTarget::Binding(Binding::Register(r)),
+                value,
+            } => {
+                crate::ir::Visitor::visit_expression(&mut Reads(&mut self.0), value);
+                if matches!(value, Expression::Object { .. } | Expression::Array { .. }) {
+                    self.0.insert(*r);
+                } else {
+                    self.0.remove(r);
+                }
+            }
+            Statement::Assign {
+                target: AssignTarget::Member { .. } | AssignTarget::Index { .. },
+                value,
+            } if !self.stores_to_shared(stmt) => {
+                crate::ir::Visitor::visit_expression(&mut Reads(&mut self.0), value);
+            }
+            other => crate::ir::Visitor::visit_statement(&mut Reads(&mut self.0), other),
+        }
+    }
+}
+
 pub fn is_simple_value(expr: &Expression) -> bool {
     matches!(
         expr,

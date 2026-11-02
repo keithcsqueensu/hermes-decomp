@@ -321,6 +321,18 @@ inside it and its catch: Discord's module 964 had most of its body in a `try`. S
 a dead enum (`Stopped`), `require` placeholders from those tails, a duplicate import reference. One
 real: `_NullFlags`, recorded as `switch_case_break_if`, wrong before and after in different ways.
 
+**A read moved past a store. Done (2026-11-02).** Wrong output outside generators: `s = log.join(); log =
+[]; print(s)` printed the store first, because a store to a property counted as no effect.
+`FreshObjects` makes one a barrier in `inline_expressions` and `optimize_chain_access`, unless its object
+is a literal nothing else has seen. `stmt_has_side_effects` itself is unchanged: object slot fills and the
+JSX fold rely on it. `inline_past_global_write` and `inline_store_order` pass.
+
+Against the previous step: undeclared 1517 to 1516, 13077 to 13036, 5530 to 5520; raw unchanged; closing
+JSX tags 13624 to 13623 in Expensify. Discord gains 1552 `.call(tmp` forms where a method read no longer
+crosses a store: right, and less readable. A barrier on every store instead took undeclared to 1330, 12532,
+5312 and Discord raw to 552, but lost most JSX in Expensify (13624 to 6922). That gap is unexplained and
+may hold more wrong output worth reading.
+
 ### G4 — async (medium)
 
 `spawnAsync` wrappers and the W14 detection: an async step's suspends become `await`. The

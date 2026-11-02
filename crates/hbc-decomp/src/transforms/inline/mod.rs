@@ -97,6 +97,7 @@ impl MutVisitor for ExpressionInliner {
         let mut result = Vec::new();
         // Pending assignments with side effects: (register, statement, expression value)
         let mut pending: Vec<(u32, Statement, Expression)> = Vec::new();
+        let mut fresh = crate::ir::FreshObjects::default();
 
         // We drain the original statements and build them back
         let old_stmts = std::mem::take(stmts);
@@ -107,7 +108,9 @@ impl MutVisitor for ExpressionInliner {
         let outer = self.definitions.clone();
 
         for mut stmt in old_stmts {
-            let has_side_effects = crate::ir::stmt_has_side_effects(&stmt);
+            let has_side_effects =
+                crate::ir::stmt_has_side_effects(&stmt) || fresh.stores_to_shared(&stmt);
+            fresh.step(&stmt);
 
             let mut kept_pending = Vec::new();
             for (r, s, expr) in pending {

@@ -77,7 +77,12 @@ fn use_follows_without_interference(
     reg: u32,
     expr: &Expression,
 ) -> bool {
-    use crate::ir::{expr_uses_register, stmt_has_side_effects, stmt_uses_register};
+    use crate::ir::{expr_uses_register, stmt_has_side_effects, stmt_uses_register, FreshObjects};
+    // A literal defined just above is still fresh here.
+    let mut fresh = FreshObjects::default();
+    for stmt in &stmts[def_idx.saturating_sub(64)..=def_idx] {
+        fresh.step(stmt);
+    }
     for stmt in &stmts[def_idx + 1..] {
         if stmt_uses_register(stmt, reg) {
             return match stmt {
@@ -93,9 +98,10 @@ fn use_follows_without_interference(
                 _ => false,
             };
         }
-        if stmt_has_side_effects(stmt) {
+        if stmt_has_side_effects(stmt) || fresh.stores_to_shared(stmt) {
             return false;
         }
+        fresh.step(stmt);
         if let Statement::Assign {
             target: AssignTarget::Binding(Binding::Register(w)),
             ..
