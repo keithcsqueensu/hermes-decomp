@@ -294,6 +294,14 @@ the `finally`.
 wrong output. `ResumeGenerator`'s return flag tested with `JmpFalse` jumps to continue, and the path
 always kept the false side, so `return yield 2` printed and the code after it was lost.
 
+**Loop header statements. Done in part (2026-11-01).** An exception like G3c: wrong output outside
+generators. The back edges of a loop come to its header, so `stmts; while (cond)` ran the statements
+once: `for (;;) { push(x); if (done) break; x = next(); }` pushed one item. They now stay inside
+`while (true)`. Against the assign form: Undeclared 1527 to 1519, 13138 to 13107, 5531 to 5530; for-of
+counts unchanged; no string lost; raw unchanged. `loop_body_then_break` and `loop_header_statements`
+pass. **Open:** a header's value read after the loop stays hoisted (`loop_header_value_after`), and a
+header branching to itself with more of the loop after it (`loop_header_self_branch`).
+
 ### G4 — async (medium)
 
 `spawnAsync` wrappers and the W14 detection: an async step's suspends become `await`. The

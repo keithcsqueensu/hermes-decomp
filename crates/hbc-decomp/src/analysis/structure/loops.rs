@@ -107,12 +107,13 @@ pub(super) fn recover_loop(
                 return Structure::Sequence(parts);
             }
 
-            // A header with statements, testing one exit while a later block takes
-            // another (a `for` with a `return` inside, printed by the compiler as the
-            // header's test). `while (cond)` runs the statements once and has no place
-            // for the second exit, so the last arm takes it. The header's exit prints
-            // inline, and the other is what `break` means. Only with a second exit:
-            // the for-of recogniser reads the hoisted form of a single-exit loop.
+            // A header with statements. The back edges come to it, so they run on every
+            // pass, and `stmts; while (cond)` runs them once: `for (;;) { push(x); if
+            // (done) break; x = next(); }` pushed one item. The last arm keeps them in
+            // the loop. With a later block taking a second exit (a `for` with a `return`
+            // inside), the header's exit prints inline and the other is what `break`
+            // means. A test of `undefined` stays hoisted: the for-of and for-in
+            // recognisers read that form.
             let header_exit = match (true_in_loop, false_in_loop) {
                 (true, false) => Some(false_target),
                 (false, true) => Some(true_target),
@@ -129,20 +130,22 @@ pub(super) fn recover_loop(
                     }
                 }
             }
-            let two_exits = header_exit.is_some()
+            let statements_inside = header_exit.is_some()
                 && !header_stmts.is_empty()
-                && others.len() == 1
+                && others.len() <= 1
                 && !tests_undefined(&condition)
                 && super::recovery::stays_within(ctx.cfg, &[loop_info.header], |b| {
                     loop_info.body.contains(&b)
                 });
-            if two_exits && loop_info.exit != Some(others[0]) {
-                let mut retargeted = loop_info.clone();
-                retargeted.exit = Some(others[0]);
-                return recover_loop(ctx, &retargeted, loop_stack);
+            if let Some(&other) = others.first().filter(|_| statements_inside) {
+                if loop_info.exit != Some(other) {
+                    let mut retargeted = loop_info.clone();
+                    retargeted.exit = Some(other);
+                    return recover_loop(ctx, &retargeted, loop_stack);
+                }
             }
 
-            if true_in_loop && !false_in_loop && !two_exits {
+            if true_in_loop && !false_in_loop && !statements_inside {
                 let body = recover_structure(ctx, true_target, &new_stack);
                 let mut parts = vec![Structure::Block(loop_info.header, header_stmts)];
                 parts.push(make_loop(body, condition));
@@ -154,7 +157,7 @@ pub(super) fn recover_loop(
                     }
                 }
                 Structure::Sequence(parts)
-            } else if false_in_loop && !true_in_loop && !two_exits {
+            } else if false_in_loop && !true_in_loop && !statements_inside {
                 let body = recover_structure(ctx, false_target, &new_stack);
                 let mut parts = vec![Structure::Block(loop_info.header, header_stmts)];
                 parts.push(make_loop(
