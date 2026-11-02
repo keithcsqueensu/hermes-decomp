@@ -3,6 +3,22 @@ use super::{RecoveryCtx, Structure};
 use crate::analysis::loops::LoopInfo;
 use crate::ir::{BlockId, Expression, Terminator};
 
+// A test against `undefined` is the done check of for-of and for-in, which have
+// recognisers of their own that read the hoisted form, a `return` inside or not.
+fn tests_undefined(condition: &Expression) -> bool {
+    let is_undefined = |e: &Expression| {
+        matches!(
+            e,
+            Expression::Value(crate::ir::Value::Constant(crate::ir::Constant::Undefined))
+        )
+    };
+    match condition {
+        Expression::Unary { operand, .. } => tests_undefined(operand),
+        Expression::Binary { left, right, .. } => is_undefined(left) || is_undefined(right),
+        _ => false,
+    }
+}
+
 pub(super) fn recover_loop(
     ctx: &mut RecoveryCtx<'_>,
     loop_info: &LoopInfo,
@@ -91,7 +107,42 @@ pub(super) fn recover_loop(
                 return Structure::Sequence(parts);
             }
 
-            if true_in_loop && !false_in_loop {
+            // A header with statements, testing one exit while a later block takes
+            // another (a `for` with a `return` inside, printed by the compiler as the
+            // header's test). `while (cond)` runs the statements once and has no place
+            // for the second exit, so the last arm takes it. The header's exit prints
+            // inline, and the other is what `break` means. Only with a second exit:
+            // the for-of recogniser reads the hoisted form of a single-exit loop.
+            let header_exit = match (true_in_loop, false_in_loop) {
+                (true, false) => Some(false_target),
+                (false, true) => Some(true_target),
+                _ => None,
+            };
+            let mut others: Vec<BlockId> = Vec::new();
+            for b in &loop_info.body {
+                for t in ctx.cfg.get(*b).map(|x| x.successors()).unwrap_or_default() {
+                    if !loop_info.body.contains(&t)
+                        && Some(t) != header_exit
+                        && !others.contains(&t)
+                    {
+                        others.push(t);
+                    }
+                }
+            }
+            let two_exits = header_exit.is_some()
+                && !header_stmts.is_empty()
+                && others.len() == 1
+                && !tests_undefined(&condition)
+                && super::recovery::stays_within(ctx.cfg, &[loop_info.header], |b| {
+                    loop_info.body.contains(&b)
+                });
+            if two_exits && loop_info.exit != Some(others[0]) {
+                let mut retargeted = loop_info.clone();
+                retargeted.exit = Some(others[0]);
+                return recover_loop(ctx, &retargeted, loop_stack);
+            }
+
+            if true_in_loop && !false_in_loop && !two_exits {
                 let body = recover_structure(ctx, true_target, &new_stack);
                 let mut parts = vec![Structure::Block(loop_info.header, header_stmts)];
                 parts.push(make_loop(body, condition));
@@ -103,7 +154,7 @@ pub(super) fn recover_loop(
                     }
                 }
                 Structure::Sequence(parts)
-            } else if false_in_loop && !true_in_loop {
+            } else if false_in_loop && !true_in_loop && !two_exits {
                 let body = recover_structure(ctx, false_target, &new_stack);
                 let mut parts = vec![Structure::Block(loop_info.header, header_stmts)];
                 parts.push(make_loop(

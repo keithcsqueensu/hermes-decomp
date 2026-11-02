@@ -6,7 +6,7 @@
 > `../03_analysis/closure_model/IDENTITY_PLAN.md` A2e, and the catch-loop dominator change
 > (A2e3, A2e4) is ordered against this plan's G2 below.
 
-Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).** **G2 landed (2026-11-01).** **G3a and G3c landed (2026-11-01);** G3b is open.
+Status: planned 2026-10-29. **G0 landed (2026-10-30).** **G1 landed (2026-11-01).** **G2 landed (2026-11-01).** **G3a, G3c and G3d landed (2026-11-01);** G3b is open.
 
 ## 1. Where things stand
 
@@ -238,7 +238,7 @@ loop body that emptied lost its calls: `while (readResult !== null) {}` had drop
 `closure_8.push(readResult)`. The undeclared rise is restored reads of `window` and `__DEV__`,
 which are real globals. Hunks were sampled by kind, not read one by one.
 
-**G3d, wrong output found by G3c. Open.** Two bugs, both older than G3c.
+**G3d, wrong output found by G3c. Done (2026-11-01).** Two bugs, both older than G3c.
 
 `loop_two_exits`: a `for` with a `return` inside prints as `while (i !== 1)`, losing `i < n` and the repeat.
 
@@ -248,6 +248,26 @@ returns empty for both, so the test is lost. `_iterableToArray` prints `Array.fr
 bytecode tests `@@iterator` first. G3c did not cause it: the old output lost the same test.
 `branch_and_or` is the test, a known failure on both versions. Both are wrong-output bugs outside
 generators, so they go before G3b.
+
+The fix: a tail reached again that ends in a branch is copied as an `if` tree, up to 16 blocks,
+stopping at the innermost merge. Each copy gets registers of its own, except one it reads before
+assigning, because later passes read a register assigned once as one value. A copy whose values
+are read past it stays empty, as before. A loop whose header has statements and whose body has one
+other exit keeps the `for` test by breaking to that exit. A test against `undefined` is left alone,
+because that is the for-of and for-in form its recogniser reads.
+
+Measured against G3c (equinox, Expensify, Discord): no string lost and 0 unparsable on all three.
+Output grows 1.5%, 3.6%, 2.6%. Raw machines stay 0 and 678. Expensify goes 326 to 332, all in module
+1039, whose tail held 3 raw machines and now prints on each of its 3 paths where it printed on one.
+No machine newly refused; the ceiling is raised for that reason.
+
+Undeclared names rise: 1488 to 1506, 12636 to 13159, 5256 to 5588. **Open, split off:** most of
+the rise is code that used to be dropped and now prints, which then hits older defects. The largest
+is a bare import statement beside a broken tag (`Pressables;` then `<tmpResult.PressableOpacity>`),
+present 86 times in Discord before and 343 after. It was not traced to its pass. The old output
+returned nothing on those paths and the new one throws on the tag, so both are wrong, but the new
+one is loud. Copies made by `reemit_exit` keep their registers: renaming them lost 36 strings on
+Discord and did not help `tmpResult`.
 
 ### G4 — async (medium)
 

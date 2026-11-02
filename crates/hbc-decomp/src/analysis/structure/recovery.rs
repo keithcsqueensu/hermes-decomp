@@ -72,6 +72,8 @@ pub fn analyze(cfg: &CFG) -> (Structure, Vec<LoopInfo>) {
         loops: &loops,
         visited: &mut visited,
         emitted: &mut emitted,
+        falls_to: Vec::new(),
+        next_reg: std::cell::Cell::new(None),
         try_starts: &try_starts,
         open_tries: HashSet::new(),
     };
@@ -113,6 +115,249 @@ fn reemit_exit(ctx: &RecoveryCtx<'_>, block_id: BlockId) -> Option<Structure> {
     }
 }
 
+// A tail that ends in a branch, reached again after it was emitted: the second
+// test of `a && b || c` jumps to the merge and to the third test, both already
+// placed, and left empty the test was lost. It is copied as an `if`, as long as
+// every way out ends the function or falls into the merge that follows. Anything
+// else has no structured form here, and None keeps the old empty result.
+fn reemit_branches(
+    ctx: &RecoveryCtx<'_>,
+    block_id: BlockId,
+    budget: &mut u32,
+    copied: &mut HashSet<BlockId>,
+) -> Option<Structure> {
+    let merge = ctx.falls_to.last().copied().flatten();
+    if merge == Some(block_id) {
+        return Some(Structure::Block(block_id, vec![]));
+    }
+    if !ctx.emitted.contains(&block_id) || *budget == 0 {
+        return None;
+    }
+    *budget -= 1;
+    copied.insert(block_id);
+    let block = ctx.cfg.get(block_id)?;
+    let mut stmts = block.statements.clone();
+    match &block.terminator {
+        Terminator::Return(e) => {
+            stmts.push(Statement::Return(e.clone()));
+            Some(Structure::Block(block_id, stmts))
+        }
+        Terminator::Throw(e) => {
+            stmts.push(Statement::Throw(e.clone()));
+            Some(Structure::Block(block_id, stmts))
+        }
+        Terminator::Jump(next) => {
+            let next = reemit_branches(ctx, *next, budget, copied)?;
+            Some(Structure::Sequence(vec![
+                Structure::Block(block_id, stmts),
+                next,
+            ]))
+        }
+        Terminator::Branch {
+            condition,
+            true_target,
+            false_target,
+        } => {
+            let then_ = reemit_branches(ctx, *true_target, budget, copied)?;
+            let else_ = reemit_branches(ctx, *false_target, budget, copied)?;
+            Some(Structure::Sequence(vec![
+                Structure::Block(block_id, stmts),
+                Structure::If {
+                    condition: condition.clone(),
+                    then_: Box::new(then_),
+                    else_: Box::new(else_),
+                },
+            ]))
+        }
+        _ => None,
+    }
+}
+
+// Registers a block assigns and registers it reads.
+#[derive(Default)]
+struct BlockRegs {
+    read: HashSet<u32>,
+    assigned: HashSet<u32>,
+}
+
+impl<'a> crate::ir::Visitor<'a> for BlockRegs {
+    fn visit_expression(&mut self, e: &'a Expression) {
+        if let Expression::Value(crate::ir::Value::Binding(crate::ir::Binding::Register(r))) = e {
+            self.read.insert(*r);
+        }
+        self.walk_expression(e);
+    }
+    fn visit_assign_target(&mut self, t: &'a crate::ir::AssignTarget) {
+        if let crate::ir::AssignTarget::Binding(crate::ir::Binding::Register(r)) = t {
+            self.assigned.insert(*r);
+        }
+        self.walk_assign_target(t);
+    }
+}
+
+fn block_regs(block: &crate::ir::BasicBlock) -> BlockRegs {
+    use crate::ir::Visitor;
+    let mut regs = BlockRegs::default();
+    for s in &block.statements {
+        regs.visit_statement(s);
+    }
+    match &block.terminator {
+        Terminator::Branch { condition: e, .. }
+        | Terminator::Throw(e)
+        | Terminator::Return(Some(e))
+        | Terminator::Switch { value: e, .. } => regs.visit_expression(e),
+        _ => {}
+    }
+    regs
+}
+
+// Whether what the `from` blocks assign is read only inside `within`. A value
+// read past a copy is a join of two assignments, and declared in one arm it is
+// undeclared in the other. Read past a loop, it was declared in the loop's body.
+// Either way the printed name would crash.
+pub(super) fn stays_within(cfg: &CFG, from: &[BlockId], within: impl Fn(BlockId) -> bool) -> bool {
+    let mut assigned = HashSet::new();
+    for id in from {
+        if let Some(b) = cfg.get(*id) {
+            assigned.extend(block_regs(b).assigned);
+        }
+    }
+    cfg.blocks_with_ids()
+        .filter(|(id, _)| !within(*id))
+        .all(|(_, b)| block_regs(b).read.is_disjoint(&assigned))
+}
+
+// Later passes read a register assigned once as one value, an import above all:
+// assigned again by a copy, `<tmpResult.CompatView>` lost its declaration. The
+// copy gets registers of its own, which `stays_within` shows nothing else reads.
+// One the copy reads before assigning holds a value from above and keeps its name.
+// A tail `reemit_exit` copies keeps all of its names: renamed, it lost strings.
+fn fresh_registers(ctx: &RecoveryCtx<'_>, tree: &mut Structure) {
+    use crate::ir::MutVisitor;
+    let cfg = ctx.cfg;
+    struct Rename(std::collections::HashMap<u32, u32>);
+    impl MutVisitor for Rename {
+        fn visit_expression(&mut self, e: &mut Expression) {
+            if let Expression::Value(crate::ir::Value::Binding(crate::ir::Binding::Register(r))) = e
+            {
+                if let Some(n) = self.0.get(r) {
+                    *r = *n;
+                }
+            }
+            self.walk_expression(e);
+        }
+        fn visit_assign_target(&mut self, t: &mut crate::ir::AssignTarget) {
+            if let crate::ir::AssignTarget::Binding(crate::ir::Binding::Register(r)) = t {
+                if let Some(n) = self.0.get(r) {
+                    *r = *n;
+                }
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    fn walk(tree: &mut Structure, rename: &mut Rename) {
+        match tree {
+            Structure::Block(_, stmts) => stmts.iter_mut().for_each(|s| rename.visit_statement(s)),
+            Structure::Sequence(parts) => parts.iter_mut().for_each(|p| walk(p, rename)),
+            Structure::If {
+                condition,
+                then_,
+                else_,
+            } => {
+                rename.visit_expression(condition);
+                walk(then_, rename);
+                walk(else_, rename);
+            }
+            _ => {}
+        }
+    }
+    // Copies in one function must not share registers either.
+    let mut next = ctx.next_reg.get().unwrap_or_else(|| {
+        cfg.blocks_with_ids()
+            .flat_map(|(_, b)| {
+                let r = block_regs(b);
+                r.read.into_iter().chain(r.assigned).collect::<Vec<_>>()
+            })
+            .max()
+            .map_or(0, |m| m + 1)
+    });
+    let mut map = std::collections::HashMap::new();
+    for r in renamable(tree) {
+        map.insert(r, next);
+        next += 1;
+    }
+    ctx.next_reg.set(Some(next));
+    walk(tree, &mut Rename(map));
+}
+
+// What a copied tree assigns before any read of it, sorted so that output is stable.
+fn renamable(tree: &Structure) -> Vec<u32> {
+    use crate::ir::Visitor;
+    #[derive(Default)]
+    struct Seen {
+        assigned: HashSet<u32>,
+        from_above: HashSet<u32>,
+    }
+    fn reads(regs: &BlockRegs, defined: &HashSet<u32>, seen: &mut Seen) {
+        seen.from_above
+            .extend(regs.read.iter().filter(|r| !defined.contains(r)));
+    }
+    fn walk(tree: &Structure, defined: &mut HashSet<u32>, seen: &mut Seen) {
+        match tree {
+            Structure::Block(_, stmts) => {
+                for stmt in stmts {
+                    let mut regs = BlockRegs::default();
+                    regs.visit_statement(stmt);
+                    reads(&regs, defined, seen);
+                    seen.assigned.extend(regs.assigned.iter().copied());
+                    defined.extend(regs.assigned);
+                }
+            }
+            Structure::Sequence(parts) => parts.iter().for_each(|p| walk(p, defined, seen)),
+            Structure::If {
+                condition,
+                then_,
+                else_,
+            } => {
+                let mut regs = BlockRegs::default();
+                regs.visit_expression(condition);
+                reads(&regs, defined, seen);
+                let mut after_then = defined.clone();
+                walk(then_, &mut after_then, seen);
+                let mut after_else = defined.clone();
+                walk(else_, &mut after_else, seen);
+                *defined = after_then.intersection(&after_else).copied().collect();
+            }
+            _ => {}
+        }
+    }
+    let mut seen = Seen::default();
+    walk(tree, &mut HashSet::new(), &mut seen);
+    let mut out: Vec<u32> = seen
+        .assigned
+        .difference(&seen.from_above)
+        .copied()
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+fn reemit(ctx: &RecoveryCtx<'_>, block_id: BlockId) -> Structure {
+    reemit_exit(ctx, block_id)
+        .or_else(|| {
+            let mut copied = HashSet::new();
+            let tree = reemit_branches(ctx, block_id, &mut 16, &mut copied)?;
+            let from: Vec<BlockId> = copied.iter().copied().collect();
+            if !stays_within(ctx.cfg, &from, |b| copied.contains(&b)) {
+                return None;
+            }
+            let mut tree = tree;
+            fresh_registers(ctx, &mut tree);
+            Some(tree)
+        })
+        .unwrap_or(Structure::Block(block_id, vec![]))
+}
+
 pub(super) fn recover_structure(
     ctx: &mut RecoveryCtx<'_>,
     block_id: BlockId,
@@ -138,7 +383,7 @@ pub(super) fn recover_structure(
                 return Structure::Break(label);
             }
         }
-        return reemit_exit(ctx, block_id).unwrap_or(Structure::Block(block_id, vec![]));
+        return reemit(ctx, block_id);
     }
 
     let next_try = ctx.try_starts.get(&block_id).and_then(|hs| {
@@ -178,6 +423,7 @@ pub(super) fn recover_structure(
         // Recover the try body (catch block excluded via visited set). A
         // handler inside this one that starts at the same block opens there.
         ctx.open_tries.insert(catch_block_id);
+        ctx.falls_to.push(None);
         let try_body = recover_structure(ctx, block_id, loop_stack);
         ctx.open_tries.remove(&catch_block_id);
 
@@ -186,6 +432,7 @@ pub(super) fn recover_structure(
             ctx.visited.remove(&catch_block_id);
         }
         let (catch_param, catch_body) = recover_catch_body(ctx, catch_block_id, loop_stack);
+        ctx.falls_to.pop();
 
         let try_catch = Structure::TryCatch {
             try_body: Box::new(try_body),
@@ -229,14 +476,17 @@ pub(super) fn recover_structure_inner(
                 return Structure::Break(label);
             }
         }
-        return reemit_exit(ctx, block_id).unwrap_or(Structure::Block(block_id, vec![]));
+        return reemit(ctx, block_id);
     }
 
     // Check if this is a loop header
     if let Some(loop_info) = ctx.loops.iter().find(|l| l.header == block_id) {
         if !ctx.visited.contains(&block_id) {
             let loop_info = loop_info.clone();
-            return recover_loop(ctx, &loop_info, loop_stack);
+            ctx.falls_to.push(None);
+            let recovered = recover_loop(ctx, &loop_info, loop_stack);
+            ctx.falls_to.pop();
+            return recovered;
         }
     }
 
@@ -346,8 +596,10 @@ pub(super) fn recover_structure_inner(
                 if merge != true_target || merge != false_target {
                     let merge_was_visited = ctx.visited.contains(&merge);
                     ctx.visited.insert(merge);
+                    ctx.falls_to.push(Some(merge));
                     let then_ = recover_structure(ctx, true_target, loop_stack);
                     let else_ = recover_structure(ctx, false_target, loop_stack);
+                    ctx.falls_to.pop();
                     if !merge_was_visited {
                         ctx.visited.remove(&merge);
                     }
@@ -603,4 +855,40 @@ pub(super) fn find_merge_point(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::*;
+    use crate::ir::{Binding, Value};
+
+    fn reg(r: u32) -> Expression {
+        Expression::Value(Value::Binding(Binding::Register(r)))
+    }
+
+    fn set(target: u32, value: Expression) -> Statement {
+        Statement::assign_reg(target, value)
+    }
+
+    // r2 is read before the copy assigns it, so that read is a value from above the
+    // copy. Renamed, it would read a register nothing ever wrote.
+    #[test]
+    fn a_register_read_before_it_is_assigned_keeps_its_name() {
+        let tree = Structure::Block(BlockId(0), vec![set(1, reg(2)), set(2, reg(1))]);
+        assert_eq!(renamable(&tree), vec![1]);
+    }
+
+    // Assigned on one arm only, r3 still holds the value from above on the other.
+    #[test]
+    fn a_register_assigned_on_one_arm_is_from_above_when_read_after() {
+        let tree = Structure::Sequence(vec![
+            Structure::If {
+                condition: reg(9),
+                then_: Box::new(Structure::Block(BlockId(0), vec![set(3, reg(9))])),
+                else_: Box::new(Structure::Block(BlockId(0), vec![])),
+            },
+            Structure::Block(BlockId(0), vec![set(4, reg(3))]),
+        ]);
+        assert_eq!(renamable(&tree), vec![4]);
+    }
 }

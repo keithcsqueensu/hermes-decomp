@@ -15,6 +15,12 @@ pub(crate) struct RecoveryCtx<'a> {
     // Blocks already emitted somewhere, as opposed to merely marked visited
     // (a merge point or loop exit held back to be emitted after its region).
     pub emitted: &'a mut HashSet<BlockId>,
+    // What falling off the end of the code being recovered reaches: the merge
+    // of the innermost `if`, or None inside a loop or `try`, whose end goes
+    // somewhere else.
+    pub falls_to: Vec<Option<BlockId>>,
+    // The next register free for a copied block, once one has been copied.
+    pub next_reg: std::cell::Cell<Option<u32>>,
     // try start -> the handlers whose range starts there, outermost first.
     pub try_starts: &'a BTreeMap<BlockId, Vec<&'a CfgExceptionHandler>>,
     // Catch blocks of the tries being recovered: the next handler at a start
