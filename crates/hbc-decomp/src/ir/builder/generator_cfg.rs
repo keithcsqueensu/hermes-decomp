@@ -131,19 +131,8 @@ pub fn transform_generator_cfg(cfg: &mut CFG) {
 
             // If the terminator is a Branch checking the "is completed" flag,
             // redirect to just the "not completed" (continue) path
-            if let Terminator::Branch {
-                true_target,
-                false_target,
-                ..
-            } = resume_block_data.terminator.clone()
-            {
-                // true_target = "generator completed" (return path)
-                // false_target = "continue execution" (normal path)
-                resume_block_data.set_terminator(Terminator::Jump(false_target));
-
-                // Mark the "completed" path block to return the resume value
-                // (it already has a Return terminator from the original CFG)
-                let _ = true_target; // completed path stays as-is
+            if let Some(next) = not_returned(&resume_block_data.terminator) {
+                resume_block_data.set_terminator(Terminator::Jump(next));
             }
         }
     }
@@ -172,13 +161,35 @@ pub fn transform_generator_cfg(cfg: &mut CFG) {
             entry.statements.remove(idx);
 
             // If the terminator branches on the resume check, skip to the "not resumed" branch
-            if let Terminator::Branch { false_target, .. } = entry.terminator.clone() {
-                entry.set_terminator(Terminator::Jump(false_target));
+            if let Some(next) = not_returned(&entry.terminator) {
+                entry.set_terminator(Terminator::Jump(next));
             }
         }
     }
 
     // Also remove CompleteGenerator blocks (they just have Return terminators, already handled)
+}
+
+// Where a test of ResumeGenerator's "return requested" flag goes when it is
+// false. `JmpTrue` jumps away to return and falls through to continue; `JmpFalse`
+// tests `!flag`, so there the jump is the one that continues, and taking the other
+// side printed `return yield 2` and lost the code after it.
+fn not_returned(terminator: &Terminator) -> Option<BlockId> {
+    let Terminator::Branch {
+        condition,
+        true_target,
+        false_target,
+    } = terminator
+    else {
+        return None;
+    };
+    Some(match condition {
+        Expression::Unary {
+            op: crate::ir::UnaryOp::Not,
+            ..
+        } => *true_target,
+        _ => *false_target,
+    })
 }
 
 fn is_resume_call(expr: &Expression) -> bool {
