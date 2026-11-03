@@ -1,6 +1,6 @@
 # Later fixes: staged plan
 
-Status: planned 2026-11-02. Item 1 and L1 done 2026-11-03. This covers what is left after the loop header fixes and
+Status: planned 2026-11-02. Item 1 and L1 done, L2 closed, 2026-11-03. This covers what is left after the loop header fixes and
 `for_of_nested_for` (see `scripts/build/roundtrip_known_failures.tsv`). Measurements are from the build at 6f3705d.
 
 **Overall order (agreed 2026-11-02),** across this plan, GENERATOR_LIFT_PLAN.md and
@@ -149,6 +149,14 @@ Start by listing undeclared `tmpN` with `e` and `r` reads from `scripts/measure`
 is a hoisting bug and gets its own snippet. If none remain, close the item.
 
 **Test.** Snippets as above. The undeclared count on Expensify should fall; it is a reading aid, not a gate.
+
+**Closed (2026-11-03), no code change.** Both re-read on the L1 build (eeefc99):
+- `tmp20`: the loop now reads `tmp30`, the combined lanes computed once before `pending.lanes` is written; every read
+  in the loop is declared. Fixed by item 1's value-ordering batch (1f7a1d2). The reduced `markRootEntangled`
+  snippet passes the round trip, so no snippet was added.
+- `tmpN.e.r`: Expensify prints 315 `tmpN.[es].[rc]` reads. For each of the 28 names involved, every undeclared
+  reference (`undeclared.mjs --per-module --show`) was matched against its line: none is a range read. The undeclared
+  `tmpN` that remain are other reads of the same common names, not this shape.
 
 ## L3. v96 generator `finally`
 
