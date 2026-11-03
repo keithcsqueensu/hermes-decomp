@@ -15,6 +15,35 @@ Status: planned 2026-11-02, nothing started. This covers what is left after the 
 7. L3 and L4 (one gate run), beside A3 step 4: the same generator code.
 8. A3 steps 4a-5c, then A4.
 
+**Item 1 done (2026-11-03).** `loop_header_self_branch` (e81184b), then one batch for the two for-of snippets:
+
+- `for_of_nested_for`: the for-of plumbing scan stopped at the inner loop's constant step and limit, and at a
+  parameter source copy. It now keeps any constant and a parameter copy. Each early exit left `iter.return()` on an
+  iterator the output no longer names; those closes are stripped at any depth.
+- `for_of_empty_body` on v96 was the `n++` value read after its write, from four places, each verified with stage
+  dumps: the F12 object fold moved a store above a register set in between; `inline_named` reused a multi-use
+  definition after a write to what it reads (now written out where it stood, lazily); v98 F3 propagated a copy of a
+  closure slot past a store to it; F7 inlined across a slot write. A side review found the same with properties
+  (`t = a.b; a.b = 5; use(t)`, and a call in between): three of four snippets were wrong before. `inline_named` now
+  treats a property read as invalidated by a statement that may write memory.
+  Snippets: `postinc_read_after.js`, `property_read_after.js`.
+- `apply_pending_to_stmt` took a statement's used names after substitution, so a substituted value stayed pending and
+  was written again (`obj.value = f(x); const fResult = f(x);`), which broke the generator lifter's case parsing.
+- The F3 call rule drops copies only of bindings the function writes; dropping all of them lost module-loader
+  imports (Equinox raw `tmpN(NNN)` loader calls 27 -> 279 in one run).
+- The slot check caught a dropped `if`: `cleanup_noise` took `num = <outer num>` (an unstamped local given a stamped
+  enclosing variable) for `x = x`. Only `slot = local` is that store now.
+- Also passing now: `loop_reassign` (v96, v98, v99) and `lang_iterators` v98 in `env_model`.
+
+Measured against 6f3705d: raw machines Expensify 303 -> 274, Discord 579 -> 452. Undeclared Expensify 11155 ->
+10313, Discord 5275 -> 5040, Equinox 821 -> 889. The Equinox rise is the counter, not new reads: it masks a name by
+any file-level declaration, and the for-of rebuild removed some of those. Per module, Equinox fell 3162 -> 2732
+(earlier build of this batch). Slot identity on Equinox 754/319/11 -> 745/315/11. Output 0.7-1.5% smaller; no string
+lost.
+
+Open: a nested function that writes a captured variable during a call is not seen by the F3 call rule, so
+`t = x; f(); use(t)` can still read the new `x`. It was wrong before this batch too.
+
 Wrong output goes before identity work. The generator stages are low urgency and sit where they share code
 with A3 step 4.
 

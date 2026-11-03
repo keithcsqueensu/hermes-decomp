@@ -220,24 +220,32 @@ fn stmt_uses(stmt: &Statement, reg: u32) -> bool {
 
 // True if `stmt` assigns to any register that `value` reads. Such a write
 // invalidates a pending copy of `value`, since inlining it later would capture
-// the post-write register state.
+// the post-write register state. The same for a variable or a captured slot it
+// reads, written by any store to one: `r = n; n = n + 1; o.done = r > 1` printed
+// `n > 1`, the new value, for `n++` on v98.
 fn stmt_redefines_source(stmt: &Statement, value: &Expression) -> bool {
     let mut reads: HashSet<u32> = HashSet::new();
     collect_read_regs(value, &mut reads);
-    if reads.is_empty() {
+    let reads_binding = reads_non_register_binding(value);
+    if reads.is_empty() && !reads_binding {
         return false;
     }
 
     struct DefChecker<'a> {
         reads: &'a HashSet<u32>,
+        reads_binding: bool,
         found: bool,
     }
     impl<'a> Visitor<'a> for DefChecker<'a> {
         fn visit_assign_target(&mut self, target: &'a AssignTarget) {
-            if let AssignTarget::Binding(Binding::Register(r)) = target {
-                if self.reads.contains(r) {
-                    self.found = true;
+            match target {
+                AssignTarget::Binding(Binding::Register(r)) => {
+                    if self.reads.contains(r) {
+                        self.found = true;
+                    }
                 }
+                AssignTarget::Binding(_) if self.reads_binding => self.found = true,
+                _ => {}
             }
             self.walk_assign_target(target);
         }
@@ -247,10 +255,28 @@ fn stmt_redefines_source(stmt: &Statement, value: &Expression) -> bool {
     }
     let mut checker = DefChecker {
         reads: &reads,
+        reads_binding,
         found: false,
     };
     checker.visit_statement(stmt);
     checker.found
+}
+
+fn reads_non_register_binding(expr: &Expression) -> bool {
+    struct C(bool);
+    impl<'a> Visitor<'a> for C {
+        fn visit_expression(&mut self, expr: &'a Expression) {
+            if let Expression::Value(Value::Binding(b)) = expr {
+                if !matches!(b, Binding::Register(_)) {
+                    self.0 = true;
+                }
+            }
+            self.walk_expression(expr);
+        }
+    }
+    let mut c = C(false);
+    c.visit_expression(expr);
+    c.0
 }
 
 fn collect_read_regs(expr: &Expression, out: &mut HashSet<u32>) {

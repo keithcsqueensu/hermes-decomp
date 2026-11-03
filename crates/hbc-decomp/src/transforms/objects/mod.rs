@@ -39,6 +39,13 @@ pub fn transform_object_literals(statements: &mut Vec<Statement>) {
             let mut properties = Vec::new();
             let mut j = i + 1;
             let mut consumed_indices = Vec::new();
+            // Registers given a value between the object and a store into it. A
+            // store reading one cannot move up into the literal, above its value:
+            // `o = {}; t = +n; n = t + 1; o.done = t > 1` read `t` before it was set.
+            // A literal, constant, parameter or global is exempt: it reads nothing that
+            // changes, and is moved to its use afterwards. Blocking those unfolded
+            // nested literals (`{ mechanism: { data: { function: "x" } } }`).
+            let mut set_between: Vec<u32> = Vec::new();
 
             while j < statements.len() {
                 let stmt = &statements[j];
@@ -48,7 +55,11 @@ pub fn transform_object_literals(statements: &mut Vec<Statement>) {
                         Some(p) => p,
                         None => break,
                     };
-                    if value_uses_any_reg(&prop.value, &multi_assigned) {
+                    if value_uses_any_reg(&prop.value, &multi_assigned)
+                        || set_between
+                            .iter()
+                            .any(|r| expr_uses_register(&prop.value, *r))
+                    {
                         // Value references a re-assigned register: unsafe to fold.
                         properties.pop();
                         break;
@@ -60,6 +71,26 @@ pub fn transform_object_literals(statements: &mut Vec<Statement>) {
                 } else if stmt_has_side_effects(stmt) {
                     // Stop on any statement with side effects for safety
                     break;
+                } else if let Statement::Assign { target, value } = stmt {
+                    match target {
+                        AssignTarget::Binding(Binding::Register(r)) => {
+                            if !matches!(
+                                value,
+                                Expression::Object { .. }
+                                    | Expression::Array { .. }
+                                    | Expression::Value(
+                                        Value::Constant(_) | Value::Parameter(_) | Value::Global
+                                    )
+                            ) && is_new_object(stmt).is_none()
+                            {
+                                set_between.push(*r);
+                            }
+                        }
+                        // A variable written here may be what a later store reads. A
+                        // store into another object being built is not one of those.
+                        AssignTarget::Binding(_) => break,
+                        _ => {}
+                    }
                 }
                 j += 1;
             }

@@ -8,9 +8,14 @@ fn is_self_assign_value(var: &crate::ir::Var, value: &Expression) -> bool {
     let name = var.name.as_str();
     match value {
         // One spelling, two variables: a store into an environment slot of a
-        // value named after it (`sum = sum` for `slot = local`) is the store.
+        // value named after it (`sum = sum` for `slot = local`) is the store. The
+        // other way round, a local given an enclosing variable's value
+        // (`num = num` for `local = slot`), is a read of another variable: dropped,
+        // `num = 0; if (c) num = <outer num>` lost its `if`.
         Expression::Value(Value::Binding(Binding::Variable(val))) => {
-            name == val.name && !matches!((var.slot, val.slot), (Some(a), Some(b)) if a != b)
+            name == val.name
+                && !matches!((var.slot, val.slot), (Some(a), Some(b)) if a != b)
+                && !(var.slot.is_none() && val.slot.is_some())
         }
         Expression::Value(Value::Parameter(idx)) => name == format!("arg{idx}"),
         Expression::Value(Value::Constant(crate::ir::Constant::Bool(b))) => {

@@ -201,11 +201,81 @@ fn inline_named_with_candidates(
     // Where in `result` each definition was folded, so a nested block only
     // inherits the definitions that precede it.
     let mut def_pos: BTreeMap<String, usize> = BTreeMap::new();
+    // A folded value stops being foldable once a statement writes what it reads: a name
+    // in it, or for a property read any store or call. `t = +n; n = t + 1; o.done = t >
+    // 1` printed `+n > 1`, reading `n` after the write. The writing statement still reads
+    // the old value. Past it the value is `stale`, with the place before that statement;
+    // only if something reads it later is the assignment written out there, and the
+    // reads use the variable. `retired` keeps what was written out, for nested blocks.
+    let mut retired: BTreeMap<String, (Expression, usize)> = BTreeMap::new();
+    let mut stale: BTreeMap<String, (Expression, usize)> = BTreeMap::new();
+    let mut def_var: BTreeMap<String, crate::ir::Var> = BTreeMap::new();
     let mut result = Vec::new();
     let mut pending: BTreeMap<crate::ir::Var, Expression> = BTreeMap::new();
 
     for stmt in stmts {
         flush_pending_blocked_by(&stmt, &mut pending, &mut result);
+        let written = assigned_variable_names(&stmt);
+        let writes_memory = stmt_may_write_memory(&stmt);
+        let assign_of = |name: &str, value: &Expression| Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable(
+                def_var
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| crate::ir::Var::new(name.to_string())),
+            )),
+            value: value.clone(),
+        };
+        // A stale value read here: its assignment goes where it was still current.
+        let read_now: Vec<String> = stale
+            .keys()
+            .filter(|name| stmt_reads_variable(&stmt, name))
+            .cloned()
+            .collect();
+        for name in read_now {
+            if let Some((value, pos)) = stale.remove(&name) {
+                result.insert(pos, assign_of(&name, &value));
+                for p in def_pos.values_mut().filter(|p| **p >= pos) {
+                    *p += 1;
+                }
+                for (_, end) in retired.values_mut().filter(|(_, e)| *e > pos) {
+                    *end += 1;
+                }
+                for (_, p) in stale.values_mut().filter(|(_, p)| *p >= pos) {
+                    *p += 1;
+                }
+                retired.insert(name, (value, pos + 1));
+            }
+        }
+        let invalidated: Vec<String> = if written.is_empty() && !writes_memory {
+            Vec::new()
+        } else {
+            multi_use_defs
+                .iter()
+                .filter(|(name, value)| {
+                    def_pos.contains_key(*name)
+                        && (written
+                            .iter()
+                            .any(|w| w != *name && expr_reads_variable(value, w))
+                            || (writes_memory && reads_property(value)))
+                })
+                .map(|(name, _)| name.clone())
+                .collect()
+        };
+        // Read inside this statement's own blocks, it may be read past the write
+        // there: those reads use the variable, assigned before the statement.
+        let mut stale_after: Vec<String> = Vec::new();
+        for name in invalidated {
+            if has_nested_bodies(&stmt) && stmt_reads_variable(&stmt, &name) {
+                if let Some(value) = multi_use_defs.remove(&name) {
+                    result.push(assign_of(&name, &value));
+                    retired.insert(name, (value, result.len()));
+                }
+            } else {
+                stale_after.push(name);
+            }
+        }
+        let before_stmt = result.len();
         // Extract variable name and value for both Assign and Let statements
         let var_info = match &stmt {
             Statement::Assign {
@@ -252,6 +322,7 @@ fn inline_named_with_candidates(
                 substitute_vars_in_expr(&mut value, &multi_use_defs);
                 if is_simple_pure_expr(&value) {
                     def_pos.insert(name.name.clone(), result.len());
+                    def_var.insert(name.name.clone(), name.clone());
                     multi_use_defs.insert(name.name.clone(), value);
                     // Don't emit the assignment -- it will be substituted at use sites
                 } else {
@@ -302,6 +373,11 @@ fn inline_named_with_candidates(
             }
             result.push(stmt);
         }
+        for name in stale_after {
+            if let Some(value) = multi_use_defs.remove(&name) {
+                stale.insert(name, (value, before_stmt));
+            }
+        }
     }
 
     flush_pending(&mut pending, &mut result);
@@ -316,6 +392,22 @@ fn inline_named_with_candidates(
             .iter()
             .filter(|(name, _)| def_pos.get(*name).is_none_or(|p| *p <= i))
             .map(|(name, value)| (name.clone(), value.clone()))
+            .chain(
+                stale
+                    .iter()
+                    .filter(|(name, (_, pos))| {
+                        def_pos.get(*name).is_some_and(|p| *p <= i) && i < *pos
+                    })
+                    .map(|(name, (value, _))| (name.clone(), value.clone())),
+            )
+            .chain(
+                retired
+                    .iter()
+                    .filter(|(name, (_, end))| {
+                        def_pos.get(*name).is_some_and(|p| *p <= i) && i < *end - 1
+                    })
+                    .map(|(name, (value, _))| (name.clone(), value.clone())),
+            )
             .collect();
         recurse_inline_blocks(
             stmt,
@@ -490,6 +582,40 @@ fn assigned_variable_names(stmt: &Statement) -> Vec<String> {
     }
     let mut c = C(Vec::new());
     c.visit_statement(stmt);
+    c.0
+}
+
+fn stmt_reads_variable(stmt: &Statement, name: &str) -> bool {
+    use crate::ir::Visitor;
+    struct C<'n>(&'n str, bool);
+    impl<'a> Visitor<'a> for C<'_> {
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if let Expression::Value(Value::Binding(Binding::Variable(n))) = e {
+                if n == self.0 {
+                    self.1 = true;
+                }
+            }
+            self.walk_expression(e);
+        }
+    }
+    let mut c = C(name, false);
+    c.visit_statement(stmt);
+    c.1
+}
+
+fn reads_property(expr: &Expression) -> bool {
+    use crate::ir::Visitor;
+    struct C(bool);
+    impl<'a> Visitor<'a> for C {
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if matches!(e, Expression::Member { .. }) {
+                self.0 = true;
+            }
+            self.walk_expression(e);
+        }
+    }
+    let mut c = C(false);
+    c.visit_expression(expr);
     c.0
 }
 

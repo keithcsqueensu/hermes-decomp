@@ -48,11 +48,12 @@ pub fn propagate(cfg: &mut CFG, config: &PropagationConfig) {
         }
     }
 
+    let written = written_bindings(cfg);
     for _ in 0..max_iter {
         let mut changed = false;
 
         for block_id in cfg.block_ids().collect::<Vec<_>>() {
-            if propagate_block(cfg, block_id) {
+            if propagate_block(cfg, block_id, &written) {
                 changed = true;
             }
         }
@@ -117,7 +118,46 @@ fn resolve_invariant_register(
     }
 }
 
-fn propagate_block(cfg: &mut CFG, block_id: BlockId) -> bool {
+// Two bindings naming the same variable or slot; a register is neither.
+fn same_binding(a: &Binding, b: &Binding) -> bool {
+    match (a, b) {
+        (Binding::Register(_), _) | (_, Binding::Register(_)) => false,
+        (
+            Binding::ClosureVar {
+                level: la,
+                slot: sa,
+                ..
+            },
+            Binding::ClosureVar {
+                level: lb,
+                slot: sb,
+                ..
+            },
+        ) => la == lb && sa == sb,
+        _ => a == b,
+    }
+}
+
+// The variables and slots the function assigns, anywhere in it.
+fn written_bindings(cfg: &CFG) -> Vec<Binding> {
+    let mut out: Vec<Binding> = Vec::new();
+    for block in cfg.blocks() {
+        for stmt in &block.statements {
+            if let Statement::Assign {
+                target: AssignTarget::Binding(b),
+                ..
+            } = stmt
+            {
+                if !matches!(b, Binding::Register(_)) && !out.iter().any(|w| same_binding(w, b)) {
+                    out.push(b.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn propagate_block(cfg: &mut CFG, block_id: BlockId, written: &[Binding]) -> bool {
     let block = match cfg.get_mut(block_id) {
         Some(b) => b,
         None => return false,
@@ -137,6 +177,29 @@ fn propagate_block(cfg: &mut CFG, block_id: BlockId) -> bool {
         let substituted = substitute_stmt(&stmt, &copies);
         if substituted != stmt {
             changed = true;
+        }
+
+        // A copy of a variable or a captured slot holds the value it had when read.
+        // A store to it ends that: `r0 = n; n = r0 + 1; use(r0)` printed `use(n)`, the
+        // new value, for `n++` on v98. A call ends it too when this function writes that
+        // binding somewhere. One it never writes stays: the module loader read before
+        // a call (`r = importDefault; f(); r(381)`) is still an import. A nested function
+        // writing it during the call is not seen (open).
+        if let Statement::Assign {
+            target: AssignTarget::Binding(b),
+            ..
+        } = &substituted
+        {
+            if !matches!(b, Binding::Register(_)) {
+                copies.retain(
+                    |_, v| !matches!(v, Expression::Value(Value::Binding(c)) if same_binding(b, c)),
+                );
+            }
+        }
+        if crate::ir::stmt_has_side_effects(&substituted) {
+            copies.retain(|_, v| {
+                !matches!(v, Expression::Value(Value::Binding(c)) if written.iter().any(|w| same_binding(w, c)))
+            });
         }
 
         // Track definitions

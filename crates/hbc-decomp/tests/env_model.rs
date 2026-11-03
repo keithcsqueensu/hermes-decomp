@@ -37,7 +37,6 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("lang_destructuring", 98, "other: the array pattern's iterator protocol is mis-structured; the rest of the program, `print` included, sits in a branch that never runs"),
     ("lang_destructuring", 99, "other: the array pattern's iterator protocol is mis-structured; the rest of the program, `print` included, sits in a branch that never runs"),
     ("lang_iterators", 96, "other: the run never ends and exhausts memory (for-of with an early break over an iterable with `return`)"),
-    ("lang_iterators", 98, "other: the run never ends and exhausts memory (for-of with an early break over an iterable with `return`)"),
     ("lang_iterators", 99, "other: `HermesBuiltin.setFunctionName`, a v99 builtin, is printed unfolded"),
     ("lang_object_literals", 98, "other: `super.greet()` of an object literal method is printed in a plain function expression, a syntax error"),
     ("lang_object_literals", 99, "other: `super.greet()` of an object literal method is printed in a plain function expression, a syntax error"),
@@ -52,9 +51,6 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("lang_templates", 99, "other: `HermesBuiltin.getTemplateObject` (tagged templates) is printed unfolded"),
     ("inlined_recursive", 98, "env: `optional` is created by each creator and by itself; one declaration serves every creation and cannot read each one's `pattern` (the level model's `closure_1_0` is undeclared)"),
     ("inlined_recursive", 99, "env: `optional` is created by each creator and by itself; one declaration serves every creation and cannot read each one's `pattern` (the level model's `closure_1_0` is undeclared)"),
-    ("loop_reassign", 96, "other: a `for ... of` whose body reassigns the loop variable is not recovered; the iterator protocol prints as a `while` that never advances"),
-    ("loop_reassign", 98, "other: a `for ... of` whose body reassigns the loop variable is not recovered; the iterator protocol prints as a `while` that never advances"),
-    ("loop_reassign", 99, "other: a `for ... of` whose body reassigns the loop variable is not recovered; the iterator protocol prints as a `while` that never advances"),
     ("class_super", 98, "other: hermesc inlines the constructor at `new Own(4)`, so its private-field installs print outside the class, a syntax error; never seen in the four bundles (privateTwice 0). class_super_call covers the explicit `super(a, 1)` itself"),
     ("class_super", 99, "other: hermesc inlines the constructor at `new Own(4)`, so its private-field installs print outside the class, a syntax error; never seen in the four bundles (privateTwice 0). class_super_call covers the explicit `super(a, 1)` itself"),
 ];

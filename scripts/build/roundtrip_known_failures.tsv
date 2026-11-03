@@ -15,10 +15,6 @@ v96	capture_vs_local	a capture beside a local of the same name (closure model I2
 v98	gen_delegate	raw generator machine: yield* lowered to a delegation loop (G2)
 v96	gen_try_finally	v96 generator: the finally is lowered to catch-and-rethrow, so `.return()` skips it
 v96	gen_delegate	v96 generator: yield* is not recombined, its lowered delegation loop prints with HermesBuiltin helpers
-v96	for_of_nested_for	a for-of holding a for-of holding a `for`: the outer loop prints as a raw iterator `while`
-v98	for_of_nested_for	a for-of holding a for-of holding a `for`: the outer loop prints as a raw iterator `while`
-v96	for_of_empty_body	a for-of with an empty body is deleted, so its iterator is not drained (cleanup.rs, very likely; v98 keeps one next call)
-v98	for_of_empty_body	a for-of with an empty body is deleted, so its iterator is not drained (cleanup.rs, very likely; v98 keeps one next call)
 v96	gen_finally_cases	v96 generator: the finally stays a catch and rethrow, with its copy inside the try, so `.return` skips it
 v96	gen_try_catch_finally	v96 generator: the finally stays a catch and rethrow
 v98	gen_try_catch_finally	a try with both catch and finally in a machine stays raw: the folded form does not match its `.return` sides

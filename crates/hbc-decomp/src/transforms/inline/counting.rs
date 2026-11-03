@@ -78,41 +78,32 @@ impl<'p, K: std::borrow::Borrow<str> + Ord> MutVisitor for VarSubstitutor<'p, K>
 
 // --- Apply pending to statement ---
 
+// The names a statement uses are taken before substitution: after it, the name of
+// a value substituted in is gone, and that value stayed pending and was written out
+// again at the end of the block, a call printed twice (`obj.value = f(x); const fResult
+// = f(x);`).
 pub(super) fn apply_pending_to_stmt(stmt: &mut Statement, pending: &mut BTreeMap<Var, Expression>) {
+    let in_place = |e: &mut Expression, pending: &mut BTreeMap<Var, Expression>| {
+        let before = e.clone();
+        substitute_vars_in_expr(e, pending);
+        remove_used_from_pending(&before, pending);
+    };
     match stmt {
         Statement::Assign { target, value } => {
+            let target_before = target.clone();
             apply_pending_to_target(target, pending);
-            substitute_vars_in_expr(value, pending);
-            remove_used_from_pending(value, pending);
-            remove_used_from_target(target, pending);
+            in_place(value, pending);
+            remove_used_from_target(&target_before, pending);
         }
-        Statement::Let { value, .. } => {
-            substitute_vars_in_expr(value, pending);
-            remove_used_from_pending(value, pending);
-        }
+        Statement::Let { value, .. } => in_place(value, pending),
         Statement::Class {
             super_class: Some(sc),
             ..
-        } => {
-            substitute_vars_in_expr(sc, pending);
-            remove_used_from_pending(sc, pending);
+        } => in_place(sc, pending),
+        Statement::Expr(e) | Statement::Return(Some(e)) | Statement::Throw(e) => {
+            in_place(e, pending)
         }
-        Statement::Expr(e) => {
-            substitute_vars_in_expr(e, pending);
-            remove_used_from_pending(e, pending);
-        }
-        Statement::Return(Some(e)) => {
-            substitute_vars_in_expr(e, pending);
-            remove_used_from_pending(e, pending);
-        }
-        Statement::Throw(e) => {
-            substitute_vars_in_expr(e, pending);
-            remove_used_from_pending(e, pending);
-        }
-        Statement::Delete { target, .. } => {
-            substitute_vars_in_expr(target, pending);
-            remove_used_from_pending(target, pending);
-        }
+        Statement::Delete { target, .. } => in_place(target, pending),
         _ => {
             // For structured statements (if/while/for/etc.), flush all pending first
             // because control flow makes ordering complex

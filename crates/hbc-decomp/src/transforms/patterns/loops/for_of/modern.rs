@@ -145,10 +145,12 @@ fn try_match_for_of(stmts: &[Statement]) -> Option<(usize, Vec<Statement>)> {
                 iter_aliases.push(*dst);
                 idx += 1;
             }
-            // x = undefined (the sentinel constant), keep it, it may be read later.
+            // x = undefined (the sentinel constant), keep it, it may be read later. Any
+            // other constant too: a loop in the body has its step and limit loaded here,
+            // ahead of the loop, and stopping at them left the outer for-of unrecovered.
             Statement::Assign {
                 target: AssignTarget::Binding(Binding::Register(_)),
-                value: Expression::Value(Value::Constant(crate::ir::Constant::Undefined)),
+                value: Expression::Value(Value::Constant(_)),
             } => {
                 kept.push(stmt.clone());
                 idx += 1;
@@ -156,10 +158,11 @@ fn try_match_for_of(stmts: &[Statement]) -> Option<(usize, Vec<Statement>)> {
             // An unrelated register copy in the plumbing. HBC ≥98 copies the
             // source into the index slot (`Mov idx, src`) BEFORE `IteratorNext`,
             // which isn't an iterator alias, keep it and keep scanning so the
-            // following `val = iter.next()` is still recognised.
+            // following `val = iter.next()` is still recognised. A source that is a
+            // parameter is copied the same way (`for (v of o)` over the argument `o`).
             Statement::Assign {
                 target: AssignTarget::Binding(Binding::Register(_)),
-                value: Expression::Value(Value::Binding(Binding::Register(_))),
+                value: Expression::Value(Value::Binding(Binding::Register(_)) | Value::Parameter(_)),
             } => {
                 kept.push(stmt.clone());
                 idx += 1;
@@ -186,6 +189,10 @@ fn try_match_for_of(stmts: &[Statement]) -> Option<(usize, Vec<Statement>)> {
 
     // Strip the iterator try/return plumbing and the trailing `// continue`.
     let mut loop_body = unwrap_iterator_body(body, iter_reg);
+    // A `break` or `return` out of the loop closes the iterator first. The for-of does
+    // that itself, and its iterator has no name in the output: left in, each early
+    // exit called `.return()` on an undeclared `iter`.
+    strip_iterator_closes(&mut loop_body, &iter_aliases);
     // Rename the value register to a named loop variable.
     let var_name = format!("item{val_reg}");
     let mut map = BTreeMap::new();
@@ -198,6 +205,35 @@ fn try_match_for_of(stmts: &[Statement]) -> Option<(usize, Vec<Statement>)> {
         body: detect_for_of_loops(loop_body),
     });
     Some((idx + 1, kept))
+}
+
+// Removes every `<alias>.return()` (IteratorClose) of this loop's iterator, at any depth.
+fn strip_iterator_closes(stmts: &mut Vec<Statement>, iter_aliases: &[u32]) {
+    use crate::ir::MutVisitor;
+    struct Strip<'a>(&'a [u32]);
+    impl MutVisitor for Strip<'_> {
+        fn visit_statement_list(&mut self, stmts: &mut Vec<Statement>) {
+            stmts.retain(|s| !is_iterator_close(s, self.0));
+            self.walk_statement_list(stmts);
+        }
+    }
+    Strip(iter_aliases).visit_statement_list(stmts);
+}
+
+fn is_iterator_close(stmt: &Statement, iter_aliases: &[u32]) -> bool {
+    let Statement::Expr(Expression::Call { callee, arguments }) = stmt else {
+        return false;
+    };
+    if !arguments.is_empty() {
+        return false;
+    }
+    matches!(
+        callee.as_ref(),
+        Expression::Member { object, property: PropertyKey::Ident(p), .. }
+            if p == "return"
+                && matches!(object.as_ref(),
+                    Expression::Value(Value::Binding(Binding::Register(r))) if iter_aliases.contains(r))
+    )
 }
 
 // `iter_reg.next()`
