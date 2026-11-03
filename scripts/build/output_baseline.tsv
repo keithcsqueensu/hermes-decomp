@@ -7,6 +7,8 @@
 # raw generator machines (GENERATOR_LIFT_PLAN.md G0, 2026-10-30).
 # lost blocks (`structure` trace, 2026-11-02): reached again with no structured form. An
 # overcount, some are held by a merge further out, so a trend and not a list of bugs.
+# unrecovered for-in (`__forInKeys(`, LATER_FIXES_PLAN.md L1c, 2026-11-03): an enumeration the
+# for-in matcher could not rebuild. Before L1 these printed as `Object.keys()` (Equinox 95, Expensify 206, Discord 217).
 # A bundle not on this machine is skipped. Lower a ceiling whenever the real
 # count drops.
 # 2026-10-28, after S3.4: Discord's one unparsable module is `_fireSurveyAction`
@@ -17,6 +19,6 @@
 # 281 functions before and after; the machines sit in code that prints a different number of times.
 # 2026-11-01, G3d: Expensify raw 326 to 332. Module 1039's tail, 3 raw machines,
 # now prints on all 3 paths where it printed on one. None newly refused.
-equinox-11.43.0	quick	C:/apks/equinox/com.equinoxfitness.equinox_11.43.0/hermes_bundle/assets/index.android.bundle.backup	0	1	0	10284
-expensify-9.5.14-3	large	C:/apks/expensify/org.me.mobiexpensifyg_9.5.14-3/hermes_bundle/assets/index.android.bundle.backup	0	1	274	9918
-discord-350.8	large	C:/apks/discord/com.discord_350.8/hermes_bundle/assets/index.android.bundle.backup	0	0	452	7700
+equinox-11.43.0	quick	C:/apks/equinox/com.equinoxfitness.equinox_11.43.0/hermes_bundle/assets/index.android.bundle.backup	0	1	0	10284	6
+expensify-9.5.14-3	large	C:/apks/expensify/org.me.mobiexpensifyg_9.5.14-3/hermes_bundle/assets/index.android.bundle.backup	0	1	274	9918	74
+discord-350.8	large	C:/apks/discord/com.discord_350.8/hermes_bundle/assets/index.android.bundle.backup	0	0	452	7700	40

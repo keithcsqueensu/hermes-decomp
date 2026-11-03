@@ -14,7 +14,7 @@ pub use jsx::reconstruct_jsx;
 pub use logic_short_circuit::detect_short_circuit_logic;
 pub use loops::{
     convert_while_true_loops, detect_for_in_loops, detect_for_loops, detect_for_of_loops,
-    detect_legacy_for_of, fold_babel_for_of, fold_guarded_loops,
+    detect_legacy_for_of, fold_babel_for_of, fold_guarded_loops, UNRECOVERED_FOR_IN,
 };
 
 pub fn detect_patterns(stmts: Vec<Statement>) -> Vec<Statement> {

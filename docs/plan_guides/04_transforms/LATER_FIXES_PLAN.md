@@ -1,6 +1,6 @@
 # Later fixes: staged plan
 
-Status: planned 2026-11-02, nothing started. This covers what is left after the loop header fixes and
+Status: planned 2026-11-02. Item 1 and L1 done 2026-11-03. This covers what is left after the loop header fixes and
 `for_of_nested_for` (see `scripts/build/roundtrip_known_failures.tsv`). Measurements are from the build at 6f3705d.
 
 **Overall order (agreed 2026-11-02),** across this plan, GENERATOR_LIFT_PLAN.md and
@@ -101,6 +101,32 @@ this is not a recent regression.
   `Object.keys()` goes to 0.
 
 **Test.** The new snippet. Add a ratchet column for unrecovered enumerations.
+
+**Done (2026-11-03).** Re-read after the loop header fixes: a loop tested against `undefined` (for-in, for-of) keeps
+its header statements once before the `while` (`tests_undefined` in `loops.rs`), so the matcher saw extra copies such
+as `flag2 = flag` between `keys = ...` and the `if`. **Verified** with an IR dump. The nested case also had
+`then = [continue]` and a trailing `continue` after the inner `while`.
+
+- L1b: `try_match_for_in` collects plain binding stores before the first fetch, rejecting any that touch the key or
+  cursor registers. With a header, the object must be a plain value and the output is
+  `if (obj != null) { header } for (k in obj) { ... }`: the header runs on entry when the object is not null or undefined, the
+  only case where `GetPNameList` yields undefined. Inside the body it runs again before every `continue` of this loop,
+  and at the end of a body that falls through. An exit branch equal to the code after the loop, or a trailing `else`
+  equal to it, is accepted.
+- L1c: an enumeration still unmatched prints as `__forInKeys(obj)`, with `strip_hermes_this` told not to take its
+  argument. New ratchet column `unrecovered for-in` (`output_ratchets.sh`).
+- Snippet `for_in_header_value` (a body that writes two variables, a `break`, a nested for-in) passes on v96 and v98.
+
+Measured against 1f7a1d2: `Object.keys()` lines 95/206/217 -> 0 (Equinox/Expensify/Discord); `for...in` printed
+1721 -> 1810, 2758 -> 2890, 799 -> 973; unrecovered `__forInKeys(` 6, 74, 40. Undeclared per module on Discord
+11523 -> 10980 (the whole-file count rose 5040 -> 5074, the masking effect noted under item 1; the only names that
+rose are `__forInKeys` itself and two `str` names by 4 each). Equinox 889 -> 843. Three strings flagged lost were
+checked: two are the for-in variable now named (`${keys}` -> `${path}`), one a template now printed as a
+concatenation.
+
+Open, Equinox's 6: four are the "is empty" idiom, which structure recovery folds into
+`keys === undefined || keys[x] === undefined` before the matcher runs; one has a `try` in the body; one had its first
+fetch inlined into the `while` test. Expensify's and Discord's have not been classified.
 
 ## L2. Expensify's undeclared reads
 

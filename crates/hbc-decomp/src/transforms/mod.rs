@@ -64,6 +64,7 @@ pub use optimize::{
 pub use patterns::{
     convert_while_true_loops, detect_for_in_loops, detect_for_of_loops, detect_legacy_for_of,
     detect_patterns, detect_short_circuit_logic, fold_guarded_loops, reconstruct_jsx,
+    UNRECOVERED_FOR_IN,
 };
 pub use propagate::{propagate, propagate_copies, resolve_global_reads, PropagationConfig};
 pub use simplify::{simplify_expr, simplify_statements, simplify_stmt};

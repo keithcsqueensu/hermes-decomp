@@ -329,6 +329,12 @@ fn strip_this_in_expr(expr: &mut Expression) {
             if arguments.len() == 1 && is_rest_args_slice(callee) {
                 return;
             }
+            // An unrecovered for-in's enumeration takes the object, no receiver.
+            if matches!(callee.as_ref(), Expression::Value(Value::Binding(crate::ir::Binding::Variable(v)))
+                if v == crate::transforms::UNRECOVERED_FOR_IN)
+            {
+                return;
+            }
             // A reconstructed spread call (`f(...a)`) has a real first argument,
             // never a Hermes `this` receiver (which is a plain value).
             if matches!(arguments.first(), Some(Expression::Spread(_))) {
