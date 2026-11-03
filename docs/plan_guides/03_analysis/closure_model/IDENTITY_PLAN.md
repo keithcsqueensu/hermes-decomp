@@ -289,7 +289,7 @@ v98 generator reconstruction expects the machine's dispatch not to be a loop and
 the new ones (raw machines: Expensify 536 -> 581, Discord 1,738 -> 1,919), and inside them the
 cleanup is weaker (results kept, loader temporaries not inlined, so imports are not lifted).
 It lands with `state_machine_v98` taught the loop form, with a test that a loop whose catch
-rejoins it is found (header, protected block, catch, latch).
+rejoins it is found (header, protected block, catch, latch). Landed 2026-11-02 (e04f27d, A2e4).
 
 What A1 leaves for A2, by count: W6 stamps the walk overrides (Expensify 20, Discord 92),
 names by scope that differ (15, 85), recorded owners the late walk overrides (112, 559), and
@@ -574,7 +574,7 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
       real dispatch is now read: Expensify under `if` 140 -> 151, no return 234 -> 221, two
       terminals 69 -> 70, no terminal 3 -> 4; Discord under `if` 677 -> 689, no return 361 ->
       346, refused 3. Discord's straight row and both lifted rows do not move.
-    - **A2e3b — cases that join past the dispatch (open, blocks A2e4).** With the dominator
+    - **A2e3b — cases that join past the dispatch (closed 2026-11-03).** With the dominator
       change applied (experiment, not committed), raw machines stay 581 and 1,919, and lifted
       falls 312 -> 270 and 847 -> 670: 43 and 272 machines are refused as above. Their cases
       are no chain: `let tmp = label; if (0 === label) {..} else if (1 === tmp) {..} else if
@@ -583,15 +583,30 @@ named it, `str` for `totalRequired`, a slot whose name is wrong in both):
       bodies, so that count is no evidence. Read the cases as a graph instead: G1 and G2 of
       `../../04_transforms/GENERATOR_LIFT_PLAN.md` do. Exit: the experiment's lifted counts
       back at 312 and 847 or better, every lift free of the machine. Do this with or after G2.
-      G2 has landed (2026-11-01); its effect on this experiment is not measured yet.
+      **Closed (2026-11-03), measured on eeefc99, no code.** The lifted count at W16b no
+      longer measures this: since G2 the CFG rewrite takes most machines before the statement
+      lifter sees them (W16b lifted 196 and 633 now), so the exit is read as machines left raw.
+      Raw machines are 274 and 452, against 581 and 1,919 in the experiment and 536 and 1,738
+      before it. `machine left in the lift` fires on 2 and 9 machines (43 and 272 in the
+      experiment), and the CFG rewrite refuses each of them with a reason of its own: a register
+      from the dispatch reaches the body (2 and 3), a `try` with several ways out (2), a
+      `finally` whose `.return` side runs other code (3), one not read. All 11 stay raw, which
+      is verbose and correct. The refusal stays: it is what keeps every statement-lifter lift
+      free of the machine. Census (`--log genlift=trace`), Expensify / Discord: lifted 196 /
+      633; unparsable case with the suspend under no `return` 176 / 186, under an `if` 34 / 94,
+      straight 18 / 126; two terminals 3 / 8; a catch label 2 / 0. CFG reading: agree 219 /
+      748, read and refused by the statement lifter 398 / 1,663.
   - **A2e4 — the catch-loop fix lands**: catch blocks get their protected blocks as
     predecessors in `compute_dominators`, with the test from the finding above, and raw
     machines not rising (536 and 1,738 before; the change alone made them 581 and 1,919).
+    **Done (2026-11-02, e04f27d)**, under GENERATOR_LIFT_PLAN.md after G3, with the snippets
+    `try_in_loop`, `try_continue_in_loop` and `try_in_loop_cases` (v96 and v98) as the test.
+    Expensify raw 305 -> 299 in that commit; 274 and 452 now.
 
   Lifting the machines that stay raw (a case whose `yield` is under control flow, two
   terminals) is structuring, not identity: `../../04_transforms/GENERATOR_LIFT_PLAN.md`,
   which lifts on the CFG before structuring. Its G2 removes the loop-shaped dispatch, so A2e3
-  is re-read once G2 lands and may reduce to A2e4.
+  is re-read once G2 lands and may reduce to A2e4. Re-read 2026-11-03: both closed, above.
 
 Exit: no `NESTED_ENV_LEVEL_BASE` slot identity and no `rehomed_block_scopes`; raw machines
 and `parked_scopes` measured; v96 changes read line by line, v98 changes class by class.
