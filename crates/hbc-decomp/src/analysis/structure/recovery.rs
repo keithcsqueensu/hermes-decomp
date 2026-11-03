@@ -527,22 +527,6 @@ fn block_regs(block: &crate::ir::BasicBlock) -> BlockRegs {
     regs
 }
 
-// Whether what the `from` blocks assign is read only inside `within`. A value
-// read past a copy is a join of two assignments, and declared in one arm it is
-// undeclared in the other. Read past a loop, it was declared in the loop's body.
-// Either way the printed name would crash.
-pub(super) fn stays_within(cfg: &CFG, from: &[BlockId], within: impl Fn(BlockId) -> bool) -> bool {
-    let mut assigned = HashSet::new();
-    for id in from {
-        if let Some(b) = cfg.get(*id) {
-            assigned.extend(block_regs(b).assigned);
-        }
-    }
-    cfg.blocks_with_ids()
-        .filter(|(id, _)| !within(*id))
-        .all(|(_, b)| block_regs(b).read.is_disjoint(&assigned))
-}
-
 // What the copied blocks assign and something past them reads. In
 // `if (a && b || c) r = 1; else r = 2; return r` that is `r`: the code after the
 // copy reads it on every path, so the copy has to assign that very register. Blocks

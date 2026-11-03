@@ -299,8 +299,7 @@ generators. The back edges of a loop come to its header, so `stmts; while (cond)
 once: `for (;;) { push(x); if (done) break; x = next(); }` pushed one item. They now stay inside
 `while (true)`. Against the assign form: Undeclared 1527 to 1519, 13138 to 13107, 5531 to 5530; for-of
 counts unchanged; no string lost; raw unchanged. `loop_body_then_break` and `loop_header_statements`
-pass. **Open:** a header's value read after the loop stays hoisted (`loop_header_value_after`), and a
-header branching to itself with more of the loop after it (`loop_header_self_branch`).
+pass. **Open:** a header branching to itself with more of the loop after it (`loop_header_self_branch`).
 
 **A `try` in a loop. Done (2026-11-02).** Wrong output outside generators: any `for` holding a `try`
 ran its body once. A catch was a root of the dominator tree, so the block it rejoins was dominated by
@@ -394,9 +393,16 @@ the `for...in` fix: 41 to 247, 243 to 1785, 112 to 701.
 Lost blocks are now a ratchet in `output_ratchets.sh`: 10324, 9919, 7719. It is a trend and not a list of bugs. On equinox
 about 3200 of them are held by a merge further out and about 7100 are refused copies.
 
+**A header's value read after its loop. Done (2026-11-02).** `loop_header_value_after` passes on v96 and v98. A header's
+statements stayed hoisted out of the loop when something past the loop read what they assign, for fear of a name declared
+inside. They ran once. The variable is declared above the loop anyway, so the check went (`stays_within`). Against the
+previous step: undeclared 821, 11149 to 11155, 5283 to 5275, distinct 91, 870, 324 to 323, no new name on Expensify: the rise is
+names already undeclared, read in more places now the loop prints whole (`hiddenCallbacks`, `alignment`). Output 43.38 to
+43.41, 118.65 to 118.78, 157.90 to 157.96 MB; raw and strings unchanged. Lost blocks 10306, 9940, 7712.
+
 Open:
 - A labelled `for...of` with a nested loop still fails. It behaves the same in builds before this work and stays with the
-  known failure `for_of_nested_for`; a loop that ends only by `break` stays with `loop_header_value_after`.
+  known failure `for_of_nested_for`.
 - `tmpN.e.r` and `Object.keys()` with a lost argument in a `for...in` in Expensify; `tmp20` in `dispatchReducerAction`.
 
 ### G4 — async (medium)

@@ -168,10 +168,7 @@ pub(super) fn recover_loop(
             let statements_inside = header_exit.is_some()
                 && !header_stmts.is_empty()
                 && others.len() <= 1
-                && !tests_undefined(&condition)
-                && super::recovery::stays_within(ctx.cfg, &[loop_info.header], |b| {
-                    loop_info.body.contains(&b)
-                });
+                && !tests_undefined(&condition);
             // Not when that way out belongs to an enclosing loop: it is `break outer`, and
             // taken for this loop's own exit it printed a plain `break`, which left only
             // this loop and ran the outer one on.
