@@ -27,7 +27,9 @@ pub fn detect_for_in_loops(stmts: Vec<Statement>) -> Vec<Statement> {
     let mut i = 0;
     while i < stmts.len() {
         if i + 1 < stmts.len() {
-            if let Some(for_in) = try_match_for_in(&stmts[i], &stmts[i + 1]) {
+            if let Some((label, for_in)) = try_match_for_in(&stmts[i], &stmts[i + 1]) {
+                // The loop keeps its label: a `continue label1` inside names it.
+                result.extend(label);
                 result.push(for_in);
                 i += 2;
                 continue;
@@ -108,7 +110,10 @@ fn recurse(stmts: Vec<Statement>) -> Vec<Statement> {
 }
 
 // Match `keys = Object.keys(obj)` followed by the enumeration `if`.
-fn try_match_for_in(keys_stmt: &Statement, if_stmt: &Statement) -> Option<Statement> {
+fn try_match_for_in(
+    keys_stmt: &Statement,
+    if_stmt: &Statement,
+) -> Option<(Option<Statement>, Statement)> {
     // [0] keys_reg = Object.keys(obj)
     let (keys_reg, obj_expr) = match keys_stmt {
         Statement::Assign {
@@ -146,7 +151,11 @@ fn try_match_for_in(keys_stmt: &Statement, if_stmt: &Statement) -> Option<Statem
     };
 
     // Skip a label comment between the peeled fetch and the while.
-    while matches!(else_body.get(idx), Some(Statement::Comment(_))) {
+    let mut label = None;
+    while let Some(Statement::Comment(text)) = else_body.get(idx) {
+        if crate::transforms::codegen::loop_label(text).is_some() {
+            label = else_body.get(idx).cloned();
+        }
         idx += 1;
     }
 
@@ -175,11 +184,14 @@ fn try_match_for_in(keys_stmt: &Statement, if_stmt: &Statement) -> Option<Statem
     map.insert(cur_reg, var_name.clone());
     let cleaned = rename_registers(cleaned, &map);
 
-    Some(Statement::ForIn {
-        variable: var_name,
-        object: obj_expr,
-        body: detect_for_in_loops(cleaned),
-    })
+    Some((
+        label,
+        Statement::ForIn {
+            variable: var_name,
+            object: obj_expr,
+            body: detect_for_in_loops(cleaned),
+        },
+    ))
 }
 
 // `Object.keys(obj)` -> Some(obj)

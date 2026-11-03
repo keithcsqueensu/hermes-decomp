@@ -209,7 +209,7 @@ pub fn body_hole(id: u32) -> String {
 }
 
 // `label0:` as the structure recovery spells a loop label, and nothing else.
-pub(super) fn loop_label(text: &str) -> Option<&str> {
+pub(crate) fn loop_label(text: &str) -> Option<&str> {
     let name = text.strip_suffix(':')?;
     let digits = name.strip_prefix("label")?;
     (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then_some(name)

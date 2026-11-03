@@ -349,7 +349,39 @@ fn analyze_split(cfg: &CFG) -> (Structure, Vec<LoopInfo>) {
 // generator's resume test `i < n ? yield : return "end"` had both targets
 // emitted already and printed as nothing at all. A block only marked visited
 // (a merge point or loop exit held back to follow its region) is not.
-fn reemit_exit(ctx: &RecoveryCtx<'_>, block_id: BlockId) -> Option<Structure> {
+// Falling off here reaches `b`: the merge this code is held for, with no loop in between.
+// A `try` or a finished inner loop holds nothing of its own and is fallen out of.
+fn falls_into(ctx: &RecoveryCtx<'_>, b: BlockId, loop_stack: &[&LoopInfo]) -> bool {
+    let top = ctx.falls_to.last().copied().flatten();
+    if ctx.raw_machine || top.is_some() {
+        return top == Some(b);
+    }
+    ctx.falls_to.iter().rev().flatten().next() == Some(&b)
+        && innermost_loop(loop_stack).is_none_or(|l| l.body.contains(&b))
+}
+
+// `b` is a merge held outside the innermost loop. It prints after that loop, on the way
+// to it by a different road, so a jump from inside has to copy it.
+fn held_past_loop(ctx: &RecoveryCtx<'_>, b: BlockId, loop_stack: &[&LoopInfo]) -> bool {
+    !ctx.raw_machine
+        && ctx.falls_to.contains(&Some(b))
+        && innermost_loop(loop_stack).is_some_and(|l| !l.body.contains(&b))
+}
+
+// The `switch` frame on the stack is no loop.
+fn innermost_loop<'a>(loop_stack: &[&'a LoopInfo]) -> Option<&'a LoopInfo> {
+    loop_stack
+        .iter()
+        .rev()
+        .find(|l| !l.body.is_empty())
+        .copied()
+}
+
+fn reemit_exit(
+    ctx: &RecoveryCtx<'_>,
+    block_id: BlockId,
+    loop_stack: &[&LoopInfo],
+) -> Option<Structure> {
     if !ctx.emitted.contains(&block_id) {
         return None;
     }
@@ -362,7 +394,7 @@ fn reemit_exit(ctx: &RecoveryCtx<'_>, block_id: BlockId) -> Option<Structure> {
         }
         // The merge that follows runs anyway: copied too, it ran twice in print and
         // its registers had two definitions, which blocked inlining them.
-        if at != block_id && ctx.falls_to.last().copied().flatten() == Some(at) {
+        if at != block_id && falls_into(ctx, at, loop_stack) {
             return Some(Structure::Block(block_id, all));
         }
         let block = ctx.cfg.get(at)?;
@@ -392,28 +424,29 @@ fn reemit_branches(
     budget: &mut u32,
     copied: &mut HashSet<BlockId>,
 ) -> Option<Structure> {
-    let merge = ctx.falls_to.last().copied().flatten();
-    if merge == Some(block_id) {
+    if falls_into(ctx, block_id, loop_stack) {
         return Some(Structure::Block(block_id, vec![]));
     }
-    // A loop's header or exit: the copy continues or breaks, as the block did. Only
-    // the innermost loop's: a pass can rewrite an outer loop and drop its label, and
-    // `continue label0` with no such label does not parse.
-    if let Some(l) = loop_stack.last() {
-        if block_id == l.header {
-            return Some(Structure::Continue(None));
+    // A loop's header or exit: the copy continues or breaks, as the block did, with a
+    // label if it is not the innermost loop's. A raw machine's copy stays innermost only:
+    // its loops are rewritten by a later pass, which can drop the label.
+    let inner = loop_stack.len().saturating_sub(1);
+    for (i, l) in loop_stack.iter().enumerate().rev() {
+        if block_id != l.header && l.exit != Some(block_id) {
+            continue;
         }
-        if l.exit == Some(block_id) {
-            return Some(Structure::Break(None));
+        if i < inner && ctx.raw_machine {
+            return None;
         }
+        let label = (i < inner).then(|| format!("label{i}"));
+        return Some(if block_id == l.header {
+            Structure::Continue(label)
+        } else {
+            Structure::Break(label)
+        });
     }
-    if loop_stack
-        .iter()
-        .any(|l| block_id == l.header || l.exit == Some(block_id))
-    {
-        return None;
-    }
-    if !ctx.emitted.contains(&block_id) || *budget == 0 {
+    let printed = ctx.emitted.contains(&block_id) || held_past_loop(ctx, block_id, loop_stack);
+    if !printed || *budget == 0 {
         return None;
     }
     *budget -= 1;
@@ -654,7 +687,7 @@ fn renamable(tree: &Structure) -> Vec<u32> {
 }
 
 fn reemit(ctx: &RecoveryCtx<'_>, block_id: BlockId, loop_stack: &[&LoopInfo]) -> Structure {
-    reemit_exit(ctx, block_id)
+    reemit_exit(ctx, block_id, loop_stack)
         .or_else(|| {
             let mut copied = HashSet::new();
             let tree = reemit_branches(ctx, block_id, loop_stack, &mut 16, &mut copied)?;
@@ -668,7 +701,8 @@ fn reemit(ctx: &RecoveryCtx<'_>, block_id: BlockId, loop_stack: &[&LoopInfo]) ->
             // Reached again with no structured form: whatever this block does is lost
             // on this path. A trace, so a count can say how often.
             if log::log_enabled!(target: "structure", log::Level::Trace) {
-                let held = ctx.falls_to.last().copied().flatten() == Some(block_id);
+                let held = falls_into(ctx, block_id, loop_stack)
+                    || ctx.fences.contains(&block_id);
                 let empty = ctx.cfg.get(block_id).is_none_or(|b| {
                     b.statements.is_empty() && matches!(b.terminator, Terminator::Jump(_))
                 });

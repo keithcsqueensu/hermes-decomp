@@ -376,14 +376,27 @@ new Shadowed rows, 9 of 10 were I1 rows, the same wrong read counted differently
 Against the previous step: undeclared 765 to 821, 12595 to 11148, 5223 to 5283; output 43.8 to 43.3 MB, 150.7 to 118.0
 MB, 168.6 to 157.7 MB. Expensify raw 299 to 303 by the grep the ratchet uses, with the same 281 refusals in the lift
 trace before and after: the machines sit in code that prints a different number of times. Lifting did not regress. Many
-blocks are still reached with no structured form (`structure=trace`, "lost block"; 11-15 thousand per bundle, an
-overcount since one falling out of a `try` is fine). Not baselined against the old rules, so unread.
+blocks are still reached with no structured form (`structure=trace`, "lost block"). Baselined below.
+
+**`break outer`. Done (2026-11-02).** `loop_labelled_break` passes on v96 and v98 by the round trip. The inner loop used to
+take the outer loop's exit as its own, so `break outer` printed as `break` and the outer loop ran on. In `loops.rs`: a
+loop whose header leaves the parent loop while another way out stays in the parent's body takes that other way as its
+exit (`recover_loop`); `reserving_exit` marks the exit visited during the body, so every path out is a `break` and the
+exit prints after the loop; `after_loop` recovers the exit even if a copy or a labelled break already printed it. In
+`recovery.rs`: `reemit_branches` prints a labelled `continue`/`break` for a loop that is not the innermost, and copies a
+held merge outside the innermost loop rather than falling through to it (`held_past_loop`). `for_in.rs` keeps the label
+when it rewrites a loop, without which `continue label1` in a `for...in` did not parse. Raw machines keep their old shape.
+
+Against the previous step: undeclared 821, 11149 (+1), 5283; output 43.33 to 43.38 MB, 118.00 to 118.65 MB, 157.74 to
+157.90 MB; raw 0, 303, 579; slot identity unchanged; no strings lost, unparsable 0. Labelled jumps, measured just before
+the `for...in` fix: 41 to 247, 243 to 1785, 112 to 701.
+
+Lost blocks are now a ratchet in `output_ratchets.sh`: 10324, 9919, 7719. It is a trend and not a list of bugs. On equinox
+about 3200 of them are held by a merge further out and about 7100 are refused copies.
 
 Open:
-- **`break outer` prints as `break`. Wrong output, predates this work.** Both the build before these changes and the one
-  after print the inner `if (i === 3) break;` for `outer: for (...) { for (...) { if (i === 3) break outer; ... } }`. The
-  outer loop keeps running, and a `while (true)` form need not terminate. `lang_control_flow` passes only because its
-  limit coincides with the break.
+- A labelled `for...of` with a nested loop still fails. It behaves the same in builds before this work and stays with the
+  known failure `for_of_nested_for`; a loop that ends only by `break` stays with `loop_header_value_after`.
 - `tmpN.e.r` and `Object.keys()` with a lost argument in a `for...in` in Expensify; `tmp20` in `dispatchReducerAction`.
 
 ### G4 — async (medium)

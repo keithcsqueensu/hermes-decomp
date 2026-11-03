@@ -19,6 +19,41 @@ fn tests_undefined(condition: &Expression) -> bool {
     }
 }
 
+// Recovers a loop's body with its exit taken. Every path out of the body is then a `break`,
+// and the exit prints after the loop. Left open, the first path to reach it printed it
+// inline and the others broke to nothing: `break outer` lost the `return` after the loops.
+// A raw machine keeps the as-compiled shape, which the statement lifter reads.
+fn reserving_exit(
+    ctx: &mut RecoveryCtx<'_>,
+    loop_info: &LoopInfo,
+    body: impl FnOnce(&mut RecoveryCtx<'_>) -> Structure,
+) -> Structure {
+    let exit = loop_info
+        .exit
+        .filter(|e| !ctx.raw_machine && !ctx.visited.contains(e));
+    if let Some(e) = exit {
+        ctx.visited.insert(e);
+    }
+    let out = body(ctx);
+    if let Some(e) = exit {
+        ctx.visited.remove(&e);
+    }
+    out
+}
+
+// What follows a loop: its exit. Printed already on another path, it still has to run on
+// this one, so it comes as a copy or as a `break` of the enclosing loop; left out, the inner
+// loop's `break` fell into the next pass of the outer one without its `j++`.
+fn after_loop(
+    ctx: &mut RecoveryCtx<'_>,
+    loop_info: &LoopInfo,
+    loop_stack: &[&LoopInfo],
+) -> Option<Structure> {
+    let exit = loop_info.exit?;
+    (!ctx.visited.contains(&exit) || !ctx.raw_machine)
+        .then(|| recover_structure(ctx, exit, loop_stack))
+}
+
 pub(super) fn recover_loop(
     ctx: &mut RecoveryCtx<'_>,
     loop_info: &LoopInfo,
@@ -137,40 +172,64 @@ pub(super) fn recover_loop(
                 && super::recovery::stays_within(ctx.cfg, &[loop_info.header], |b| {
                     loop_info.body.contains(&b)
                 });
-            if let Some(&other) = others.first().filter(|_| statements_inside) {
+            // Not when that way out belongs to an enclosing loop: it is `break outer`, and
+            // taken for this loop's own exit it printed a plain `break`, which left only
+            // this loop and ran the outer one on.
+            let enclosing = |b: BlockId| {
+                loop_stack
+                    .iter()
+                    .any(|l| l.header == b || l.exit == Some(b))
+            };
+            if let Some(&other) = others
+                .first()
+                .filter(|o| statements_inside && !enclosing(**o))
+            {
                 if loop_info.exit != Some(other) {
                     let mut retargeted = loop_info.clone();
                     retargeted.exit = Some(other);
                     return recover_loop(ctx, &retargeted, loop_stack);
                 }
             }
+            // The header's way out leaves the parent loop too, and another stays in it: the
+            // other is this loop's own, and the header's test a jump further out. Taken for
+            // the exit, `j++` after the inner loop had nowhere to print.
+            let parent = loop_stack.iter().rev().find(|l| !l.body.is_empty());
+            if let Some(&own) = others
+                .iter()
+                .find(|o| parent.is_some_and(|p| p.body.contains(*o)))
+                .filter(|_| {
+                    !ctx.raw_machine
+                        && loop_info.exit == header_exit
+                        && header_exit.is_some_and(|e| parent.is_some_and(|p| !p.body.contains(&e)))
+                })
+            {
+                let mut retargeted = loop_info.clone();
+                retargeted.exit = Some(own);
+                return recover_loop(ctx, &retargeted, loop_stack);
+            }
+            let statements_inside = statements_inside
+                || (!ctx.raw_machine && header_exit.is_some() && loop_info.exit != header_exit);
 
             if true_in_loop && !false_in_loop && !statements_inside {
-                let body = recover_structure(ctx, true_target, &new_stack);
+                let body = reserving_exit(ctx, loop_info, |ctx| {
+                    recover_structure(ctx, true_target, &new_stack)
+                });
                 let mut parts = vec![Structure::Block(loop_info.header, header_stmts)];
                 parts.push(make_loop(body, condition));
 
-                if let Some(exit) = loop_info.exit {
-                    if !ctx.visited.contains(&exit) {
-                        let after = recover_structure(ctx, exit, loop_stack);
-                        parts.push(after);
-                    }
-                }
+                parts.extend(after_loop(ctx, loop_info, loop_stack));
                 Structure::Sequence(parts)
             } else if false_in_loop && !true_in_loop && !statements_inside {
-                let body = recover_structure(ctx, false_target, &new_stack);
+                let body = reserving_exit(ctx, loop_info, |ctx| {
+                    recover_structure(ctx, false_target, &new_stack)
+                });
                 let mut parts = vec![Structure::Block(loop_info.header, header_stmts)];
                 parts.push(make_loop(
                     body,
                     Expression::unary(crate::ir::UnaryOp::Not, condition),
                 ));
 
-                if let Some(exit) = loop_info.exit {
-                    if !ctx.visited.contains(&exit) {
-                        let after = recover_structure(ctx, exit, loop_stack);
-                        parts.push(after);
-                    }
-                }
+                parts.extend(after_loop(ctx, loop_info, loop_stack));
                 Structure::Sequence(parts)
             } else {
                 // The header's branch stays inside the loop on both sides, so
@@ -182,7 +241,7 @@ pub(super) fn recover_loop(
                 // isn't absorbed into one arm, then wrap the whole body in a
                 // loop so the exit `break` emitted deeper down is valid.
                 let header_block = Structure::Block(loop_info.header, header_stmts);
-                let body = if let Some(merge) = super::recovery::find_merge_point(
+                let merge = super::recovery::find_merge_point(
                     ctx.cfg,
                     loop_info.header,
                     true_target,
@@ -190,46 +249,48 @@ pub(super) fn recover_loop(
                 )
                 .and_then(|m| {
                     super::recovery::past_rejoin(ctx, m, [true_target, false_target], &new_stack)
-                }) {
-                    let merge_was_visited = ctx.visited.contains(&merge);
-                    ctx.visited.insert(merge);
-                    ctx.falls_to.push(Some(merge));
-                    let then_ = recover_structure(ctx, true_target, &new_stack);
-                    let else_ = recover_structure(ctx, false_target, &new_stack);
-                    ctx.falls_to.pop();
-                    if !merge_was_visited {
-                        ctx.visited.remove(&merge);
+                })
+                // A merge outside the loop is where the arms leave it, not something
+                // that runs after this `if` on each pass.
+                .filter(|m| ctx.raw_machine || loop_info.body.contains(m));
+                let body = reserving_exit(ctx, loop_info, |ctx| {
+                    if let Some(merge) = merge {
+                        let merge_was_visited = ctx.visited.contains(&merge);
+                        ctx.visited.insert(merge);
+                        ctx.falls_to.push(Some(merge));
+                        let then_ = recover_structure(ctx, true_target, &new_stack);
+                        let else_ = recover_structure(ctx, false_target, &new_stack);
+                        ctx.falls_to.pop();
+                        if !merge_was_visited {
+                            ctx.visited.remove(&merge);
+                        }
+                        Structure::Sequence(vec![
+                            header_block,
+                            Structure::If {
+                                condition,
+                                then_: Box::new(then_),
+                                else_: Box::new(else_),
+                            },
+                            recover_structure(ctx, merge, &new_stack),
+                        ])
+                    } else {
+                        let then_ = recover_structure(ctx, true_target, &new_stack);
+                        let else_ = recover_structure(ctx, false_target, &new_stack);
+                        Structure::Sequence(vec![
+                            header_block,
+                            Structure::If {
+                                condition,
+                                then_: Box::new(then_),
+                                else_: Box::new(else_),
+                            },
+                        ])
                     }
-                    Structure::Sequence(vec![
-                        header_block,
-                        Structure::If {
-                            condition,
-                            then_: Box::new(then_),
-                            else_: Box::new(else_),
-                        },
-                        recover_structure(ctx, merge, &new_stack),
-                    ])
-                } else {
-                    let then_ = recover_structure(ctx, true_target, &new_stack);
-                    let else_ = recover_structure(ctx, false_target, &new_stack);
-                    Structure::Sequence(vec![
-                        header_block,
-                        Structure::If {
-                            condition,
-                            then_: Box::new(then_),
-                            else_: Box::new(else_),
-                        },
-                    ])
-                };
+                });
                 let mut parts = vec![make_loop(
                     body,
                     Expression::constant(crate::ir::Constant::Bool(true)),
                 )];
-                if let Some(exit) = loop_info.exit {
-                    if !ctx.visited.contains(&exit) {
-                        parts.push(recover_structure(ctx, exit, loop_stack));
-                    }
-                }
+                parts.extend(after_loop(ctx, loop_info, loop_stack));
                 Structure::Sequence(parts)
             }
         }
@@ -242,7 +303,9 @@ pub(super) fn recover_loop(
                 // no exit, two nested counted loops (`hermesc -O`) lost the
                 // inner counter's reset and everything after them (Discord's
                 // ConjureDitherField module lost its exports).
-                let body = recover_structure(ctx, target, &new_stack);
+                let body = reserving_exit(ctx, loop_info, |ctx| {
+                    recover_structure(ctx, target, &new_stack)
+                });
                 let mut parts = vec![make_loop(
                     Structure::Sequence(vec![
                         Structure::Block(loop_info.header, header_stmts),
@@ -250,11 +313,7 @@ pub(super) fn recover_loop(
                     ]),
                     Expression::constant(crate::ir::Constant::Bool(true)),
                 )];
-                if let Some(exit) = loop_info.exit {
-                    if !ctx.visited.contains(&exit) {
-                        parts.push(recover_structure(ctx, exit, loop_stack));
-                    }
-                }
+                parts.extend(after_loop(ctx, loop_info, loop_stack));
                 Structure::Sequence(parts)
             } else {
                 let next = recover_structure(ctx, target, loop_stack);
@@ -299,11 +358,7 @@ pub(super) fn recover_loop(
                 body,
                 Expression::constant(crate::ir::Constant::Bool(true)),
             )];
-            if let Some(exit) = loop_info.exit {
-                if !ctx.visited.contains(&exit) {
-                    parts.push(recover_structure(ctx, exit, loop_stack));
-                }
-            }
+            parts.extend(after_loop(ctx, loop_info, loop_stack));
             Structure::Sequence(parts)
         }
         _ => Structure::Block(loop_info.header, header_stmts),

@@ -5,6 +5,8 @@
 # (scripts/measure/const_assign.mjs: a `const` the program assigns, a TypeError
 # when that line runs; it parses and is declared, so nothing else counts it),
 # raw generator machines (GENERATOR_LIFT_PLAN.md G0, 2026-10-30).
+# lost blocks (`structure` trace, 2026-11-02): reached again with no structured form. An
+# overcount, some are held by a merge further out, so a trend and not a list of bugs.
 # A bundle not on this machine is skipped. Lower a ceiling whenever the real
 # count drops.
 # 2026-10-28, after S3.4: Discord's one unparsable module is `_fireSurveyAction`
@@ -13,6 +15,6 @@
 # 281 functions before and after; the machines sit in code that prints a different number of times.
 # 2026-11-01, G3d: Expensify raw 326 to 332. Module 1039's tail, 3 raw machines,
 # now prints on all 3 paths where it printed on one. None newly refused.
-equinox-11.43.0	quick	C:/apks/equinox/com.equinoxfitness.equinox_11.43.0/hermes_bundle/assets/index.android.bundle.backup	0	1	0
-expensify-9.5.14-3	large	C:/apks/expensify/org.me.mobiexpensifyg_9.5.14-3/hermes_bundle/assets/index.android.bundle.backup	0	1	303
-discord-350.8	large	C:/apks/discord/com.discord_350.8/hermes_bundle/assets/index.android.bundle.backup	0	0	579
+equinox-11.43.0	quick	C:/apks/equinox/com.equinoxfitness.equinox_11.43.0/hermes_bundle/assets/index.android.bundle.backup	0	1	0	10324
+expensify-9.5.14-3	large	C:/apks/expensify/org.me.mobiexpensifyg_9.5.14-3/hermes_bundle/assets/index.android.bundle.backup	0	1	303	9919
+discord-350.8	large	C:/apks/discord/com.discord_350.8/hermes_bundle/assets/index.android.bundle.backup	0	0	579	7719
