@@ -639,6 +639,40 @@ without an identity (178 construction sites outside tests, most in `transforms/i
 `analysis/metro`, `var_naming`, `patterns` and `codegen`), logged with the census. It changes
 no output; its counts are what each step below must bring to zero for its family.
 
+**A3.0 done (2026-11-03).** `ir::identity_guard`: `Var::new`, the `From` impls (all go through
+it) and the new `Var::with_slot(name, None)` count a `Var` made without a slot. The one
+production literal that could leave the slot empty (`bake` in `analysis/closure`) uses
+`with_slot`; the others all set `Some`. A count goes to the per-function stage running on the
+constructing thread (`generate_ir` labels F1-F26 and the G2 rewrite, restoring the label it
+found), and otherwise to the whole-program stages since the last checkpoint. Logged under
+`slots=debug` beside the census (`no identity N`, then each F stage as `(per function)`),
+with `--no-cache`, since a cached body is not rebuilt. Most `Var`s come from `.into()`, which
+hides its caller from `#[track_caller]`, so the stage is the finest attribution. Output
+byte-identical with the guard on and off.
+
+Equinox: F23 1,383,818 (register naming, one per reference), F24 572,081, W1-W6 outside the F
+stages 157,925, F22 134,300, F5a 13,033, F1 4,169, F11 2,868, F25b 870; W8 2,413, W16a2 23,
+W16b 2, W16g 762, W16h 96,351; W17 and codegen 99,987, plus F1 172, F23 8,080, F24 1,554 from
+bodies generated again there. Every other W stage is 0.
+
+| stage | Expensify | Discord |
+|---|---|---|
+| F23 | 4,393,601 | 5,960,526 |
+| F24 | 1,966,537 | 2,669,270 |
+| W1-W6, outside F | 337,426 | 720,954 |
+| F22 | 192,872 | 280,781 |
+| F5a / F1 / F11 / F14 / F25b / F26 | 25,408 / 11,650 / 3,484 / 613 / 710 / 0 | 10,404 / 21,094 / 9,066 / 518 / 761 / 8 |
+| W8 / W16a2 / W16b / W16f / W16g | 2,386 / 115 / 283 / 1 / 5,958 | 3,214 / 106 / 457 / 10 / 8,293 |
+| W16h | 182,013 | 349,031 |
+| W17 and codegen | 291,862 | 302,343 |
+
+What the count does and does not see: it counts creation. W9-W16 rename in place through
+`name`, which keeps whatever slot the `Var` had, and W13 moves clones, so they show 0 while
+still comparing by spelling. The guard says where locals are born without an identity (F22-F24,
+the step that gives locals one) and which later passes make new ones (W8, W16g, W16h, codegen);
+the per-family defects of steps 1-3 (a comparison or a write count by spelling) are not counts
+here and keep their own measures.
+
 **A3.0b — the relocation check** (was K4.R, moved here 2026-10-30). **Step 1 done
 (2026-10-30):** `stamps::out_of_reach`, logged with every stamp census as `out of reach N new
 M`, with the functions that gained some under `trace`. Expensify and Discord: 0 at every

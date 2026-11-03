@@ -27,6 +27,9 @@ pub fn generate_ir(
     closure_ctx: Option<&ClosureContext>,
     perform_resolve: bool,
 ) -> Result<Vec<Statement>> {
+    // Each stage below labels the `Var`s it makes without an identity (A3.0).
+    let _run = crate::ir::identity_guard::function_run();
+    crate::ir::identity_guard::stage("F1");
     // STAGE F1: IR Build (bytecode -> CFG)
     let builder_options = IRBuilderOptions {
         resolve_strings: options.resolve_strings,
@@ -45,6 +48,7 @@ pub fn generate_ir(
         crate::ir::shift_env_levels_cfg(&mut cfg, ctx.env_offset(function_id));
     }
 
+    crate::ir::identity_guard::stage("F2");
     // STAGE F2: SSA / Live Range Splitting.
     // First resolve `globalThis` reads to the invariant value so the register
     // that held it is freed, the HBC >=97 allocator reuses it for unrelated
@@ -53,6 +57,7 @@ pub fn generate_ir(
     transforms::resolve_global_reads(&mut cfg);
     transforms::transform_to_ssa(&mut cfg);
 
+    crate::ir::identity_guard::stage("F3");
     // STAGE F3: Copy/Constant Propagation
     if options.propagate {
         // Cross-block copy propagation first: resolves register-to-register
@@ -63,6 +68,7 @@ pub fn generate_ir(
         propagate(&mut cfg, &PropagationConfig::default());
     }
 
+    crate::ir::identity_guard::stage("F4");
     // STAGE F4: Expression Simplification
     if options.simplify {
         for block in cfg.blocks_mut() {
@@ -87,6 +93,7 @@ pub fn generate_ir(
         return Ok(statements);
     }
     use transforms::generator::machine_cfg;
+    crate::ir::identity_guard::stage("G2 rewrite");
     let reading = machine_cfg::read(&cfg);
     if log::log_enabled!(target: "genlift", log::Level::Debug) {
         machine_cfg::record(function_id, &reading, &statements);
@@ -139,6 +146,7 @@ fn statements_from_cfg(
         closure_ctx,
         perform_resolve,
     } = *inputs;
+    crate::ir::identity_guard::stage("F5");
     // STAGE F5: Structure Recovery (CFG -> if/while/for/switch/try)
     let statements = if options.recover_structures {
         let analysis = StructureAnalysis::analyze(cfg);
@@ -193,6 +201,7 @@ fn statements_from_cfg(
         stmts
     };
 
+    crate::ir::identity_guard::stage("F5a");
     // STAGE F5a: Reconstruct for-of / for-in loops from the iterator protocol right after
     // structure recovery, BEFORE inlining folds the iterator registers away
     // (later detect_patterns can no longer see `iter = src[Symbol.iterator]()`).
@@ -218,44 +227,55 @@ fn statements_from_cfg(
 
     // Apply high-level optimizations
     let mut statements = if options.simplify {
+        crate::ir::identity_guard::stage("F6");
         // STAGE F6: Statement Optimization (if inversion, ternary, dead assign)
         let statements = optimize_statements(statements);
+        crate::ir::identity_guard::stage("F7");
         // STAGE F7: Expression Inlining (single-use register elimination)
         let statements = inline_expressions(statements);
 
+        crate::ir::identity_guard::stage("F8");
         // STAGE F8: Logic Transformation
         let mut statements = statements;
         transforms::transform_logic(&mut statements);
         let statements = statements;
 
+        crate::ir::identity_guard::stage("F9");
         // STAGE F9: Concatenation Propagation
         let statements = transforms::data_flow::propagate_concatenation(statements);
+        crate::ir::identity_guard::stage("F10");
         // STAGE F10: Pattern Detection (string concat, nullish, optional chaining, short-circuit)
         let statements = detect_patterns(statements);
 
+        crate::ir::identity_guard::stage("F11");
         // STAGE F11: Class Pattern Detection (ES6 class reconstruction)
         let statements = detect_class_patterns(statements, file, format, options, closure_ctx);
 
         let mut statements = statements;
 
         trace_supers("before F12", &statements);
+        crate::ir::identity_guard::stage("F12");
         // STAGE F12: Object/Array Literal Reconstruction
         transforms::transform_object_literals(&mut statements);
         transforms::arrays::transform_array_literals(&mut statements);
         trace_supers("before F13", &statements);
+        crate::ir::identity_guard::stage("F13");
         // STAGE F13: Default Parameter Detection
         transforms::transform_default_params(&mut statements);
 
         trace_supers("before F14", &statements);
+        crate::ir::identity_guard::stage("F14");
         // STAGE F14: Spread/Rest Operators
         transforms::transform_spread_rest(&mut statements);
         let statements = statements;
 
         trace_supers("before F15", &statements);
+        crate::ir::identity_guard::stage("F15");
         // STAGE F15: Destructuring Detection
         let statements = transforms::detect_destructuring(statements);
 
         trace_supers("before F16", &statements);
+        crate::ir::identity_guard::stage("F16");
         // STAGE F16: Generator/Async Pattern Detection
         let statements = if has_generator {
             let statements = transforms::detect_generator_patterns(statements, is_async_function);
@@ -266,6 +286,7 @@ fn statements_from_cfg(
         };
 
         trace_supers("before F17", &statements);
+        crate::ir::identity_guard::stage("F17");
         // STAGE F17: Yield-to-Await Conversion (async functions)
         let statements = if is_async_function {
             convert_yields_to_awaits(statements)
@@ -274,25 +295,30 @@ fn statements_from_cfg(
         };
 
         trace_supers("before F18", &statements);
+        crate::ir::identity_guard::stage("F18");
         // STAGE F18: Cleanup (basic + advanced)
         let statements = cleanup_statements(statements);
         let statements = transforms::cleanup_advanced(statements);
 
         trace_supers("before F19", &statements);
+        crate::ir::identity_guard::stage("F19");
         // STAGE F19: Chain Access Optimization
         let statements = transforms::optimize_chain_access(statements);
 
         trace_supers("before F20", &statements);
+        crate::ir::identity_guard::stage("F20");
         // STAGE F20: Ternary Return Optimization
         let statements = transforms::optimize_ternary_returns(statements);
 
         trace_supers("before F21", &statements);
+        crate::ir::identity_guard::stage("F21");
         // STAGE F21: Logic Simplification (advanced)
         let statements = transforms::simplify_logic_advanced(statements);
 
         let mut statements = statements;
 
         trace_supers("before F22", &statements);
+        crate::ir::identity_guard::stage("F22");
         // STAGE F22: CommonJS Export Inference + Name Inference
         let param_count = file
             .function_headers
@@ -309,11 +335,13 @@ fn statements_from_cfg(
         let statements = statements;
 
         trace_supers("before F23", &statements);
+        crate::ir::identity_guard::stage("F23");
         // STAGE F23: Register Naming (analyze + debug info merge + rename)
         let statements = super::apply_register_naming(statements, file, function_id);
         trace_supers("after F23", &statements);
 
         trace_supers("before F24", &statements);
+        crate::ir::identity_guard::stage("F24");
         // STAGE F24: Semantic Variable Naming
         let mut statements = transforms::infer_variable_names(statements);
         trace_supers("after F24", &statements);
@@ -323,10 +351,12 @@ fn statements_from_cfg(
         transforms::fold_slot_index_fills(&mut statements);
 
         trace_supers("before F25", &statements);
+        crate::ir::identity_guard::stage("F25");
         // STAGE F25: Final Simplification
         crate::transforms::simplify_statements(&mut statements);
 
         trace_supers("before F25b", &statements);
+        crate::ir::identity_guard::stage("F25b");
         // STAGE F25b: Bottom-tested `while (true) { …; if (EXIT) break; }` -> `do…while`,
         // then fold Hermes' guarded do-while shape back into a natural `for`/`while`.
         // Runs last, on fully-named statements, once cleanup has produced the clean
@@ -341,6 +371,7 @@ fn statements_from_cfg(
     };
 
     trace_supers("before F26", &statements);
+    crate::ir::identity_guard::stage("F26");
     // STAGE F26: Closure Resolution (if context provided)
     if perform_resolve {
         if let Some(ctx) = closure_ctx {

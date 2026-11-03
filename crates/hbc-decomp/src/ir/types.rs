@@ -127,10 +127,25 @@ pub struct Var {
 }
 
 impl Var {
+    // A variable known by its name alone, counted by the identity guard
+    // (IDENTITY_PLAN.md A3.0).
     pub fn new(name: impl Into<String>) -> Self {
+        super::identity_guard::made();
         Var {
             name: name.into(),
             slot: None,
+        }
+    }
+
+    // A variable with the slot it stands for, when there is one; counted by the
+    // identity guard when there is not.
+    pub fn with_slot(name: impl Into<String>, slot: Option<SlotRef>) -> Self {
+        if slot.is_none() {
+            super::identity_guard::made();
+        }
+        Var {
+            name: name.into(),
+            slot,
         }
     }
 

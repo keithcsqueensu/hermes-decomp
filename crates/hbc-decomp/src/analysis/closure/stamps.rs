@@ -299,6 +299,7 @@ pub fn report(stage: &str, all_ir: &BTreeMap<u32, Vec<Statement>>, ctx: Option<&
         now.insert(func, names);
     }
     log_census(stage, total);
+    report_identity(stage);
     report_reach(stage, all_ir, ctx);
     let (ok, off, samples) = class_body_stamps(ctx, all_ir);
     log::debug!(target: TARGET, "{stage:<14} class-body stamps: {ok} agree, {off} off the method's chain or against its own body");
@@ -316,6 +317,20 @@ pub fn report(stage: &str, all_ir: &BTreeMap<u32, Vec<Statement>>, ctx: Option<&
         log::trace!(target: TARGET, "    F{func}: dropped {} {names:?}", c.dropped);
     }
     *last = Some(now);
+}
+
+// The identity guard (IDENTITY_PLAN.md A3.0): `Var`s made without an identity
+// since the last checkpoint, by the whole-program stages in between, and by
+// each per-function stage that ran in between (all of them, the first time).
+fn report_identity(stage: &str) {
+    use crate::ir::identity_guard;
+    let (program, stages) = identity_guard::take();
+    log::debug!(target: TARGET, "{stage:<14} no identity {program:>7}");
+    let mut stages: Vec<_> = stages.into_iter().collect();
+    stages.sort_by_key(|(s, _)| identity_guard::stage_order(s));
+    for (s, n) in stages {
+        log::debug!(target: TARGET, "{:<14} no identity {n:>7}  (per function)", format!("  {s}"));
+    }
 }
 
 pub fn log_census(stage: &str, c: Census) {
@@ -376,6 +391,7 @@ pub fn report_render() {
     if let Ok(total) = RENDERED.lock() {
         log_census("at codegen", *total);
     }
+    report_identity("at codegen");
     if let Ok(names) = PARKED_NAMES.lock() {
         let split: Vec<_> = names.iter().filter(|(_, n)| n.len() > 1).collect();
         log::debug!(target: TARGET, "parked slots: {} rendered, {} under more than one name", names.len(), split.len());

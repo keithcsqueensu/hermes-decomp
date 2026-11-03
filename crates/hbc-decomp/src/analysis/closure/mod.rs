@@ -143,7 +143,7 @@ impl Resolver<'_> {
             });
         self.record(&name, level, slot, stamp);
         let slot = stamp.map(|owner| SlotRef { owner, slot });
-        Var { name, slot }
+        Var::with_slot(name, slot)
     }
 }
 
