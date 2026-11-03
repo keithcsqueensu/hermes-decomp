@@ -23,4 +23,4 @@ mod names;
 #[cfg(test)]
 mod tests;
 
-pub use hoist::hoist_module_loaders;
+pub use hoist::{hoist_module_loaders, hoist_module_loaders_checked};

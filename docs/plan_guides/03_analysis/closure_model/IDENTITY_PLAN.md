@@ -690,6 +690,34 @@ no other thing under that name. With stamps that is a check, not a guess:
    `slots=debug` as a count of moves that would change meaning. Diagnostic, no output change.
 2. Each hoisting pass refuses a move the check rejects, one commit per pass. This is step 3's
    guard, so it lands before step 3.
+   **Done (2026-11-03), one commit**: the passes share the helper and refuse nothing today, so
+   splitting them bought nothing. `stamps::lost_on_move(ctx, refs, inside, to)` gives the
+   stamped references a move to scope `to` would put out of reach; a slot owned inside the
+   moved code goes with it.
+   - **W16g** (`hoist_repeated_closures_checked`): a declaration moves to the sites' common
+     scope while its body stays put, and `parent_function` does not change, so step 1's
+     census cannot see this move at all (its "0 after W16g" measured nothing). The pass now
+     asks before it moves: no slot the closure or a function nested in it names may be one the
+     declaring scope cannot see. Beside the check by name (`captures_on_the_way`), for the same
+     non-cyclic cases. A unit test has a hoist the name check passes and the stamp refuses.
+   - **W16h** (`hoist_module_loaders_checked`): a loader whose callee names a slot the factory
+     cannot see is not hoisted.
+   - **W13** inlines within one body and moves nothing between bodies: nothing to refuse.
+
+   Refused, Equinox / Expensify / Discord: W16g 0 / 0 / 0, W16h 0 / 0 / 0. Output
+   byte-identical on all three. Logged as `relocation check` under `slots=debug`, each refusal
+   under `trace`.
+
+   **Open, found measuring this: step 1's census is no longer 0.** Out of reach at the first
+   checkpoint, after W6: Expensify 783, Discord 7,828 (Equinox 11, W15's as before); after W13
+   526 and 7,706, flat after that, and no moving pass adds any (W13's one "new" on Expensify is
+   a stamped reference copied within its body). So the stamps are wrong as W6 lays them, not
+   moved. Every sample names a block scope of another function, off the body's chain:
+   Expensify F107560 reads `node` of F2473 block 1101 (48), F39180-F39183 read `sum` and
+   `defaultResult1` of F3157's blocks; Discord's stemmer functions (F149797 590, F149818 566,
+   ...) read `Among2` of F77093 block 579. It was 0 on 2026-10-30 (3eaa994), so a later commit
+   made it: not bisected yet, the block-scope and generator commits of 10-31 to 11-02 first.
+   Read it before step 3, whose guard trusts the stamps.
 
 Steps 4 and 5 are each split (2026-10-29):
 

@@ -193,6 +193,32 @@ pub fn out_of_reach(
         .collect()
 }
 
+// The relocation check a moving pass asks before it moves (A3.0b step 2): of
+// the references `refs` in code going to scope `to`, the stamped ones whose
+// slot `to` cannot see. A slot owned by a scope in `inside` (the moved code's
+// own functions and blocks) goes with it. Unstamped references are not
+// judged here; the pass's own check by name still covers them.
+pub fn lost_on_move(
+    ctx: &ClosureContext,
+    refs: &[(&str, Option<SlotRef>)],
+    inside: &HashSet<u32>,
+    to: u32,
+) -> Vec<(String, SlotRef)> {
+    let mut reach = own_scopes(ctx, to);
+    reach.extend(ctx.ancestors_of(to));
+    refs.iter()
+        .filter_map(|&(name, slot)| {
+            let s = slot?;
+            let owner_fn = ctx.scope_function(s.owner);
+            let seen = inside.contains(&s.owner)
+                || inside.contains(&owner_fn)
+                || reach.contains(&s.owner)
+                || (ctx.parked_scopes.contains(&s.owner) && reach.contains(&owner_fn));
+            (!seen).then(|| (name.to_string(), s))
+        })
+        .collect()
+}
+
 // Each function's out-of-reach count at the last checkpoint.
 static REACH: Mutex<Option<HashMap<u32, usize>>> = Mutex::new(None);
 

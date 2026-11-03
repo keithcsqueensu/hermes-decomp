@@ -41,7 +41,7 @@ pub use generator::{
     is_generator_state_machine_v98, lift_generator_v98, reconstruct_generator_v98,
     simplify_state_machine, try_reconstruct_generator_v98,
 };
-pub use hoist_closures::hoist_repeated_closures;
+pub use hoist_closures::{hoist_repeated_closures, hoist_repeated_closures_checked};
 pub use inline::{
     cleanup_noise, eliminate_immutable_aliases, extra_writes_from_nested_bodies,
     fold_array_literals, fold_object_literals, inline_expressions, inline_named_variables,
@@ -51,7 +51,7 @@ pub use inline::{
 };
 pub use inline::{names_used_by_descendants, outer_names_used_by_descendants, renamed_reserved};
 pub use logic_simplify::simplify_logic_advanced;
-pub use module_hoist::hoist_module_loaders;
+pub use module_hoist::{hoist_module_loaders, hoist_module_loaders_checked};
 pub use name_inference::infer_names;
 pub use objects::{fold_slot_index_fills, transform_object_literals};
 mod collapse_registry;

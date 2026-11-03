@@ -36,6 +36,19 @@ pub fn hoist_repeated_closures(
     factories: &BTreeMap<u32, u32>,
     stay_at_sites: &BTreeSet<u32>,
 ) -> usize {
+    hoist_repeated_closures_checked(all_ir, parent_of, factories, stay_at_sites, None)
+}
+
+// The same, refusing a hoist that takes a stamped slot out of the closure's
+// reach when the closure context is known (IDENTITY_PLAN.md A3.0b step 2).
+pub fn hoist_repeated_closures_checked(
+    all_ir: &mut BTreeMap<u32, Vec<Statement>>,
+    parent_of: &BTreeMap<u32, u32>,
+    factories: &BTreeMap<u32, u32>,
+    stay_at_sites: &BTreeSet<u32>,
+    ctx: Option<&crate::analysis::closure::ClosureContext>,
+) -> usize {
+    let mut refused_by_stamp = 0usize;
     let mut sites: BTreeMap<u32, Vec<Site>> = BTreeMap::new();
     let mut shapes: BTreeMap<u32, Shape> = BTreeMap::new();
     for (&holder, stmts) in all_ir.iter() {
@@ -167,6 +180,16 @@ pub fn hoist_repeated_closures(
             if captures_on_the_way {
                 continue;
             }
+            // The same by identity: no slot the closure or a function nested
+            // in it names may be one the declaring scope cannot see.
+            if let Some(ctx) = ctx {
+                let lost = slots_lost_by_hoist(ctx, fid, &children, all_ir, &scopes);
+                if !lost.is_empty() {
+                    refused_by_stamp += 1;
+                    log::trace!(target: "slots", "W16g keeps F{fid} at its sites: {scopes:?} cannot see {lost:?}");
+                    continue;
+                }
+            }
         }
         let base = shape
             .name
@@ -194,6 +217,9 @@ pub fn hoist_repeated_closures(
             holders
         );
         plan.insert(fid, (scopes, name));
+    }
+    if ctx.is_some() {
+        log::debug!(target: "slots", "W16g relocation check: {refused_by_stamp} hoists refused by stamp");
     }
     if plan.is_empty() {
         return 0;
@@ -245,6 +271,45 @@ pub fn hoist_repeated_closures(
         }
     }
     plan.len()
+}
+
+// The stamped slots `fid` and the functions nested in it name that a
+// declaration in one of `scopes` could not see.
+fn slots_lost_by_hoist(
+    ctx: &crate::analysis::closure::ClosureContext,
+    fid: u32,
+    children: &BTreeMap<u32, Vec<u32>>,
+    all_ir: &BTreeMap<u32, Vec<Statement>>,
+    scopes: &[u32],
+) -> Vec<(String, crate::ir::SlotRef)> {
+    use crate::analysis::closure::stamps;
+    let mut subtree = vec![fid];
+    let mut i = 0;
+    while i < subtree.len() && subtree.len() < 4096 {
+        if let Some(kids) = children.get(&subtree[i]) {
+            for &k in kids {
+                if !subtree.contains(&k) {
+                    subtree.push(k);
+                }
+            }
+        }
+        i += 1;
+    }
+    let mut inside = std::collections::HashSet::new();
+    for &f in &subtree {
+        inside.extend(stamps::own_scopes(ctx, f));
+    }
+    let mut lost = Vec::new();
+    for &f in &subtree {
+        let Some(stmts) = all_ir.get(&f) else {
+            continue;
+        };
+        let refs = stamps::var_refs(stmts);
+        for &scope in scopes {
+            lost.extend(stamps::lost_on_move(ctx, &refs, &inside, scope));
+        }
+    }
+    lost
 }
 
 struct Components {
@@ -785,5 +850,44 @@ mod tests {
             &BTreeSet::new(),
         );
         assert!(matches!(&all_ir[&1][0], Statement::Let { name, .. } if name == "sum2"));
+    }
+    // A3.0b step 2: F9 reads holder F2's slot under a name F2 binds nowhere in
+    // its text, so the check by name lets the hoist into F1 through; the stamp
+    // says F1 cannot see that slot, and the hoist is refused. A slot of F1's
+    // own goes with no objection.
+    #[test]
+    fn a_hoist_that_takes_a_stamped_slot_out_of_reach_is_refused() {
+        use crate::analysis::closure::ClosureContext;
+        let read = |owner: u32| {
+            Statement::Expr(Expression::Value(Value::Binding(Binding::Variable(
+                crate::ir::Var::with_slot("x", Some(crate::ir::SlotRef { owner, slot: 0 })),
+            ))))
+        };
+        let parent_of: BTreeMap<u32, u32> = [(2, 1), (3, 1), (9, 2)].into_iter().collect();
+        let mut ctx = ClosureContext::new();
+        ctx.parent_function = parent_of.clone();
+        for (owner, hoisted) in [(2, 0), (1, 1)] {
+            let mut all_ir = BTreeMap::new();
+            all_ir.insert(1, vec![Statement::Return(None)]);
+            all_ir.insert(2, vec![iife(9, "getRawTag")]);
+            all_ir.insert(3, vec![iife(9, "getRawTag")]);
+            all_ir.insert(9, vec![read(owner)]);
+            let mut unchecked = all_ir.clone();
+            let n = hoist_repeated_closures(
+                &mut unchecked,
+                &parent_of,
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+            );
+            assert_eq!(n, 1, "the check by name lets it through");
+            let n = hoist_repeated_closures_checked(
+                &mut all_ir,
+                &parent_of,
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                Some(&ctx),
+            );
+            assert_eq!(n, hoisted, "slot owned by F{owner}");
+        }
     }
 }

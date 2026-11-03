@@ -209,7 +209,13 @@ impl PipelineContext {
                         .collect()
                 })
                 .unwrap_or_default();
-            let hoisted = transforms::hoist_repeated_closures(all_ir, parent_of, factories, &stay);
+            let hoisted = transforms::hoist_repeated_closures_checked(
+                all_ir,
+                parent_of,
+                factories,
+                &stay,
+                closure_ctx.as_ref(),
+            );
             log::debug!("[pipeline] hoisted {hoisted} repeated closures");
         }
         crate::analysis::closure::stamps::report("after W16g", all_ir, closure_ctx.as_ref());

@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use crate::analysis::closure::ClosureContext;
 use crate::analysis::MetroRegistry;
 use crate::ir::{Constant, Expression, MutVisitor, Statement, Value, VarKind};
 use crate::util::sanitize_identifier;
@@ -23,6 +24,19 @@ pub fn hoist_module_loaders(
     child_functions: &BTreeMap<u32, Vec<u32>>,
     param_names: &BTreeMap<u32, Vec<String>>,
 ) {
+    hoist_module_loaders_checked(all_ir, registry, child_functions, param_names, None);
+}
+
+// The same, refusing to hoist a loader whose callee names a slot the factory
+// cannot see, when the closure context is known (IDENTITY_PLAN.md A3.0b step 2).
+pub fn hoist_module_loaders_checked(
+    all_ir: &mut BTreeMap<u32, Vec<Statement>>,
+    registry: &MetroRegistry,
+    child_functions: &BTreeMap<u32, Vec<u32>>,
+    param_names: &BTreeMap<u32, Vec<String>>,
+    ctx: Option<&ClosureContext>,
+) {
+    let mut refused = 0usize;
     let factory_ids: Vec<u32> = registry.function_to_module.keys().copied().collect();
     for factory_id in factory_ids {
         let deps = registry
@@ -30,7 +44,18 @@ pub fn hoist_module_loaders(
             .map(|m| m.dependencies.clone())
             .unwrap_or_default();
         let members = descendants(factory_id, child_functions, registry);
-        hoist_one_module(factory_id, &members, &deps, all_ir, registry, param_names);
+        refused += hoist_one_module(
+            factory_id,
+            &members,
+            &deps,
+            all_ir,
+            registry,
+            param_names,
+            ctx,
+        );
+    }
+    if ctx.is_some() {
+        log::debug!(target: "slots", "W16h relocation check: {refused} loaders refused by stamp");
     }
 }
 
@@ -68,7 +93,8 @@ fn hoist_one_module(
     all_ir: &mut BTreeMap<u32, Vec<Statement>>,
     registry: &MetroRegistry,
     param_names: &BTreeMap<u32, Vec<String>>,
-) {
+    ctx: Option<&ClosureContext>,
+) -> usize {
     // Existing module-scope bindings at factory top: (id, kind) -> name.
     let mut existing: HashMap<HoistKey, String> = HashMap::new();
     if let Some(factory) = all_ir.get(&factory_id) {
@@ -136,8 +162,29 @@ fn hoist_one_module(
         .into_iter()
         .filter(|((id, _), _)| !lazy_ids.contains(id))
         .collect();
+    // The callee moves to the factory's top: a slot it names must be one the
+    // factory can see.
+    let before = hoist.len();
+    if let Some(ctx) = ctx {
+        hoist.retain(|(key, callee)| {
+            let wrapped = Statement::Expr(callee.clone());
+            let refs =
+                crate::analysis::closure::stamps::var_refs(std::slice::from_ref(&wrapped));
+            let lost = crate::analysis::closure::stamps::lost_on_move(
+                ctx,
+                &refs,
+                &HashSet::new(),
+                factory_id,
+            );
+            if !lost.is_empty() {
+                log::trace!(target: "slots", "W16h keeps {key:?} in place: F{factory_id} cannot see {lost:?}");
+            }
+            lost.is_empty()
+        });
+    }
+    let refused = before - hoist.len();
     if hoist.is_empty() {
-        return;
+        return refused;
     }
     hoist.sort_by_key(|(k, _)| *k);
 
@@ -226,6 +273,7 @@ fn hoist_one_module(
             *factory = injected;
         }
     }
+    refused
 }
 
 // Rewrite each eager loader call whose (id, kind) is hoisted into its binding.

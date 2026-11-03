@@ -197,11 +197,12 @@ impl PipelineContext {
                 };
                 hoist_params.insert(fid, names);
             }
-            transforms::hoist_module_loaders(
+            transforms::hoist_module_loaders_checked(
                 &mut all_ir,
                 &registry,
                 &child_functions,
                 &hoist_params,
+                closure_ctx.as_ref(),
             );
             log::debug!("[pipeline] import hoisting: {:.2?}", t.elapsed());
             phase.finish();
