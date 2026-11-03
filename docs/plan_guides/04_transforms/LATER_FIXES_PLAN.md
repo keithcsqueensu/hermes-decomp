@@ -3,6 +3,21 @@
 Status: planned 2026-11-02, nothing started. This covers what is left after the loop header fixes and
 `for_of_nested_for` (see `scripts/build/roundtrip_known_failures.tsv`). Measurements are from the build at 6f3705d.
 
+**Overall order (agreed 2026-11-02),** across this plan, GENERATOR_LIFT_PLAN.md and
+`../03_analysis/closure_model/IDENTITY_PLAN.md`:
+
+1. The loop items: `loop_header_self_branch`, `for_of_nested_for`, `for_of_empty_body`.
+2. L1, right after them. It throws at runtime and has the same loop-header shape.
+3. L2.
+4. Close A2: re-read A2e3b and A2e4 against the current build (measure, no code).
+5. A3.0, A3.0b step 2, A3 steps 1-3.
+6. L5, before A3 step 4: every machine it lifts is one that 4a-4d need not carry.
+7. L3 and L4 (one gate run), beside A3 step 4: the same generator code.
+8. A3 steps 4a-5c, then A4.
+
+Wrong output goes before identity work. The generator stages are low urgency and sit where they share code
+with A3 step 4.
+
 Each stage ends the usual way: its snippet passes the round trip on v96 and v98, its known-failure rows are removed,
 ratchets hold, and the whole output is measured. Control-flow stages get their own gate run. Generator stages may share
 one. Causes are marked **verified** (read in the code or seen by running) or **guess**.

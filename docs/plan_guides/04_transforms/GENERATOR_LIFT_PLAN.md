@@ -299,7 +299,7 @@ generators. The back edges of a loop come to its header, so `stmts; while (cond)
 once: `for (;;) { push(x); if (done) break; x = next(); }` pushed one item. They now stay inside
 `while (true)`. Against the assign form: Undeclared 1527 to 1519, 13138 to 13107, 5531 to 5530; for-of
 counts unchanged; no string lost; raw unchanged. `loop_body_then_break` and `loop_header_statements`
-pass. **Open:** a header branching to itself with more of the loop after it (`loop_header_self_branch`).
+pass. A header branching to itself with more of the loop after it is done too (below).
 
 **A `try` in a loop. Done (2026-11-02).** Wrong output outside generators: any `for` holding a `try`
 ran its body once. A catch was a root of the dominator tree, so the block it rejoins was dominated by
@@ -399,6 +399,11 @@ inside. They ran once. The variable is declared above the loop anyway, so the ch
 previous step: undeclared 821, 11149 to 11155, 5283 to 5275, distinct 91, 870, 324 to 323, no new name on Expensify: the rise is
 names already undeclared, read in more places now the loop prints whole (`hiddenCallbacks`, `alignment`). Output 43.38 to
 43.41, 118.65 to 118.78, 157.90 to 157.96 MB; raw and strings unchanged. Lost blocks 10306, 9940, 7712.
+
+**A header branching to itself. Done (2026-11-02).** `loop_header_self_branch` passes on v96 and v98. A header that
+branches back to itself printed as a one-block `do { header } while (test)` even with more of the loop after it, which
+fell out of the loop. That form is now kept for a loop of one block. Undeclared and raw unchanged; output +2 KB, +2 KB,
++1 KB; lost blocks 10284, 9918, 7700.
 
 Open:
 - A labelled `for...of` with a nested loop still fails. It behaves the same in builds before this work and stays with the

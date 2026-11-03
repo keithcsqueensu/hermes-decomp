@@ -600,6 +600,10 @@ with S3.2b's parked scopes.)
 
 ### A3 — An identity for every variable (large; staged by pass family)
 
+Order against the other plans (2026-11-02): A3 starts after A2 closes and after L1 and L2 of
+`../../04_transforms/LATER_FIXES_PLAN.md`; that plan's L5 lands before step 4, and L3 and L4 beside
+it. See the overall order at the top of that plan.
+
 `Var` gains an identity: an environment slot's is its `(scope, slot)` from A1; a local's is
 assigned where registers become variables (F23 register naming) and kept by every pass. The
 name becomes a hint. Equality and hashing move to the identity.

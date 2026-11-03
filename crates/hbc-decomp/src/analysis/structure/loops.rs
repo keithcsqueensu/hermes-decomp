@@ -120,7 +120,10 @@ pub(super) fn recover_loop(
             // own statements ARE the loop body. Emit `do { header } while(cond)`
             // instead of hoisting the body out and leaving the loop empty (which
             // silently dropped counting loops).
-            if true_target == loop_info.header || false_target == loop_info.header {
+            // Only with nothing else in the loop: the rest fell out of a do-while of the header.
+            if (true_target == loop_info.header || false_target == loop_info.header)
+                && (ctx.raw_machine || loop_info.body.len() == 1)
+            {
                 let loops_on_true = true_target == loop_info.header;
                 let exit_target = if loops_on_true {
                     false_target
