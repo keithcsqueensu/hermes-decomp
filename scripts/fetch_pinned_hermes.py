@@ -35,9 +35,10 @@ REMOTE = "https://github.com/facebook/hermes.git"
 # The directories the pin reads: BytecodeFileFormat.h, BytecodeVersion.h,
 # BytecodeList.def and DebugInfo.h under include/, and lib/'s DebugInfo.cpp, which
 # is where FunctionDebugInfoDeserializer lives at v96 (debug_info_shapes_match_upstream
-# reads its stream shape). Widening this costs blob downloads, so widen it only
-# when a test actually needs another file.
-SPARSE = ["include/hermes/BCGen/HBC", "lib/BCGen/HBC"]
+# reads its stream shape), and FrontEndDefs/Builtins.def under include/
+# (builtin_tables_match_upstream). Widening this costs blob downloads, so widen it
+# only when a test actually needs another file.
+SPARSE = ["include/hermes/BCGen/HBC", "include/hermes/FrontEndDefs", "lib/BCGen/HBC"]
 TABLE_DIR = pathlib.Path(__file__).resolve().parent.parent / "crates/hbc-decomp/resources/bytecode"
 DEFAULT_VERSIONS = [96, 97, 98, 99]
 
