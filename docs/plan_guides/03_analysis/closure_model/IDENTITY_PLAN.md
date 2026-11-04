@@ -52,6 +52,11 @@ resolved. The level is an indirection the graph no longer needs, and it leaks:
   synthetic slot range of the wrapper (`STEP_ENV_SLOTS`), inserts stamped `let`s, and
   `separate_step_env_names` renames them off clashes. It cannot tell one variable reached
   through two identities from two variables under one name, so it refuses to split either.
+  (2026-11-03: `STEP_ENV_SLOTS` went with S3.2b on 2026-10-29. Today the step's scopes are
+  rehomed to the wrapper in the context (`rehome_block_scopes`, recorded in `parked_scopes`),
+  no `Var` is rewritten, and stamped `let`s are still inserted by hand in
+  `keep_raw_machines`, `adopt_collapsed_machines` and, at render, `bind_parked_slots`. The
+  refusal to split is unchanged: `separate_step_env_names` ignores unstamped references.)
 
 **Patches this pays for.** Each of these exists because identity is missing and goes away
 when it is not: `separate_copy_names`, the rename half of `shared_body_variants`,
@@ -629,9 +634,9 @@ the defects above point to:
 1. cleanup (`cleanup_noise` self-assignment; `stamp_merged` goes) — done 2026-11-03, with
    `stamp_merged` kept by identity; its deletion is A4e's (see "Step 1 done" below),
 2. declarations (write counting per identity; `written_first_vars`, `split_capture_and_local`,
-   `drop_slot_lets_of_params` go) — not yet planned past this line, and A4d claims the same
-   deletions; to be written up before it starts,
-3. inlining and object folding (`inline_named_variables`, `slot_fills`, `hoist_closures`),
+   `drop_slot_lets_of_params` go) — planned below ("Step 2"); the deletions are A4d's,
+3. inlining and object folding (`inline_named_variables`, `slot_fills`, `hoist_closures`) —
+   planned below ("Step 3"),
 4. the generator and async machinery (`keep_raw_machines`, `separate_step_env_names`),
 5. naming (`var_naming`, W7–W11) and shared bodies (`separate_copy_names`; a copy is a
    renaming of identities per creator scope, not of names).
@@ -745,21 +750,191 @@ kept F23's name for an object F24 renamed `merged` everywhere else. Fixed, with 
 generated names); undeclared 843 -> 840, 10,317 -> 10,300, 5,074 -> 5,073; bare `let x;`
 declarations unchanged (Expensify 165,281, Discord 199,618).
 
+**The rule step 1 taught, for steps 2-4 (2026-11-03).** An identity can be read as soon as it
+exists, but output that keeps two identities of one spelling apart needs them printed under two
+names, and names still come from spelling until step 5 and A4c. So in each step identity may
+**narrow** a decision where a narrower answer needs no new name (a write in another body that
+is not this variable's; a substitution into a read that is another variable), and must not
+**split** one printed name into two variables. A patch whose job is to split (`stamp_merged`,
+`split_capture_and_local`, `drop_slot_lets_of_params`, `separate_step_env_names`) keeps its
+output; it may change what it selects by identity, and is deleted in A4 once the allocator names
+identities. Where an identity is missing, the decision falls back to the name, as today.
+
+#### Step 2 — declarations (planned 2026-11-03)
+
+**Where it runs.** W17 (`pipeline/context/mod.rs`), per non-factory body in parallel:
+`prepare_render_bodies` (`rendering.rs`) runs the late renamers and cleanup, then
+`insert_body_declarations`, which runs `split_capture_and_local`, `drop_slot_lets_of_params`,
+`bind_parked_slots`, `extra_writes_for_function`, builds the name sets `outer`, `own_slots`,
+`own_used` and `read_by`, and calls `insert_declarations_with_slots`
+(`transforms/inline/declarations/mod.rs`). After the shared-body copies exist,
+`relax_written_consts` turns creators' `const`s that a copy writes into `let`. Codegen declares
+once more on its own copy (`codegen.rs`, `insert_body_declarations` for roots,
+`insert_factory_declarations` plus the ESM module-level `let`s for factories, whose `rebound`
+count is by name). Stamps are read only to build the name sets; past
+`insert_declarations_with_slots` every decision is by `String` (`count_writes`,
+`free_captured_vars`, `skip_decl`, the let/const choice `writes > 1 || is_env_slot_name`).
+
+**What is by name that identity can narrow:**
+- `extra_writes_from_nested_bodies` adds every descendant's write of a spelling to the
+  parent's count, the child's own register included (its doc comment: "same-name shadowing may
+  demote a parent `const` to `let`"; v96 `let X = X_mod`). `copy_writes` is built with it.
+- The `outer` set's name-only half: `ancestors ∩ outer_used_by_descendants`, minus
+  `written_first_vars` (`rendering.rs`), which exists because the intersection cannot tell a
+  descendant's capture of an ancestor's variable from an unrelated spelling.
+- `drop_slot_lets_of_params` counts a write if it is the name or the slot; the parameter
+  itself has no identity (`param_names` is strings), so the test cannot be by identity yet.
+
+**Stages:**
+- **2.0 — identity reaches W17 (measure first).** A census at W17 entry: of the variable
+  references in the bodies being declared, how many carry a slot, a local, or nothing, per
+  bundle; and the guard's per-pass counts for W16g, W16h and the W17 prep, attributed by pass
+  inside W17 (`rename_param_registers`, `repair_switch_clobbers`,
+  `remove_dead_temp_bindings_keeping`, the declaration pass's own hoisted `let`s). Fix the cheap
+  droppers on the way, each a rename that should keep its identity: `rename_variables_in_stmt`
+  renames a `Let` by rebuilding the `Var` (`analysis/naming/renaming.rs`, drops slot and local;
+  used by `eliminate_immutable_aliases` at W11d and W16c); `repair_switch_clobbers` builds its
+  new name from a string. A binding a pass creates (W16g's hoisted `const`, W16h's loader
+  `const`s, about 96k / 182k / 349k) has no register and no slot: give it a **made** identity
+  (`LocalRef` with `reg` from a per-function counter in a reserved range, so the type does not
+  grow), or leave it to the name fallback and record the count. Decide here, with the counts.
+  Exit: the W17 census table and a guard count per W17 pass, output byte-identical.
+- **2.0b — parameters get an identity.** Parameters are named from `Value::Parameter(i)` and
+  `param_names` strings; give the `Var` a `LocalRef` for parameter `i` (a reserved `reg` range,
+  like the made identities: Hermes reads a parameter with `LoadParam`, it is not a register)
+  where F22/F23 and `rename_param_registers` name them. Needed by 2c and by 4b. Byte-identical; the guard's F22 count falls.
+- **2a — nested writes by identity.** `extra_writes_from_nested_bodies` counts a descendant's
+  write against the parent only when its identity can be the parent's: a slot whose owner is
+  the parent or one of its scopes (`own_scopes`), or no identity (fallback by name). A
+  descendant's own local (its function's `LocalRef`) never counts. `copy_writes` follows,
+  since it is built the same way. Expected change: some parent `let`s become `const`, never the
+  other way. Acceptance: consts written (`const_assign.mjs`, the ratchet) do not rise on any
+  bundle, the env fixtures pass (`loop_reassign`, `block_writer`, `inlined_counter`,
+  `shared_creators`, `inlined_copies`), and each flipped `const` class read on a sample. A new
+  unit test: a child's own `x = 1; x = 2` leaves the parent's single-write `x` a `const`.
+- **2b — the `outer` set by identity.** A descendant's reference counts as reading the
+  ancestor's variable when it is stamped to an ancestor's slot (already in
+  `captured_slot_names`) or has no identity; a descendant's local is never outer. Then
+  `written_first_vars` applies only to the no-identity remainder. Acceptance: undeclared does
+  not rise; the `capture_local` fixture passes; the count of names the fallback still decides
+  is logged, and is step 5c's to bring down.
+- **2c — what the splitting patches select, by identity.** `split_capture_and_local` takes as
+  "the body's own local" the references carrying this function's `LocalRef` (not "unstamped and
+  written first"), and still renames them as today. `drop_slot_lets_of_params` counts writes
+  by identity once 2.0b exists: a write to the parameter's register is not a write to the slot.
+  Both keep their output role; their deletion is A4d's. Acceptance: undeclared and unparsable
+  not rising; `capture_local`, `param_slot` passing.
+
+What step 2 does not do: delete any of the five patches (A4d, after the allocator), or change
+`is_env_slot_name`'s `let` preference (a spelling test, A4d3). Gate run per stage; 2.0 and 2.0b
+may share one.
+
+#### Step 3 — inlining and object folding (planned 2026-11-03)
+
+**Where they run.** `inline_named_variables` at W13 (per function, keep set =
+`names_used_by_descendants`), inside W16c twice per lifted v98 body and once more after W16e
+(with a keep set computed before W16c rebuilt the bodies), and on the single-function path;
+`eliminate_immutable_aliases` (same file) at W11d. `fold_slot_index_fills` at F12, after F24,
+in W16c and at W16. `hoist_repeated_closures_checked` at W16g. "Slot" in `slot_fills` is an
+object shape-table index, not an environment slot.
+
+**What is by name:**
+- `inline_named`: def/use counts (`counting.rs`, `BTreeMap<String, usize>`); the candidate sets;
+  substitution (`VarSubstitutor` replaces every read whose spelling is a pending key); retiring
+  and invalidation (`assigned_variable_names`, `expr_reads_variable`). Inferred, not observed: a
+  local defined once beside a read of a captured variable of the same spelling counts as one
+  definition and one use, and the local's value would be substituted into the captured read.
+  `eliminate_immutable_aliases` renames an alias X to V by assigning `name`, so the reads keep
+  X's identity under V's spelling, and its `Let` rename drops the identity.
+- `slot_fills`: the object is `ObjRef::Name(String)`; is-this-the-same-object, reassigned,
+  used, and read-forward tests compare names.
+- `hoist_closures`: `captures_on_the_way` and `free_name`'s clash check are name sets from
+  `Bound`/`Refs`; only `slots_lost_by_hoist` (A3.0b step 2) is by slot. Inferred gaps:
+  functions between a holder and the declaring scope are not in `free_name`'s check, and a name
+  the holders only read is not "bound", so the new `const` could shadow either.
+
+**Stages (narrowing only, per the rule above):**
+- **3a — inline_named by identity.** Count definitions and uses per identity, with the name as
+  fallback; substitute a definition only into reads of the same identity (or a read with no
+  identity, by name); keep invalidation by name, since two identities under one printed name are
+  one JS variable until named apart. Log each substitution the identity refuses (`inline`
+  trace), with a count per bundle. A unit test: a local `x` and a captured `x` in one body; the
+  local's value is not substituted into the capture. `eliminate_immutable_aliases`: a renamed
+  read takes V's `Var` whole (V's identity), and the `Let` rename keeps it. Acceptance: output
+  change limited to the refused substitutions, each class read; undeclared and consts written
+  not rising.
+- **3b — slot_fills.** First count, with no output change, fills whose object matches by name
+  and not by identity (`ObjRef` carrying the `Var`'s identity). If 0 on all three bundles, record
+  it and stop; otherwise match by identity, keeping the reassigned/used scans by name.
+- **3c — hoist_closures.** Unit tests for the two inferred `free_name` gaps first; if either
+  reproduces, fix it by checking the holders' chain up to the scope, and by reading the holders'
+  references, not only their bindings. The hoisted `const` and each replaced site take the made
+  identity from 2.0 instead of `.into()` (W16g's guard count goes to 0). `captures_on_the_way`
+  then judges only references with no slot; a stamped reference is `lost_on_move`'s. Acceptance:
+  hoist counts per bundle, refusals by each check, output change read. `stay_at_sites` stays
+  (A4e).
+
+The W13 relocation question is settled: W13 moves nothing between bodies (A3.0b step 2).
+
 Steps 4 and 5 are each split (2026-10-29):
 
+**Step 4 detail (2026-11-03).** Where the code is: W15 `unwrap_async_wrappers`
+(`async_detection.rs`) replaces the wrapper's body with a clone of the innermost one and
+keeps the wrapper's own in `async_originals`; W16b `collapse_generator_wrappers`
+(`transforms_phase.rs`) sends raw v98 machines to `keep_raw_machines` and collapses the rest
+(clone the inner body in, remove the inner, `rehome_block_scopes`, `adopt_collapsed_machines`);
+W16c-W16e, a final inline pass and `repair_switch_clobbers` run inside the same function. The
+moves clone statements, so moved `Var`s keep their stamps; what they do not do is re-own them
+(W15 rehomes nothing: the 11 v96 references out of reach after W15). New `Var`s without
+identity come from the W16c cleanup chain (`rename_variables_in_stmt`'s `Let` rebuild,
+`repair_switch_clobbers`, the inliner's fallback) and `HermesBuiltin`. None of
+`keep_raw_machines`, `adopt_collapsed_machines`, `unwrap_async_wrappers`,
+`separate_step_env_names` or `bind_parked_slots` has a unit test.
+
+- **4.0 — checkpoints and characterisation (before 4a).** `collapse_generator_wrappers` is one
+  span in the census ("after W16a3" to "after W16b"), so add checkpoints after
+  `keep_raw_machines`, after the collapse and adoption, after the W16c loop and after W16e. The
+  dropped census is per function id and per name, so a body replaced wholesale is compared with
+  the old body's counts and a removed inner drops out uncounted: count a replaced body against
+  its source's last counts. Characterisation tests for the five untested functions, from the
+  `raw_generators`, `parked_scopes` and `param_slot` fixtures, pinning today's output. Byte-
+  identical.
 - **4a — moves keep identities.** `keep_raw_machines` (the `createGenerator(step)` rewrite and
   the rehome to the wrapper), W16b's collapse (the step's body moved into the wrapper) and
   W15's unwrap carry every stamp they move. Measured by the dropped-stamp census taken
-  before and after each, which must not move.
+  before and after each, which must not move. (2026-11-03:) W15 re-owns the unwrapped body's
+  scope as W16b does (rehome to the wrapper, parked), and out of reach after W15 goes 11 -> 0 on
+  Equinox. `keep_raw_machines` restores an async function's body from the snapshot taken at
+  W15, so it may lose what W16 to W16a3 did to it (inferred): diff a restored body against the
+  same body run through those stages, and fix if they differ. The W16c chain's droppers are
+  fixed with step 2.0's.
 - **4b — the async parameter and its slot copy are two identities.** W15's `url` case: the
   wrapper's parameter and the slot it is copied into are told apart by identity, so the
   slot's `let` cannot redeclare the parameter. Measured by the I2 rows on async wrappers.
+  (2026-11-03:) Needs parameter identity (step 2.0b). The copy is the bytecode's own
+  `slot = Parameter(i)` store, kept by W16b (`parameter_captures`), which prints `url = url`
+  once both are named alike. With identities it is slot S from parameter P: not noise, and
+  printable only under two names, so 4b's output half is the clash rename of 5a (the slot takes
+  another name when it clashes with a parameter identity, I2 `CaptureAndParam`), and
+  `drop_slot_lets_of_params` goes with A4d. There is a fixture for the `action_type` twin
+  (`param_slot.js`) but none for `url` itself: add one (an async wrapper whose parameter is
+  copied into a same-named slot read by a closure).
 - **4c — W16c reconstruction keeps identities.** `state_machine_v98` flattens cases into one
   body; the variables of each case keep their identity through the flattening, census before
-  and after W16c.
+  and after W16c. (2026-11-03:) The lift itself clones (`parse_case`, `lift_cases`), so stamps on
+  moved statements survive; what it decides by name is which variables are protocol
+  (`collect_state_vars`, `is_bookkeeping`, `drop_unread_bookkeeping`'s `c\d+`/`tmp\d*` test).
+  4c is: the 4.0 checkpoints show no drop across W16c, and the protocol tests use the step
+  scope's stamps where a variable has one (a protocol variable is a slot of the machine's
+  scope), the spelling only as fallback. Acceptance: the raw-machine ratchet and the generator
+  snippets unchanged.
 - **4d — `separate_step_env_names` goes.** With 4a–4c, a parked slot's clash is two identities
   under one name, and the general clash rule (step 5) renames it. Undeclared and unparsable
-  counts must not rise on either v98 bundle.
+  counts must not rise on either v98 bundle. (2026-11-03:) Order: 4d depends on 5a's
+  `rename_slot` with its I2 refusal, so it lands after 5a, not before it. Until then, with
+  locals' identity, its clash test can stop ignoring unstamped references in the step: a local
+  carrying the step's `LocalRef` is a clash with a known other variable; only references with no
+  identity stay ignored. That narrows by identity and needs no new name.
 - **5a — renaming by identity** (absorbs K4.5.3, K4.5.4 and K4.6, 2026-10-30).
   One operation, `rename_slot(all_ir, ctx, SlotRef, new_name)`, renames every `Var` carrying
   the slot in every body, and the context's name with it, and refuses when `new_name` is
@@ -792,7 +967,14 @@ Steps 4 and 5 are each split (2026-10-29):
   scope; `separate_copy_names` and the rename half of `shared_body_variants` go. I1 at the
   shared-body floor.
 - **5c — the leftovers.** Every pass still renaming by spelling, from the guard's counts, each
-  converted or shown to rename only locals it created.
+  converted or shown to rename only locals it created. (2026-11-03:) The list as the guard
+  shows it after step 1: W8 (IPA, 2,413 / 2,386 / 3,214), W16a2, W16b, W16f, W16g and W16h (step
+  3c and the made identity of 2.0), and the W17 prep and codegen (about 100k / 292k / 302k,
+  attributed per pass by 2.0); F1, F5a, F11, F14, F22, F25b and F26 inside `generate_ir`, before
+  W6, whose new `Var`s are pass-made temporaries (the made identity) or parameters (2.0b). Each
+  becomes a commit: give the `Var` the identity it renames from, a made identity, or show the
+  binding is new and local to the pass. Exit: the guard reads 0 at every checkpoint from W6 on,
+  and 0 per F stage; this is the "count must reach zero before A4" below.
 
 During the transition a debug check reports every `Var` made without an identity, per pass;
 the count must reach zero before A4.
@@ -820,13 +1002,21 @@ Staged (2026-10-29) so that no step changes names before it has been measured in
 - **A4b — slots named by the allocator.** Environment slots take the allocator's names; locals
   keep theirs. Unparsable and undeclared counts must not rise on any bundle.
 - **A4c — locals named by the allocator.** The register-born identities (F23) too; the
-  naming passes stop renaming text.
+  naming passes stop renaming text. (2026-11-03:) The F23 identities exist since A3 step 1, and
+  parameters and pass-made bindings get theirs in A3 step 2.0 / 2.0b; A4c needs every local
+  reference at codegen to carry one (5c's exit), else the allocator falls back to the spelling
+  and two identities under one name stay merged. Measure first in A4a's shadow mode: the
+  locals whose allocated name differs from today's, by class.
 - **A4d — declarations by identity** (also retires `shared_parents`, A2d's representative
   parent for shared functions, and the self-creating exception with it). Writes counted per identity across every body that
   renders it, copies included, decide `let` or `const` and where: `copy_writes` /
   `relax_written_consts`, `extra_writes_from_nested_bodies`, `split_capture_and_local`,
   `drop_slot_lets_of_params` and the outer `written_first_vars` go, each with the const and
-  undeclared counts.
+  undeclared counts. (2026-11-03:) A3 step 2 has by then made the counting and the selection
+  identity-keyed (2a-2c), so each deletion here is of a patch whose remaining job is the split
+  into two names, which the allocator now does; delete each with its fixture (`capture_local`,
+  `param_slot`, `loop_reassign`, `shared_creators`, `inlined_counter`) passing and the
+  codegen-side duplicate (`codegen.rs` declares again, ESM `rebound` by name) converted with it.
 - **A4d2 — enforce I1/I2** (was K4.7). A closing pass: for each I1 violation left, one name
   (best `NameSource` among those carried, then the owner's); for each I2 violation, one side
   renamed by identity through `rename_slot`. The identity check's counts go to zero on the
