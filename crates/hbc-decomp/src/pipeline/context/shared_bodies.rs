@@ -719,6 +719,7 @@ mod tests {
         Expression::Value(Value::Binding(Binding::Variable(Var {
             name: name.into(),
             slot: Some(SlotRef { owner, slot }),
+            local: None,
         })))
     }
 

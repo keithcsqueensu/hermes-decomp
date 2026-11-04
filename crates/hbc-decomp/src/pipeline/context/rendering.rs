@@ -233,6 +233,7 @@ impl PipelineContext {
                             name: crate::ir::Var {
                                 name: name.clone(),
                                 slot: Some(slot),
+                                local: None,
                             },
                             value: crate::ir::Expression::Value(crate::ir::Value::Constant(
                                 crate::ir::Constant::Undefined,
@@ -1507,6 +1508,7 @@ mod retain_read_slots_tests {
         Expression::Value(Value::Binding(Binding::Variable(Var {
             name: name.into(),
             slot,
+            local: None,
         })))
     }
 
@@ -1519,6 +1521,7 @@ mod retain_read_slots_tests {
             target: AssignTarget::Binding(Binding::Variable(Var {
                 name: name.into(),
                 slot,
+                local: None,
             })),
             value: Expression::constant(crate::ir::Constant::Null),
         }

@@ -42,7 +42,9 @@ use super::DecompileOptionsV2;
 // 17: `ClosureContext.off_chain_blocks`. 18: no closure-environment block scopes.
 // 19: one name per parked slot. 20: parked slots' clash test by slot.
 // 21: machines lifted off the CFG. 22: `try` recovered inside a machine.
-pub const CACHE_VERSION: u32 = 22;
+// 23: a `Var` carries the register it was named from (`local`);
+// `ClosureContext.closure_reached`.
+pub const CACHE_VERSION: u32 = 23;
 const MAGIC: [u8; 4] = *b"HDC1";
 
 // Standard cache path for an input file: `<input>.hdcache` next to it.

@@ -182,6 +182,7 @@ mod tests {
         let var = |n: &str, slot: Option<(u32, u32)>| crate::ir::Var {
             name: n.into(),
             slot: slot.map(|(owner, slot)| crate::ir::SlotRef { owner, slot }),
+            local: None,
         };
         let read = |v: crate::ir::Var| {
             Statement::Expr(Expression::Value(Value::Binding(Binding::Variable(v))))

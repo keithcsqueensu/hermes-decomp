@@ -115,6 +115,11 @@ pub struct ClosureContext {
     // environment, off its chain (A2c3): their blocks share one namespace.
     #[serde(default)]
     pub off_chain_blocks: BTreeSet<u32>,
+    // Every scope, block or function, some function reaches off its chain
+    // through a closure's environment (A2c3). A stamp into one is not a
+    // lexical capture: the relocation check does not hold it to the chain.
+    #[serde(default)]
+    pub closure_reached: BTreeSet<(u32, Option<u32>)>,
     // The same for a block environment: (creating function, creation site) ->
     // the scope it was built on.
     #[serde(default)]

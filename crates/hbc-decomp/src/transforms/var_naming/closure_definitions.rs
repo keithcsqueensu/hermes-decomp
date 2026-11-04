@@ -1606,6 +1606,7 @@ mod tests {
             Expression::Value(Value::Binding(Binding::Variable(crate::ir::Var {
                 name: "obj".into(),
                 slot: Some(crate::ir::SlotRef { owner: 1, slot: 0 }),
+                local: None,
             })))
         };
         let mut all_ir = BTreeMap::new();
@@ -1639,6 +1640,7 @@ mod tests {
                 Expression::Value(Value::Binding(Binding::Variable(crate::ir::Var {
                     name: "originalConsoleMethods".into(),
                     slot: Some(crate::ir::SlotRef { owner: 1, slot: 0 }),
+                    local: None,
                 }))),
                 "log"
             )))
@@ -1664,6 +1666,7 @@ mod tests {
             Expression::Value(Value::Binding(Binding::Variable(crate::ir::Var {
                 name: "obj".into(),
                 slot: Some(crate::ir::SlotRef { owner: 1, slot: 0 }),
+                local: None,
             })))
         };
         let store = |property: &str| Statement::Assign {

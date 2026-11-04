@@ -124,6 +124,28 @@ pub struct SlotRef {
 pub struct Var {
     pub name: String,
     pub slot: Option<SlotRef>,
+    // Which register of which function this local was named from (F23), when
+    // it is one (IDENTITY_PLAN.md A3 step 1). Like `slot`, a rename through
+    // `name` keeps it.
+    #[serde(default)]
+    pub local: Option<LocalRef>,
+}
+
+// Which local a variable is: register `reg` of function `function`, as F23
+// named it. One name per register there, so at F23 this is the name's own
+// identity; it outlives the name through renames and through inlining into
+// another body, where two locals of one spelling stay two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct LocalRef {
+    pub function: u32,
+    pub reg: u32,
+}
+
+// What a variable is: an environment slot or a function's register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Identity {
+    Slot(SlotRef),
+    Local(LocalRef),
 }
 
 impl Var {
@@ -134,6 +156,7 @@ impl Var {
         Var {
             name: name.into(),
             slot: None,
+            local: None,
         }
     }
 
@@ -146,11 +169,31 @@ impl Var {
         Var {
             name: name.into(),
             slot,
+            local: None,
+        }
+    }
+
+    // A local named from a register; not counted, it has an identity.
+    pub fn with_local(name: impl Into<String>, local: LocalRef) -> Self {
+        Var {
+            name: name.into(),
+            slot: None,
+            local: Some(local),
         }
     }
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    // The slot when stamped (it wins: a local merged into a slot is the slot),
+    // else the register it was named from.
+    pub fn identity(&self) -> Option<Identity> {
+        match (self.slot, self.local) {
+            (Some(s), _) => Some(Identity::Slot(s)),
+            (None, Some(l)) => Some(Identity::Local(l)),
+            _ => None,
+        }
     }
 }
 
@@ -406,6 +449,7 @@ mod binding_tests {
         let mut stamped = Var {
             name: "closure_2".into(),
             slot: Some(slot),
+            local: None,
         };
         assert_eq!(stamped, Var::from("closure_2"));
         assert_eq!(stamped, "closure_2");

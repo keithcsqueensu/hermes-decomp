@@ -175,6 +175,12 @@ pub fn captured_slot_names(
 // correct only where every slot the moved statements name stays visible at the
 // destination, so a count that rises between two checkpoints is a move that
 // changed meaning, and the pass between them made it.
+//
+// A stamp into a scope reached through a closure's environment (A2c3: an inlined
+// helper reading the closure's own block, or a sibling's) is off the chain by
+// construction, not a stamp gone wrong: it is counted apart
+// (`reached_through_closure`). `lost_on_move` still refuses to move one: it
+// prints as a plain name, which only the body it renders in can resolve.
 pub fn out_of_reach(
     ctx: &ClosureContext,
     func: u32,
@@ -188,9 +194,30 @@ pub fn out_of_reach(
             let s = slot?;
             let parked = ctx.parked_scopes.contains(&s.owner)
                 && reach.contains(&ctx.scope_function(s.owner));
-            (!reach.contains(&s.owner) && !parked).then(|| (name.to_string(), s))
+            (!reach.contains(&s.owner) && !parked && !through_closure(ctx, s.owner))
+                .then(|| (name.to_string(), s))
         })
         .collect()
+}
+
+fn through_closure(ctx: &ClosureContext, owner: u32) -> bool {
+    !ctx.closure_reached.is_empty() && ctx.closure_reached.contains(&ctx.scope_ref(owner))
+}
+
+// The stamped references off `func`'s chain into a scope reached through a
+// closure's environment: the ones `out_of_reach` leaves out.
+pub fn reached_through_closure(ctx: &ClosureContext, func: u32, stmts: &[Statement]) -> usize {
+    if ctx.closure_reached.is_empty() {
+        return 0;
+    }
+    let mut reach = own_scopes(ctx, func);
+    reach.extend(ctx.ancestors_of(func));
+    var_refs(stmts)
+        .into_iter()
+        .filter(|(_, slot)| {
+            slot.is_some_and(|s| !reach.contains(&s.owner) && through_closure(ctx, s.owner))
+        })
+        .count()
 }
 
 // The relocation check a moving pass asks before it moves (A3.0b step 2): of
@@ -242,7 +269,13 @@ fn report_reach(stage: &str, all_ir: &BTreeMap<u32, Vec<Statement>>, ctx: &Closu
         now.insert(func, refs.len());
     }
     let moved: usize = grew.iter().map(|g| g.0).sum();
-    log::debug!(target: TARGET, "{stage:<14} out of reach {total:>6}  new {moved:>5}");
+    // Of those, the ones into a block of a function whose blocks are reached
+    // through a closure's environment (A2c3's off-chain placement).
+    let through: usize = all_ir
+        .iter()
+        .map(|(&func, stmts)| reached_through_closure(ctx, func, stmts))
+        .sum();
+    log::debug!(target: TARGET, "{stage:<14} out of reach {total:>6}  new {moved:>5}  through a closure {through:>6}");
     grew.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     for (n, func, refs) in grew.into_iter().take(8) {
         let refs: Vec<String> = refs

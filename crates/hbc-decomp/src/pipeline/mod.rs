@@ -148,7 +148,7 @@ pub(crate) fn apply_register_naming(
     file: &BytecodeFile,
     function_id: u32,
 ) -> Vec<crate::ir::Statement> {
-    use crate::analysis::{analyze_registers, generate_name, rename_registers};
+    use crate::analysis::{analyze_registers, generate_name};
     use std::collections::{BTreeMap, HashSet};
 
     let reg_info = analyze_registers(&statements);
@@ -181,7 +181,7 @@ pub(crate) fn apply_register_naming(
         })
         .collect();
 
-    rename_registers(statements, &names)
+    crate::analysis::rename_registers_of(statements, &names, function_id)
 }
 
 // Collect every source-level variable name appearing in `statements` (variable

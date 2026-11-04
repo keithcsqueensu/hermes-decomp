@@ -323,6 +323,7 @@ fn stamped_let(name: &str, slot: u32, value: Expression) -> Statement {
         name: crate::ir::Var {
             name: name.into(),
             slot: Some(crate::ir::SlotRef { owner: 0, slot }),
+            local: None,
         },
         value,
         kind: VarKind::Const,

@@ -7,10 +7,24 @@ pub fn rename_stmt(namer: &VariableNamer, stmt: Statement) -> Statement {
             target: rename_target(namer, target),
             value: rename_expr(namer, value),
         },
-        Statement::Let { name, value, kind } => Statement::Let {
-            name: maybe_rename_var(namer, &name).into(),
+        // A rename through `name`, so the variable keeps its identity.
+        Statement::Let {
+            mut name,
+            value,
+            kind,
+        } => Statement::Let {
+            name: {
+                name.name = maybe_rename_var(namer, &name);
+                name
+            },
             value: rename_expr(namer, value),
             kind,
+        },
+        // Left out, `delete r.cookie` kept F23's name for an object F24
+        // renamed everywhere else: `delete tmp3.cookie` beside `const merged`.
+        Statement::Delete { target, result } => Statement::Delete {
+            target: rename_expr(namer, target),
+            result,
         },
         Statement::Expr(e) => Statement::Expr(rename_expr(namer, e)),
         Statement::Return(Some(e)) => Statement::Return(Some(rename_expr(namer, e))),
@@ -151,7 +165,11 @@ impl Renamer<'_> {
             _ => return,
         };
         if let Some(name) = self.0.inferred_names.get(&key) {
-            *binding = Binding::Variable(name.clone().into());
+            match binding {
+                // Through `name`: the identity F23 gave it stays.
+                Binding::Variable(v) => v.name = name.clone(),
+                _ => *binding = Binding::Variable(name.clone().into()),
+            }
         }
     }
 }

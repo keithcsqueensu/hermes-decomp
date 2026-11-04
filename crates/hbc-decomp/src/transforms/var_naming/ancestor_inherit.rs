@@ -460,6 +460,7 @@ mod tests {
         Var {
             name: name.into(),
             slot: Some(SlotRef { owner, slot }),
+            local: None,
         }
     }
 

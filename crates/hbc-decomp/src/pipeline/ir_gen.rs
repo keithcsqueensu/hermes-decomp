@@ -1,9 +1,7 @@
 // IR generation: transform bytecode into IR statements.
 // Contains generate_ir() and build_closure_context_from_file().
 
-use crate::analysis::{
-    rename_registers, resolve_closures_recording, ClosureContext, StructureAnalysis,
-};
+use crate::analysis::{resolve_closures_recording, ClosureContext, StructureAnalysis};
 use crate::error::Result;
 use crate::file::BytecodeFile;
 use crate::ir::{BinaryOp, Expression, IRBuilder, IRBuilderOptions, Statement, Terminator};
@@ -444,7 +442,7 @@ fn build_for_context(
         BTreeMap::new()
     };
     let statements = if !debug_names.is_empty() {
-        rename_registers(statements, &debug_names)
+        crate::analysis::rename_registers_of(statements, &debug_names, function_id)
     } else {
         statements
     };
@@ -1016,6 +1014,7 @@ fn plan_env_levels(
                     if r.1.is_some() {
                         ctx.off_chain_blocks.insert(r.0);
                     }
+                    ctx.closure_reached.insert(r);
                     count("access: closure's environment, off the chain");
                     tally(true);
                 }

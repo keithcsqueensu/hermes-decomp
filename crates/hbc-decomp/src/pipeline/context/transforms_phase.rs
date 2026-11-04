@@ -487,6 +487,7 @@ impl PipelineContext {
                     name: crate::ir::Var {
                         name,
                         slot: Some(slot),
+                        local: None,
                     },
                     value: Expression::Value(Value::Constant(crate::ir::Constant::Undefined)),
                     kind: crate::ir::VarKind::Let,
@@ -1226,6 +1227,7 @@ fn adopt_collapsed_machines(
                 name: crate::ir::Var {
                     name,
                     slot: Some(slot),
+                    local: None,
                 },
                 value: Expression::Value(Value::Constant(crate::ir::Constant::Undefined)),
                 kind: crate::ir::VarKind::Let,
@@ -1497,6 +1499,7 @@ mod separate_locals_tests {
         Var {
             name: name.into(),
             slot,
+            local: None,
         }
     }
 

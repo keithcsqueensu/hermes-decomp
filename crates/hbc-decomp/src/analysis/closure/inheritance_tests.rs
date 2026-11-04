@@ -275,6 +275,7 @@ fn own_slot_names_reads_the_stamps() {
         Expression::Value(Value::Binding(Binding::Variable(Var {
             name: name.to_string(),
             slot: Some(SlotRef { owner, slot }),
+            local: None,
         })))
     };
     let body = vec![
@@ -301,6 +302,7 @@ fn captured_slot_names_takes_ancestors_only() {
         Statement::Expr(Expression::Value(Value::Binding(Binding::Variable(Var {
             name: name.to_string(),
             slot: Some(SlotRef { owner, slot }),
+            local: None,
         }))))
     };
     let mut ctx = ClosureContext::new();

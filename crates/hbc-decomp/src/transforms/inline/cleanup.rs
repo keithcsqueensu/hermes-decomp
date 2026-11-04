@@ -12,6 +12,10 @@ fn is_self_assign_value(var: &crate::ir::Var, value: &Expression) -> bool {
         // other way round, a local given an enclosing variable's value
         // (`num = num` for `local = slot`), is a read of another variable: dropped,
         // `num = 0; if (c) num = <outer num>` lost its `if`.
+        //
+        // Two registers' locals of one spelling are two variables too, and
+        // `x = x` between them is a copy; but it prints as `x = x` until names
+        // come from identities (IDENTITY_PLAN.md A3 step 5). Dropped as before.
         Expression::Value(Value::Binding(Binding::Variable(val))) => {
             name == val.name
                 && !matches!((var.slot, val.slot), (Some(a), Some(b)) if a != b)
@@ -54,10 +58,12 @@ struct Merge {
     // trailing `return;` is only noise there: at the end of an `if` arm with code
     // after the `if`, of a loop body or of a `case`, it is what stops that code.
     tail: bool,
-    // Names the whole body writes without a stamp: its own locals.
+    // Names the whole body writes without a stamp: its own locals. By name,
+    // like the merge within one function (see `stamp_merged`).
     local_writes: std::collections::HashSet<String>,
-    // Stores into a slot dropped as `x = x` where only the target is stamped.
-    dropped: Vec<(String, crate::ir::SlotRef)>,
+    // Stores into a slot dropped as `x = x` where only the target is stamped:
+    // the name, the slot and the local merged into it.
+    dropped: Vec<(String, crate::ir::SlotRef, Option<crate::ir::LocalRef>)>,
 }
 
 thread_local! {
@@ -123,27 +129,64 @@ fn unstamped_writes(stmts: &[Statement]) -> std::collections::HashSet<String> {
 // store is right only if the local's other references are the slot's too:
 // stamp them, or a later pass takes the unstamped write before the store
 // (`x = x + 1`) for a local of its own and the store is lost for good.
-fn stamp_merged(stmts: &mut [Statement], dropped: &[(String, crate::ir::SlotRef)]) {
-    use crate::ir::MutVisitor;
-    let mut by_name: std::collections::HashMap<&str, Option<crate::ir::SlotRef>> =
-        std::collections::HashMap::new();
-    for (n, s) in dropped {
-        by_name
-            .entry(n.as_str())
+//
+// The local's references are those of its spelling from its own function: a
+// pass may have rebuilt some without an identity, and another register of that
+// function under the name cannot be printed apart from it until names come from
+// identities (A3 step 5). A local of another function, inlined beside it, is
+// another variable and keeps no stamp. A name merged into two slots stamps
+// nothing, and a merged value with no identity stamps by name, as before.
+fn stamp_merged(
+    stmts: &mut [Statement],
+    dropped: &[(String, crate::ir::SlotRef, Option<crate::ir::LocalRef>)],
+) {
+    use crate::ir::{MutVisitor, SlotRef};
+    use std::collections::HashMap;
+    fn put<K: std::hash::Hash + Eq>(m: &mut HashMap<K, Option<SlotRef>>, k: K, s: SlotRef) {
+        m.entry(k)
             .and_modify(|e| {
-                if *e != Some(*s) {
+                if *e != Some(s) {
                     *e = None;
                 }
             })
-            .or_insert(Some(*s));
+            .or_insert(Some(s));
     }
-    struct Stamp<'a>(&'a std::collections::HashMap<&'a str, Option<crate::ir::SlotRef>>);
+    // Each merged spelling's slot,
+    let mut by_name: HashMap<&str, Option<SlotRef>> = HashMap::new();
+    // and the functions whose locals were merged under it; none when a merged
+    // value had no identity.
+    let mut functions: HashMap<&str, Option<std::collections::HashSet<u32>>> = HashMap::new();
+    for (n, s, l) in dropped {
+        put(&mut by_name, n.as_str(), *s);
+        let f = functions
+            .entry(n.as_str())
+            .or_insert_with(|| Some(Default::default()));
+        match (f.as_mut(), l) {
+            (Some(f), Some(l)) => {
+                f.insert(l.function);
+            }
+            _ => *f = None,
+        }
+    }
+    struct Stamp<'a> {
+        by_name: &'a HashMap<&'a str, Option<SlotRef>>,
+        functions: &'a HashMap<&'a str, Option<std::collections::HashSet<u32>>>,
+    }
     impl Stamp<'_> {
         fn var(&self, v: &mut crate::ir::Var) {
-            if v.slot.is_none() {
-                if let Some(Some(s)) = self.0.get(v.name.as_str()) {
-                    v.slot = Some(*s);
-                }
+            if v.slot.is_some() {
+                return;
+            }
+            let other_function = match (v.local, self.functions.get(v.name.as_str())) {
+                (Some(l), Some(Some(f))) => !f.contains(&l.function),
+                _ => false,
+            };
+            if other_function {
+                return;
+            }
+            let found = self.by_name.get(v.name.as_str());
+            if let Some(Some(s)) = found {
+                v.slot = Some(*s);
             }
         }
     }
@@ -167,7 +210,10 @@ fn stamp_merged(stmts: &mut [Statement], dropped: &[(String, crate::ir::SlotRef)
             self.walk_assign_target(t);
         }
     }
-    let mut st = Stamp(&by_name);
+    let mut st = Stamp {
+        by_name: &by_name,
+        functions: &functions,
+    };
     for s in stmts.iter_mut() {
         st.visit_statement(s);
     }
@@ -197,7 +243,7 @@ fn cleanup_noise_here(stmts: Vec<Statement>) -> Vec<Statement> {
                             MERGE.with(|m| {
                                 let mut m = m.borrow_mut();
                                 if m.local_writes.contains(&v.name) {
-                                    m.dropped.push((name.name.clone(), slot));
+                                    m.dropped.push((name.name.clone(), slot, v.local));
                                 }
                             });
                         }
@@ -403,6 +449,60 @@ mod tests {
             matches!(&dropped[0], Statement::If { then_body, .. } if then_body.len() == 1),
             "in tail position: {dropped:?}"
         );
+    }
+
+    fn local(name: &str, reg: u32) -> crate::ir::Var {
+        crate::ir::Var::with_local(name, crate::ir::LocalRef { function: 7, reg })
+    }
+
+    fn read(v: crate::ir::Var) -> Expression {
+        Expression::Value(Value::Binding(Binding::Variable(v)))
+    }
+
+    fn assign(target: crate::ir::Var, value: Expression) -> Statement {
+        Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable(target)),
+            value,
+        }
+    }
+
+    // The store `slot = x` merges function 7's `x` into the slot, register 1's
+    // and the others of that function under the name; function 8's `x`,
+    // inlined beside it, is another variable and keeps no stamp.
+    #[test]
+    fn a_merge_stamps_the_merged_register_only() {
+        let slot = crate::ir::SlotRef { owner: 3, slot: 0 };
+        let stamped = crate::ir::Var::with_slot("x", Some(slot));
+        let one = || Expression::constant(crate::ir::Constant::Integer(1));
+        let out = cleanup_noise(vec![
+            assign(local("x", 1), one()),
+            assign(stamped, read(local("x", 1))),
+            assign(
+                crate::ir::Var::with_local(
+                    "x",
+                    crate::ir::LocalRef {
+                        function: 8,
+                        reg: 1,
+                    },
+                ),
+                one(),
+            ),
+            Statement::Expr(read(local("x", 3))),
+        ]);
+        let slots: Vec<_> = out
+            .iter()
+            .map(|s| match s {
+                Statement::Assign {
+                    target: AssignTarget::Binding(Binding::Variable(v)),
+                    ..
+                }
+                | Statement::Expr(Expression::Value(Value::Binding(Binding::Variable(v)))) => {
+                    v.slot
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(slots, vec![Some(slot), None, Some(slot)], "{out:?}");
     }
 
     #[test]

@@ -626,9 +626,11 @@ name becomes a hint. Equality and hashing move to the identity.
 Done pass family by pass family, each its own step with the stage's measurements, in the order
 the defects above point to:
 
-1. cleanup (`cleanup_noise` self-assignment; `stamp_merged` goes),
+1. cleanup (`cleanup_noise` self-assignment; `stamp_merged` goes) — done 2026-11-03, with
+   `stamp_merged` kept by identity; its deletion is A4e's (see "Step 1 done" below),
 2. declarations (write counting per identity; `written_first_vars`, `split_capture_and_local`,
-   `drop_slot_lets_of_params` go),
+   `drop_slot_lets_of_params` go) — not yet planned past this line, and A4d claims the same
+   deletions; to be written up before it starts,
 3. inlining and object folding (`inline_named_variables`, `slot_fills`, `hoist_closures`),
 4. the generator and async machinery (`keep_raw_machines`, `separate_step_env_names`),
 5. naming (`var_naming`, W7–W11) and shared bodies (`separate_copy_names`; a copy is a
@@ -708,16 +710,40 @@ no other thing under that name. With stamps that is a check, not a guess:
    byte-identical on all three. Logged as `relocation check` under `slots=debug`, each refusal
    under `trace`.
 
-   **Open, found measuring this: step 1's census is no longer 0.** Out of reach at the first
-   checkpoint, after W6: Expensify 783, Discord 7,828 (Equinox 11, W15's as before); after W13
-   526 and 7,706, flat after that, and no moving pass adds any (W13's one "new" on Expensify is
-   a stamped reference copied within its body). So the stamps are wrong as W6 lays them, not
-   moved. Every sample names a block scope of another function, off the body's chain:
-   Expensify F107560 reads `node` of F2473 block 1101 (48), F39180-F39183 read `sum` and
-   `defaultResult1` of F3157's blocks; Discord's stemmer functions (F149797 590, F149818 566,
-   ...) read `Among2` of F77093 block 579. It was 0 on 2026-10-30 (3eaa994), so a later commit
-   made it: not bisected yet, the block-scope and generator commits of 10-31 to 11-02 first.
-   Read it before step 3, whose guard trusts the stamps.
+   **Found measuring this, and closed (2026-11-03): step 1's census was no longer 0.** Out of
+   reach after W6: Expensify 783, Discord 7,828 (Equinox 11, W15's as before). Bisected to
+   5786409 (A2c3, `GetClosureEnvironment` placed; its parent 228bd08 has 0). Not a mis-stamp:
+   A2c3 gives an access to a closure's environment the scope it was placed in, off the
+   reader's chain by construction (an inlined helper reading the closure's block or a
+   sibling's), and the census held every stamp to the chain. On Expensify 721 of the 783 are
+   blocks of a function in `off_chain_blocks`; the other 62 are function scopes reached the
+   same way, which A2c3 did not record (F23124 and others reading F72297 and F72596).
+   `ClosureContext.closure_reached` now records every scope reached through a closure's
+   environment, block or function, and the census counts those apart (`through a closure`).
+   Out of reach is 0 at every checkpoint on Expensify and Discord, Equinox 11 from W15 as
+   before; through a closure Expensify 783 after W6, 520 after W16h, Discord 7,828 and 7,706.
+   `lost_on_move` still refuses to move such a reference: it prints as a plain name that only
+   the body it renders in resolves. Output byte-identical.
+
+**Step 1 done (2026-11-03).** A local has an identity: `Var.local`, a `LocalRef { function,
+reg }` set where F23 names the register (`rename_registers_of`), and F24 renames through
+`name` so it stays. The guard's F23 and F24 counts go to 0 (Equinox 1,383,818 and 572,081
+before). `Var::identity()` gives the slot, else the register. In `cleanup_noise` the merge of
+`slot = x` (`stamp_merged`) no longer stamps a local of another function under the same
+spelling (a body inlined beside it). The plan's "`stamp_merged` goes" was not possible yet,
+for the reason A4e gives: within one function every reference of the spelling must still be
+stamped, since another register under the name cannot be printed apart from it until names
+come from identities (step 5, A4c). Stamping only the merged register was tried: it left
+undeclared reads declared as bare `let obj;` (Equinox `({ isNew: obj.isNew } = ...)`,
+`_moduleResult`), hiding the loss upstream. For the same reason `x = x` between two
+registers' locals is still dropped as noise. A name merged into two slots stamps nothing, as
+before. Identity on and off: byte-identical on Equinox and Expensify.
+
+Measuring it found one real defect: F24 renamed no `delete` target, so `delete tmp3.cookie`
+kept F23's name for an object F24 renamed `merged` everywhere else. Fixed, with all of step
+1's output change: Equinox 265 lines, Expensify 3,645, Discord 968 (the rest renumbering of
+generated names); undeclared 843 -> 840, 10,317 -> 10,300, 5,074 -> 5,073; bare `let x;`
+declarations unchanged (Expensify 165,281, Discord 199,618).
 
 Steps 4 and 5 are each split (2026-10-29):
 

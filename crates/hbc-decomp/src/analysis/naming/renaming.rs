@@ -5,6 +5,32 @@ pub fn rename_registers(stmts: Vec<Statement>, names: &BTreeMap<u32, String>) ->
     stmts.into_iter().map(|s| rename_stmt(s, names)).collect()
 }
 
+thread_local! {
+    // The function whose registers `rename_registers_of` is naming.
+    static FUNCTION: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+// F23: name a function's registers, each variable carrying the register it was
+// named from as its identity (IDENTITY_PLAN.md A3 step 1). The other callers
+// rename a few registers mid-pattern and give none.
+pub fn rename_registers_of(
+    stmts: Vec<Statement>,
+    names: &BTreeMap<u32, String>,
+    function: u32,
+) -> Vec<Statement> {
+    let outer = FUNCTION.with(|f| f.replace(Some(function)));
+    let out = rename_registers(stmts, names);
+    FUNCTION.with(|f| f.set(outer));
+    out
+}
+
+fn named(reg: u32, name: &str) -> crate::ir::Var {
+    match FUNCTION.with(|f| f.get()) {
+        Some(function) => crate::ir::Var::with_local(name, crate::ir::LocalRef { function, reg }),
+        None => name.into(),
+    }
+}
+
 fn rename_stmt(stmt: Statement, names: &BTreeMap<u32, String>) -> Statement {
     match stmt {
         Statement::Assign { target, value } => Statement::Assign {
@@ -147,7 +173,7 @@ fn rename_target(target: AssignTarget, names: &BTreeMap<u32, String>) -> AssignT
     match target {
         AssignTarget::Binding(Binding::Register(r)) => {
             if let Some(name) = names.get(&r) {
-                AssignTarget::Binding(Binding::Variable(name.clone().into()))
+                AssignTarget::Binding(Binding::Variable(named(r, name)))
             } else {
                 AssignTarget::Binding(Binding::Register(r))
             }
@@ -216,7 +242,7 @@ fn rename_expr(expr: Expression, names: &BTreeMap<u32, String>) -> Expression {
     match expr {
         Expression::Value(Value::Binding(Binding::Register(r))) => {
             if let Some(name) = names.get(&r) {
-                Expression::Value(Value::Binding(Binding::Variable(name.clone().into())))
+                Expression::Value(Value::Binding(Binding::Variable(named(r, name))))
             } else {
                 Expression::Value(Value::Binding(Binding::Register(r)))
             }

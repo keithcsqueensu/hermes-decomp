@@ -14,6 +14,9 @@ pub use closure::{
 };
 pub use ipa::{run_ipa, FunctionNameIndex, GlobalAnalysis};
 pub use metro::{DependencyTree, MetroModule, MetroRegistry};
-pub use naming::{analyze_registers, generate_name, rename_registers, RegisterInfo, RegisterRole};
+pub use naming::{
+    analyze_registers, generate_name, rename_registers, rename_registers_of, RegisterInfo,
+    RegisterRole,
+};
 pub use structure::{Structure, StructureAnalysis};
 pub use xref::{find_function_refs, find_string_xrefs, XrefResult};
