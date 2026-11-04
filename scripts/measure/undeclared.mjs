@@ -1,7 +1,7 @@
 // Count identifier references that no scope declares, in decompiled output.
 //
 // usage: node undeclared.mjs <decompiled.js> [--dump <names.tsv>] [--show <name>] [--per-module]
-//        [--unparsed <errors.tsv>]
+//        [--unparsed <errors.tsv>] [--rows <refs.tsv>]
 //
 // The output is split at the decompiler's `// === Module` / `// === Orphan`
 // markers, and the orphan section again at each top-level function (orphans are
@@ -28,6 +28,12 @@
 // module happens to declare a name at top level then compare honestly.
 // --unparsed writes `header<TAB>parse error<TAB>offending line` for each part
 // that does not parse, the first line of its marker as the header.
+// --rows writes one row per undeclared reference, to characterise them:
+// `name, module, line, raw, cls, depth, written, worklet` (tab-separated, with a
+// header): the module marker, whether it sits in a raw generator machine (a
+// function holding the "Generator functions may not be called" check), in a
+// class body, its function nesting depth, whether the module writes the name
+// anywhere, and whether it is inside a Reanimated worklet (`__workletHash`).
 import fs from 'node:fs';
 import * as acorn from 'acorn';
 import jsx from 'acorn-jsx';
@@ -45,6 +51,8 @@ const opt = (flag) => {
 const dump = opt('--dump');
 const show = opt('--show');
 const unparsedOut = opt('--unparsed');
+const rowsOut = opt('--rows');
+const refRows = ['name\tmodule\tline\traw\tcls\tdepth\twritten\tworklet'];
 const unparsedRows = [];
 if (!file) {
   console.error('usage: node undeclared.mjs <decompiled.js> [--dump <names.tsv>] [--show <name>]');
@@ -133,10 +141,43 @@ chunks.forEach((text, i) => {
     ecmaVersion: 2022, sourceType: 'module', fallback: 'iteration',
   });
   const lineOf = (node) => starts[i] + node.loc.start.line - 1;
+  // --rows: where an undeclared reference sits, from its scope chain
+  // (innermost first).
+  const header = text.split('\n', 1)[0].slice(0, 80);
+  const written = new Set();
+  if (rowsOut) {
+    for (const ref of manager.globalScope.through) if (ref.isWrite()) written.add(ref.identifier.name);
+  }
+  const rawMemo = new Map();
+  const isRaw = (node) => {
+    if (!rawMemo.has(node)) {
+      rawMemo.set(node, text.slice(node.range[0], node.range[1]).includes('Generator functions may not be called'));
+    }
+    return rawMemo.get(node);
+  };
+  const row = (n, line, chain) => {
+    if (!rowsOut) return;
+    let raw = 0, cls = 0, depth = 0, worklet = 0;
+    for (const s of chain) {
+      if (s.type === 'function') {
+        depth++;
+        if (!raw && isRaw(s.block)) raw = 1;
+      }
+      if (s.type === 'class') cls = 1;
+      if (s.block && s.block.range
+        && text.slice(s.block.range[0], s.block.range[0] + 40).includes('__workletHash')) worklet = 1;
+    }
+    refRows.push([n, header, line, raw, cls, depth, written.has(n) ? 1 : 0, worklet].join('\t'));
+  };
   for (const ref of manager.globalScope.through) {
     const n = ref.identifier.name;
     if (known.has(n) || topDecl.has(n)) continue;
     count(n, lineOf(ref.identifier));
+    if (rowsOut) {
+      const chain = [];
+      for (let sc = ref.from; sc; sc = sc.upper) chain.push(sc);
+      row(n, lineOf(ref.identifier), chain);
+    }
   }
   // JSX tags, resolved through the scopes enclosing them.
   const stack = [];
@@ -160,6 +201,7 @@ chunks.forEach((text, i) => {
       }
       if (bound(n) || known.has(n) || topDecl.has(n)) return;
       count(n, lineOf(name));
+      row(n, lineOf(name), [...stack].reverse());
     },
     leave(node) {
       if (node.__scoped) stack.pop();
@@ -176,6 +218,7 @@ for (const [n, c] of byName) {
   if (/^arg\d+$/.test(n)) argUndeclared += c; // B2: a dropped parameter
 }
 if (unparsedOut) fs.writeFileSync(unparsedOut, unparsedRows.join('\n') + '\n');
+if (rowsOut) fs.writeFileSync(rowsOut, refRows.join('\n') + '\n');
 if (dump) {
   const rows = [...byName].map(([n, c]) => `${n}\t${c}`).sort();
   fs.writeFileSync(dump, rows.join('\n') + '\n');
