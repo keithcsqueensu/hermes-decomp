@@ -329,7 +329,7 @@ impl PipelineContext {
                 let pnames = global_analysis.param_names.clone();
                 for (fid, names) in &pnames {
                     if let Some(stmts) = all_ir.get_mut(fid) {
-                        transforms::exports::rename_param_registers(stmts, names);
+                        transforms::exports::rename_param_registers_of(stmts, names, *fid);
                     }
                 }
 

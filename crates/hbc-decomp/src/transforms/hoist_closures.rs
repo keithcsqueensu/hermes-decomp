@@ -225,13 +225,27 @@ pub fn hoist_repeated_closures_checked(
         return 0;
     }
 
+    // One made identity per hoisted function, shared by its declarations and
+    // every site (IDENTITY_PLAN.md A3 step 2.0): a binding the pass creates has
+    // neither register nor slot.
+    let vars: BTreeMap<u32, crate::ir::Var> = plan
+        .iter()
+        .map(|(&fid, (scopes, name))| {
+            let at = scopes.first().copied().unwrap_or(fid);
+            (
+                fid,
+                crate::ir::Var::with_local(name.clone(), crate::ir::LocalRef::made(at)),
+            )
+        })
+        .collect();
+
     // Replace every site by the name.
-    let by_holder: BTreeMap<u32, BTreeMap<u32, String>> = {
-        let mut m: BTreeMap<u32, BTreeMap<u32, String>> = BTreeMap::new();
+    let by_holder: BTreeMap<u32, BTreeMap<u32, crate::ir::Var>> = {
+        let mut m: BTreeMap<u32, BTreeMap<u32, crate::ir::Var>> = BTreeMap::new();
         for (&fid, found) in &sites {
-            if let Some((_, name)) = plan.get(&fid) {
+            if let Some(var) = vars.get(&fid) {
                 for s in found {
-                    m.entry(s.holder).or_default().insert(fid, name.clone());
+                    m.entry(s.holder).or_default().insert(fid, var.clone());
                 }
             }
         }
@@ -246,11 +260,11 @@ pub fn hoist_repeated_closures_checked(
 
     // Declare once, at the top of the shared scope, in a stable order.
     let mut decls: BTreeMap<u32, Vec<Statement>> = BTreeMap::new();
-    for (&fid, (scopes, name)) in &plan {
+    for (&fid, (scopes, _)) in &plan {
         let shape = &shapes[&fid];
         for scope in scopes {
             decls.entry(*scope).or_default().push(Statement::Let {
-                name: name.clone().into(),
+                name: vars[&fid].clone(),
                 value: Expression::Function {
                     id: FunctionId(fid),
                     name: shape.name.clone(),
@@ -614,7 +628,7 @@ impl<'b> Visitor<'b> for Collect<'_> {
 }
 
 struct Replace<'a> {
-    names: &'a BTreeMap<u32, String>,
+    names: &'a BTreeMap<u32, crate::ir::Var>,
 }
 
 impl MutVisitor for Replace<'_> {
@@ -625,8 +639,8 @@ impl MutVisitor for Replace<'_> {
     }
     fn visit_expression(&mut self, e: &mut Expression) {
         if let Expression::Function { id, .. } = e {
-            if let Some(name) = self.names.get(&id.0) {
-                *e = Expression::Value(Value::Binding(Binding::Variable(name.clone().into())));
+            if let Some(var) = self.names.get(&id.0) {
+                *e = Expression::Value(Value::Binding(Binding::Variable(var.clone())));
                 return;
             }
         }

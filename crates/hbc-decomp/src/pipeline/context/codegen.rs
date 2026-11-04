@@ -147,10 +147,15 @@ impl PipelineContext {
         statements: &[Statement],
     ) -> Vec<Statement> {
         let mut statements = statements.to_vec();
+        let _here = crate::ir::in_function(function_id);
 
         // Apply IPA parameter names to the IR
         if let Some(param_names) = self.global_analysis.param_names.get(&function_id) {
-            transforms::exports::rename_param_registers(&mut statements, param_names);
+            transforms::exports::rename_param_registers_of(
+                &mut statements,
+                param_names,
+                function_id,
+            );
         }
 
         // Lightweight cleanup after IPA renames (self-assignments, reserved words)

@@ -226,6 +226,26 @@ fn hoist_one_module(
         inject.push((*key, callee.clone()));
     }
 
+    // Each binding's variable: an existing one keeps the identity its `let`
+    // has; a new one is made here (IDENTITY_PLAN.md A3 step 2.0).
+    let vars: BTreeMap<HoistKey, crate::ir::Var> = bindings
+        .iter()
+        .map(|(key, name)| {
+            let had = existing.contains_key(key).then(|| {
+                all_ir.get(&factory_id).and_then(|f| {
+                    f.iter().find_map(|s| match s {
+                        Statement::Let { name: v, .. } if v.name == *name => Some(v.clone()),
+                        _ => None,
+                    })
+                })
+            });
+            let var = had.flatten().unwrap_or_else(|| {
+                crate::ir::Var::with_local(name.clone(), crate::ir::LocalRef::made(factory_id))
+            });
+            (*key, var)
+        })
+        .collect();
+
     let hoist_keys: BTreeSet<HoistKey> = hoist.iter().map(|(k, _)| *k).collect();
     for &fid in members {
         if let Some(stmts) = all_ir.get_mut(&fid) {
@@ -234,7 +254,7 @@ fn hoist_one_module(
                 continue;
             }
             let mut rw = LoaderRewriter {
-                bindings: &bindings,
+                bindings: &vars,
                 aliases: &aliases,
                 keys: &hoist_keys,
                 deps,
@@ -256,10 +276,10 @@ fn hoist_one_module(
         if let Some(factory) = all_ir.get_mut(&factory_id) {
             let mut injected: Vec<Statement> = Vec::new();
             for (key, callee) in &inject {
-                let name = bindings.get(key).cloned().unwrap_or_default();
+                let name = vars.get(key).cloned().unwrap_or_default();
                 let id = key.0;
                 injected.push(Statement::Let {
-                    name: name.into(),
+                    name,
                     value: Expression::Call {
                         callee: Box::new(callee.clone()),
                         arguments: vec![Expression::Value(Value::Constant(Constant::Integer(
@@ -278,7 +298,7 @@ fn hoist_one_module(
 
 // Rewrite each eager loader call whose (id, kind) is hoisted into its binding.
 struct LoaderRewriter<'a> {
-    bindings: &'a BTreeMap<HoistKey, String>,
+    bindings: &'a BTreeMap<HoistKey, crate::ir::Var>,
     aliases: &'a HashMap<String, LoaderKind>,
     keys: &'a BTreeSet<HoistKey>,
     deps: &'a [u32],
@@ -289,9 +309,9 @@ impl MutVisitor for LoaderRewriter<'_> {
         if let Some((id, kind, _)) = loader_call(e, self.aliases, self.deps) {
             let key = (id, kind);
             if self.keys.contains(&key) {
-                if let Some(name) = self.bindings.get(&key) {
+                if let Some(var) = self.bindings.get(&key) {
                     *e = Expression::Value(Value::Binding(crate::ir::Binding::Variable(
-                        name.clone().into(),
+                        var.clone(),
                     )));
                     return;
                 }

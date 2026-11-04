@@ -141,6 +141,68 @@ pub struct LocalRef {
     pub reg: u32,
 }
 
+// Two reserved `reg` ranges, far above any Hermes register number (a frame is
+// at most 2^16 or so): a parameter, read with `LoadParam` and so not a register
+// of its own, and a binding a pass creates (a hoisted closure's `const`, a
+// module loader's binding, a fresh name split off a clash), which has neither
+// register nor slot (IDENTITY_PLAN.md A3 step 2.0 / 2.0b).
+const PARAM_REG_BASE: u32 = 0xC000_0000;
+const MADE_REG_BASE: u32 = 0x8000_0000;
+
+impl LocalRef {
+    // Parameter `index` of `function`.
+    pub fn param(function: u32, index: u32) -> Self {
+        LocalRef {
+            function,
+            reg: PARAM_REG_BASE + index.min(PARAM_REG_BASE - 1),
+        }
+    }
+
+    // A fresh binding a pass makes in `function`, unequal to every other. The
+    // number is drawn from one counter, so it says nothing about order and may
+    // differ from run to run; only equality is meant.
+    pub fn made(function: u32) -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        LocalRef {
+            function,
+            reg: MADE_REG_BASE + n % (PARAM_REG_BASE - MADE_REG_BASE),
+        }
+    }
+
+    // A fresh binding in the function this thread is working on (`in_function`),
+    // for a pass that is not told which one; `u32::MAX` when none is set.
+    pub fn made_here() -> Self {
+        Self::made(HERE.with(|h| h.get()).unwrap_or(u32::MAX))
+    }
+
+    pub fn is_param(&self) -> bool {
+        self.reg >= PARAM_REG_BASE
+    }
+
+    pub fn is_made(&self) -> bool {
+        (MADE_REG_BASE..PARAM_REG_BASE).contains(&self.reg)
+    }
+}
+
+thread_local! {
+    static HERE: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+// Marks the function a per-function step works on, for `LocalRef::made_here`;
+// restores what it found on drop.
+pub struct InFunction(Option<u32>);
+
+pub fn in_function(function: u32) -> InFunction {
+    InFunction(HERE.with(|h| h.replace(Some(function))))
+}
+
+impl Drop for InFunction {
+    fn drop(&mut self) {
+        HERE.with(|h| h.set(self.0));
+    }
+}
+
 // What a variable is: an environment slot or a function's register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Identity {

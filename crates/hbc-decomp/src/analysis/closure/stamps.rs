@@ -534,3 +534,113 @@ pub fn class_body_stamps(
     }
     (ok, off, samples)
 }
+
+// What the variable references reaching the declaration pass carry
+// (IDENTITY_PLAN.md A3 step 2.0): a slot, a register (F23), a parameter, a
+// binding a pass made, or nothing. Of the last, `rebuilt` counts those spelled
+// like a reference in the same body that has an identity: likely the same
+// variable, rebuilt from its name by some pass.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct IdentityMix {
+    pub slot: usize,
+    pub register: usize,
+    pub param: usize,
+    pub made: usize,
+    pub none: usize,
+    pub rebuilt: usize,
+}
+
+impl IdentityMix {
+    fn add(&mut self, o: &IdentityMix) {
+        self.slot += o.slot;
+        self.register += o.register;
+        self.param += o.param;
+        self.made += o.made;
+        self.none += o.none;
+        self.rebuilt += o.rebuilt;
+    }
+}
+
+pub fn identity_mix(stmts: &[Statement]) -> IdentityMix {
+    struct V<'a>(Vec<&'a crate::ir::Var>);
+    impl<'a> Visitor<'a> for V<'a> {
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Let { name, .. } = s {
+                self.0.push(name);
+            }
+            self.walk_statement(s);
+        }
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                self.0.push(v);
+            }
+            self.walk_expression(e);
+        }
+        fn visit_assign_target(&mut self, t: &'a AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.0.push(v);
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut v = V(Vec::new());
+    for s in stmts {
+        v.visit_statement(s);
+    }
+    let identified: HashSet<&str> =
+        v.0.iter()
+            .filter(|x| x.identity().is_some())
+            .map(|x| x.name.as_str())
+            .collect();
+    let mut m = IdentityMix::default();
+    for x in &v.0 {
+        match (x.slot, x.local) {
+            (Some(_), _) => m.slot += 1,
+            (None, Some(l)) if l.is_param() => m.param += 1,
+            (None, Some(l)) if l.is_made() => m.made += 1,
+            (None, Some(_)) => m.register += 1,
+            (None, None) => {
+                m.none += 1;
+                if identified.contains(x.name.as_str()) {
+                    m.rebuilt += 1;
+                }
+            }
+        }
+    }
+    m
+}
+
+static MIX: Mutex<Option<IdentityMix>> = Mutex::new(None);
+
+// Adds one body's mix to the running total, when the census is on.
+pub fn record_identity_mix(stmts: &[Statement]) {
+    if !log::log_enabled!(target: TARGET, log::Level::Debug) {
+        return;
+    }
+    let m = identity_mix(stmts);
+    if let Ok(mut t) = MIX.lock() {
+        t.get_or_insert_with(IdentityMix::default).add(&m);
+    }
+}
+
+// Logs and clears the running total.
+pub fn report_identity_mix(stage: &str) {
+    let Some(m) = MIX.lock().ok().and_then(|mut t| t.take()) else {
+        return;
+    };
+    let total = m.slot + m.register + m.param + m.made + m.none;
+    log::debug!(
+        target: TARGET,
+        "{stage:<14} refs {total}: slot {}, register {}, parameter {}, made {}, none {} ({} spelled like an identified one)",
+        m.slot, m.register, m.param, m.made, m.none, m.rebuilt
+    );
+    let (program, stages) = crate::ir::identity_guard::take();
+    let mut stages: Vec<_> = stages.into_iter().collect();
+    stages.sort_by_key(|(s, _)| crate::ir::identity_guard::stage_order(s));
+    for (s, n) in stages {
+        log::debug!(target: TARGET, "  {s:<12} no identity {n:>8}  (per function)");
+    }
+    if program > 0 {
+        log::debug!(target: TARGET, "  {:<12} no identity {program:>8}", "other");
+    }
+}

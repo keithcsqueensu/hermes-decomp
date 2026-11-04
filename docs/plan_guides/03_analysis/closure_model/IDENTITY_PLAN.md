@@ -829,6 +829,50 @@ What step 2 does not do: delete any of the five patches (A4d, after the allocato
 `is_env_slot_name`'s `let` preference (a spelling test, A4d3). Gate run per stage; 2.0 and 2.0b
 may share one.
 
+**2.0 and 2.0b done (2026-11-03), one gate run.**
+- Identities added. A parameter read named by `rename_param_registers_of` (F22, W9's IPA
+  names, W17, codegen) carries `LocalRef::param(function, i)`, and so does a register loaded
+  from a parameter. A binding a pass creates carries `LocalRef::made`: W16g's hoisted `const`
+  and its sites share one per function, W16h's loader bindings take the existing `let`'s
+  identity or a new one, and `repair_switch_clobbers`' split-off name gives its write and its
+  reads one. Both are reserved `reg` ranges, so `Var` did not grow. `in_function` marks the
+  function for a pass that is not told it. The decision 2.0 left open is taken: made
+  identities, not the name fallback.
+- Two renames that rebuilt a `let` from its new name now rename through `name`:
+  `rename_variables_in_stmt` (W11d's aliases, W16c) and `rename_param_registers`.
+- The census, `at W17 declare` under `slots=debug`: references reaching the declaration pass
+  by what they carry, and the guard per W17 prep pass.
+
+| at W17 declare | Equinox | Expensify | Discord |
+|---|---|---|---|
+| references | 978,091 | 3,308,913 | 3,915,798 |
+| slot | 234,829 | 590,580 | 655,339 |
+| register | 651,326 | 2,485,953 | 2,890,933 |
+| parameter | 59,978 | 155,181 | 127,854 |
+| made | 24,862 | 54,949 | 232,092 |
+| none | 7,096 | 22,250 | 9,580 |
+| of which spelled like an identified one | 735 | 788 | 736 |
+
+So under 1% of what the declaration pass sees has no identity: steps 2a-2c can key on identity
+with the name as a rare fallback. Guard, before -> after: F22 134,300 / 192,872 / 280,781 ->
+0; W16g 762 / 5,958 / 8,293 -> 0; W16h 96,351 / 182,013 / 349,031 -> 4 / 4,137 / 8,099; W16b
+2 / 283 / 457 -> 0 / 235 / 423. Of the W17 prep passes only the declaration pass's own hoisted
+`let`s make any (26,819 / 117,656 / 144,342, built from strings at
+`declarations/mod.rs`); the rest of the old "W17 and codegen" bucket is codegen's 3,740 /
+1,680 / 21,864. Still to do, for 5c: W8, F1, F5a, F11, F14, F25b, F26, the declaration pass's
+`let`s, the rest of W16h and W16b, codegen.
+
+Output: Equinox byte-identical; Expensify 49 lines, Discord 122, one class, traced by
+switching each change off: the `let` rename keeping its identity. A raw generator machine
+whose parked slot is spelled like the step's parameter (Sentry's transport, `value`): the
+slot's `let` used to lose its stamp in the rename, so `separate_step_env_names`, which tests
+stamped `let`s, saw no clash, and the store `slot = value` printed `value = value` and was
+dropped. The wrapper's `let value` was then never assigned, and inside the step every `value`
+was the parameter. Now the slot is renamed (`value4`) and the store kept (`value4 = value`,
+then `value4.statusCode`); `throw value` and `return { value, done: true }`, which the
+bytecode takes from the parameter, still read it. Undeclared, unparsable and consts written
+unchanged on both bundles; gates pass.
+
 #### Step 3 — inlining and object folding (planned 2026-11-03)
 
 **Where they run.** `inline_named_variables` at W13 (per function, keep set =

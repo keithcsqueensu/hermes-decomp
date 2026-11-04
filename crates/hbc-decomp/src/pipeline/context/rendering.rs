@@ -386,6 +386,7 @@ impl PipelineContext {
         use crate::analysis::closure::identity::{check_slot_identity, RenderedBody};
         let ctx = self.closure_ctx.as_ref()?;
         let mut prepared = self.prepare_render_bodies(file);
+        crate::analysis::closure::stamps::report_identity_mix("at W17 (check)");
         // The copies of shared bodies, as `build_all_inline_bodies` makes
         // them; each sits in the body that creates it.
         let variants = self.shared_body_variants(&mut prepared);
@@ -429,6 +430,7 @@ impl PipelineContext {
     pub(super) fn build_all_inline_bodies(&mut self, file: &BytecodeFile) {
         // Precompute IPA-renamed + cleaned statements once to avoid cloning per rendering pass
         let mut prepared = self.prepare_render_bodies(file);
+        crate::analysis::closure::stamps::report_identity_mix("at W17 declare");
         let variants = self.shared_body_variants(&mut prepared);
         self.variant_origin = variants.origin;
         self.holder_variants = variants.by_holder;
@@ -941,27 +943,44 @@ impl PipelineContext {
                 let params = self.render_params(file, func_id, stmts);
 
                 let mut body_stmts = stmts.clone();
+                let _here = crate::ir::in_function(func_id);
+                // Each prep pass labelled for the identity guard (A3 step 2.0).
+                use crate::ir::identity_guard::stage;
+                let _run = crate::ir::identity_guard::function_run();
+                stage("W17 params");
                 if let Some(param_names) = self.global_analysis.param_names.get(&func_id) {
-                    transforms::exports::rename_param_registers(&mut body_stmts, param_names);
+                    transforms::exports::rename_param_registers_of(
+                        &mut body_stmts,
+                        param_names,
+                        func_id,
+                    );
                 }
+                stage("W17 cleanup");
                 body_stmts = transforms::cleanup_noise(body_stmts);
                 // Drop dead stores of a reused slot (`nativePerformanceNowResult =
                 // __d(...)` repeated for every Metro module): keep the side-effecting
                 // call, discard the useless assignment target. Runs here, on the
                 // final named form, where these stores are consecutive.
+                stage("W17 dead stores");
                 body_stmts = transforms::eliminate_dead_stores(body_stmts);
                 // Drop dead argument-setup copies and other unread pure temps,
                 // never a name a nested function still reads.
                 let none = HashSet::new();
                 let keep = captured.get(&func_id).unwrap_or(&none);
+                stage("W17 dead temps");
                 body_stmts = transforms::remove_dead_temp_bindings_keeping(body_stmts, keep);
+                stage("W17 reserved");
                 transforms::rename_reserved_words(&mut body_stmts);
+                stage("W17 sanitized");
                 transforms::make_sanitized_names_distinct(&mut body_stmts);
                 // After the parameter rename, a copy named for the property
                 // `kind` lands on the parameter: `kind = kind.kind`. Split it
                 // before declarations so the fresh name is declared and the
                 // later `kind.voiceState` reads stay on the object.
+                stage("W17 switch");
                 body_stmts = transforms::repair_switch_clobbers(body_stmts);
+                crate::analysis::closure::stamps::record_identity_mix(&body_stmts);
+                stage("W17 declare");
                 self.insert_body_declarations(func_id, &mut body_stmts, &params);
                 self.declare_class_methods(&mut body_stmts);
 

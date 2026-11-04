@@ -170,25 +170,29 @@ fn param_rename_makes_the_property_copy_collide() {
     let Statement::Switch { cases, .. } = &stmts[0] else {
         panic!()
     };
-    match &cases[0].1[0] {
+    let made = match &cases[0].1[0] {
         Statement::Assign {
             target: AssignTarget::Binding(Binding::Variable(n)),
             value,
         } => {
             assert_eq!(n, "kindValue");
+            // A new variable, with a made identity (A3 step 2.0).
+            assert!(n.local.is_some_and(|l| l.is_made()), "{n:?}");
             assert!(matches!(
                 value,
                 Expression::Member { object, property, .. }
                     if matches!(object.as_ref(), Expression::Value(Value::Binding(Binding::Variable(b))) if b == "kind")
                         && matches!(property, PropertyKey::Ident(p) if p == "kind")
             ));
+            n.local
         }
         other => panic!("expected split copy, got {other:?}"),
-    }
+    };
     match &cases[0].1[1] {
         Statement::Return(Some(Expression::Binary { left, right, .. })) => {
+            // The read is the same new variable.
             assert!(
-                matches!(left.as_ref(), Expression::Value(Value::Binding(Binding::Variable(n))) if n == "kindValue")
+                matches!(left.as_ref(), Expression::Value(Value::Binding(Binding::Variable(n))) if n == "kindValue" && n.local == made)
             );
             assert!(matches!(
                 right.as_ref(),

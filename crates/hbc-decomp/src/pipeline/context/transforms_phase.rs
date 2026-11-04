@@ -1151,7 +1151,8 @@ impl PipelineContext {
 
         // After inlining, a discriminant copy can land on the scrutinee
         // (`kind = kind.kind`) and the later `kind.voiceState` reads the string.
-        for stmts in all_ir.values_mut() {
+        for (&fid, stmts) in all_ir.iter_mut() {
+            let _here = crate::ir::in_function(fid);
             let old = std::mem::take(stmts);
             *stmts = transforms::repair_switch_clobbers(old);
         }

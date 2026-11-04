@@ -326,7 +326,7 @@ fn statements_from_cfg(
 
         if let Some(names) = transforms::exports::infer_commonjs_names(&mut statements, param_count)
         {
-            transforms::exports::rename_param_registers(&mut statements, &names);
+            transforms::exports::rename_param_registers_of(&mut statements, &names, function_id);
         }
 
         transforms::infer_names(&mut statements);

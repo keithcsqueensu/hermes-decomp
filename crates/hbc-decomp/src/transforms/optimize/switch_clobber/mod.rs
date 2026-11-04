@@ -47,12 +47,15 @@ fn repair_case_body(body: &mut [Statement]) {
         if let Statement::Block(inner) = &mut body[i] {
             repair_case_body(inner);
         } else if let Some((old, new_name)) = clobber_binding(&body[i]) {
-            rename_clobber_target(&mut body[i], &new_name);
+            // A new variable: one made identity for its write and its reads
+            // (IDENTITY_PLAN.md A3 step 2.0).
+            let new_var = crate::ir::Var::with_local(new_name, crate::ir::LocalRef::made_here());
+            rename_clobber_target(&mut body[i], &new_var);
             for stmt in body.iter_mut().skip(i + 1) {
                 if assigns_var(stmt, &old) {
                     break;
                 }
-                rewrite_value_uses(stmt, &old, &new_name);
+                rewrite_value_uses(stmt, &old, &new_var);
             }
         } else {
             recurse_nested(&mut body[i]);
@@ -99,11 +102,11 @@ fn recurse_nested(stmt: &mut Statement) {
     }
 }
 
-fn rename_clobber_target(stmt: &mut Statement, new_name: &str) {
-    let new_target = AssignTarget::Binding(Binding::Variable(new_name.to_string().into()));
+fn rename_clobber_target(stmt: &mut Statement, new_var: &crate::ir::Var) {
+    let new_target = AssignTarget::Binding(Binding::Variable(new_var.clone()));
     match stmt {
         Statement::Assign { target, .. } => *target = new_target,
-        Statement::Let { name, .. } => *name = new_name.into(),
+        Statement::Let { name, .. } => *name = new_var.clone(),
         Statement::Expr(Expression::Assignment { value, .. }) => {
             let value = value.as_ref().clone();
             *stmt = Statement::Assign {
@@ -165,7 +168,7 @@ fn assigns_var(stmt: &Statement, name: &str) -> bool {
     )
 }
 
-fn rewrite_value_uses(stmt: &mut Statement, old: &str, new_name: &str) {
+fn rewrite_value_uses(stmt: &mut Statement, old: &str, new_name: &crate::ir::Var) {
     match stmt {
         Statement::Expr(e) | Statement::Throw(e) | Statement::Return(Some(e)) => {
             rewrite_expr(e, old, new_name);
@@ -198,7 +201,7 @@ fn rewrite_value_uses(stmt: &mut Statement, old: &str, new_name: &str) {
     }
 }
 
-fn rewrite_expr(expr: &mut Expression, old: &str, new_name: &str) {
+fn rewrite_expr(expr: &mut Expression, old: &str, new_name: &crate::ir::Var) {
     match expr {
         Expression::Member {
             object, property, ..
@@ -215,7 +218,7 @@ fn rewrite_expr(expr: &mut Expression, old: &str, new_name: &str) {
             }
         }
         Expression::Value(Value::Binding(Binding::Variable(n))) if n == old => {
-            n.name = new_name.to_string();
+            *n = new_name.clone();
         }
         Expression::Unary { operand, .. } => rewrite_expr(operand, old, new_name),
         Expression::Conditional {

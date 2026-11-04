@@ -4,7 +4,7 @@ use crate::analysis::metro::registry::FactoryRoles;
 use crate::ir::{AssignTarget, Binding, Expression, PropertyKey, Statement, Value};
 use std::collections::HashMap;
 
-pub use rename::rename_param_registers;
+pub use rename::{rename_param_registers, rename_param_registers_of};
 
 // Resolve an expression to the factory parameter index it refers to, across the
 // several forms a parameter can take in the IR: a direct `Value::Parameter`, a

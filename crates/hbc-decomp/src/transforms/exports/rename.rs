@@ -1,5 +1,31 @@
 use crate::ir::{AssignTarget, Binding, Expression, PropertyKey, Statement, Value};
 
+thread_local! {
+    // The function whose parameters `rename_param_registers_of` is naming.
+    static FUNCTION: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+// The same, each parameter read (`Parameter(i)` named) carrying parameter `i`
+// of `function` as its identity (IDENTITY_PLAN.md A3 step 2.0b).
+pub fn rename_param_registers_of(
+    statements: &mut [Statement],
+    names: &[Option<String>],
+    function: u32,
+) {
+    let outer = FUNCTION.with(|f| f.replace(Some(function)));
+    rename_param_registers(statements, names);
+    FUNCTION.with(|f| f.set(outer));
+}
+
+fn param_var(index: u32, name: &str) -> crate::ir::Var {
+    match FUNCTION.with(|f| f.get()) {
+        Some(function) => {
+            crate::ir::Var::with_local(name, crate::ir::LocalRef::param(function, index))
+        }
+        None => name.into(),
+    }
+}
+
 pub fn rename_param_registers(statements: &mut [Statement], names: &[Option<String>]) {
     // 1. Map of Reg -> Name
     let mut reg_rename_map = std::collections::BTreeMap::new();
@@ -17,10 +43,11 @@ pub fn rename_param_registers(statements: &mut [Statement], names: &[Option<Stri
             match value {
                 // v2 IR: LoadParam produces Value::Parameter(idx)
                 Expression::Value(Value::Parameter(idx)) => {
+                    let i = *idx;
                     let idx = *idx as usize;
                     if idx < names.len() {
                         if let Some(name) = &names[idx] {
-                            reg_rename_map.insert(*r, name.clone());
+                            reg_rename_map.insert(*r, (name.clone(), i));
                         }
                     }
                 }
@@ -29,7 +56,7 @@ pub fn rename_param_registers(statements: &mut [Statement], names: &[Option<Stri
                     if let Some(idx) = operands.first().and_then(|o| o.parse::<usize>().ok()) {
                         if idx < names.len() {
                             if let Some(name) = &names[idx] {
-                                reg_rename_map.insert(*r, name.clone());
+                                reg_rename_map.insert(*r, (name.clone(), idx as u32));
                             }
                         }
                     }
@@ -58,13 +85,14 @@ pub fn rename_param_registers(statements: &mut [Statement], names: &[Option<Stri
 
 fn rename_stmt(
     stmt: &mut Statement,
-    reg_map: &std::collections::BTreeMap<u32, String>,
+    reg_map: &std::collections::BTreeMap<u32, (String, u32)>,
     var_map: &std::collections::HashMap<String, String>,
 ) {
     match stmt {
         Statement::Let { name, value, .. } => {
             if let Some(new_name) = var_map.get(name.as_str()) {
-                *name = new_name.clone().into();
+                // Through `name`, keeping the identity, as the other arms do.
+                name.name = new_name.clone();
             }
             rename_expr(value, reg_map, var_map);
         }
@@ -218,13 +246,13 @@ fn rename_stmt(
 
 fn rename_target(
     target: &mut AssignTarget,
-    reg_map: &std::collections::BTreeMap<u32, String>,
+    reg_map: &std::collections::BTreeMap<u32, (String, u32)>,
     var_map: &std::collections::HashMap<String, String>,
 ) {
     match target {
         AssignTarget::Binding(Binding::Register(r)) => {
-            if let Some(name) = reg_map.get(r) {
-                *target = AssignTarget::Binding(Binding::Variable(name.clone().into()));
+            if let Some((name, i)) = reg_map.get(r) {
+                *target = AssignTarget::Binding(Binding::Variable(param_var(*i, name)));
             }
         }
         AssignTarget::Binding(Binding::Variable(v)) => {
@@ -278,13 +306,13 @@ fn rename_target(
 
 fn rename_expr(
     expr: &mut Expression,
-    reg_map: &std::collections::BTreeMap<u32, String>,
+    reg_map: &std::collections::BTreeMap<u32, (String, u32)>,
     var_map: &std::collections::HashMap<String, String>,
 ) {
     match expr {
         Expression::Value(Value::Binding(Binding::Register(r))) => {
-            if let Some(name) = reg_map.get(r) {
-                *expr = Expression::Value(Value::Binding(Binding::Variable(name.clone().into())));
+            if let Some((name, i)) = reg_map.get(r) {
+                *expr = Expression::Value(Value::Binding(Binding::Variable(param_var(*i, name))));
             }
         }
         Expression::Value(Value::Binding(Binding::Variable(v))) => {
@@ -295,10 +323,8 @@ fn rename_expr(
         Expression::Value(Value::Parameter(idx)) => {
             // This is direct Parameter access (argN)
             // We can rename it to Variable(name) if we have it
-            if let Some(Some(name)) = var_map.get(&format!("arg{idx}")).map(Some) {
-                // Wait, var_map.get returns &String.
-                // If we have a name, convert to Variable.
-                *expr = Expression::Value(Value::Binding(Binding::Variable(name.clone().into())));
+            if let Some(name) = var_map.get(&format!("arg{idx}")) {
+                *expr = Expression::Value(Value::Binding(Binding::Variable(param_var(*idx, name))));
             }
         }
         Expression::Binary { left, right, .. } => {
@@ -378,6 +404,42 @@ fn rename_expr(
 #[cfg(test)]
 mod loop_head_tests {
     use super::rename_param_registers;
+
+    // A named parameter read, and a register loaded from a parameter, carry
+    // that parameter of that function (IDENTITY_PLAN.md A3 step 2.0b).
+    #[test]
+    fn a_named_parameter_carries_its_identity() {
+        use crate::ir::{AssignTarget, Binding, Expression, LocalRef, Statement, Value};
+        let mut stmts = vec![
+            Statement::Assign {
+                target: AssignTarget::Binding(Binding::Register(4)),
+                value: Expression::Value(Value::Parameter(1)),
+            },
+            Statement::Return(Some(Expression::Value(Value::Parameter(0)))),
+        ];
+        super::rename_param_registers_of(&mut stmts, &[Some("a".into()), Some("b".into())], 9);
+        let Statement::Assign {
+            target: AssignTarget::Binding(Binding::Variable(b)),
+            ..
+        } = &stmts[0]
+        else {
+            panic!("{stmts:?}")
+        };
+        assert_eq!(
+            (b.name.as_str(), b.local),
+            ("b", Some(LocalRef::param(9, 1)))
+        );
+        let Statement::Return(Some(Expression::Value(Value::Binding(Binding::Variable(a))))) =
+            &stmts[1]
+        else {
+            panic!("{stmts:?}")
+        };
+        assert_eq!(
+            (a.name.as_str(), a.local),
+            ("a", Some(LocalRef::param(9, 0)))
+        );
+        assert!(a.local.unwrap().is_param() && !a.local.unwrap().is_made());
+    }
 
     // The names printed from a parameter inside JSX, where the walk used to stop.
     #[test]
