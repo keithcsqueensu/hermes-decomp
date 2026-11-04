@@ -426,3 +426,117 @@ fn an_own_slot_written_only_below_is_declared() {
         "{stmts:?}"
     );
 }
+
+// A child's own local (a register of the child) is another variable than the
+// parent's `x`: its writes leave the parent's single write a `const`. A write
+// with no identity, or to a slot, still counts by name (IDENTITY_PLAN.md A3
+// step 2a).
+#[test]
+fn a_childs_own_local_does_not_make_the_parents_const_a_let() {
+    use crate::ir::{LocalRef, SlotRef, Var};
+    let assign = |v: Var| Statement::Assign {
+        target: AssignTarget::Binding(Binding::Variable(v)),
+        value: Expression::constant(Constant::Integer(1)),
+    };
+    let own = || {
+        Var::with_local(
+            "x",
+            LocalRef {
+                function: 8,
+                reg: 3,
+            },
+        )
+    };
+    let child = vec![assign(own()), assign(own())];
+    let extra = extra_writes_from_nested_bodies_of(7, &Default::default(), &[&child]);
+    assert_eq!(extra.get("x"), None, "{extra:?}");
+    let mut parent = vec![assign(Var::with_local(
+        "x",
+        LocalRef {
+            function: 7,
+            reg: 1,
+        },
+    ))];
+    insert_declarations_with_extra_writes(&mut parent, &[], &extra);
+    assert!(
+        matches!(
+            &parent[0],
+            Statement::Let {
+                kind: VarKind::Const,
+                ..
+            }
+        ),
+        "{parent:?}"
+    );
+
+    // By name, or to a slot: counted.
+    let unknown = vec![assign("x".into()), assign("x".into())];
+    assert!(
+        extra_writes_from_nested_bodies_of(7, &Default::default(), &[&unknown]).contains_key("x")
+    );
+    let slot = vec![assign(Var::with_slot(
+        "x",
+        Some(SlotRef { owner: 7, slot: 0 }),
+    ))];
+    assert!(extra_writes_from_nested_bodies_of(7, &Default::default(), &[&slot]).contains_key("x"));
+    // A child writing it once as its own and once with no identity: counted.
+    let mixed = vec![assign(own()), assign("x".into())];
+    assert!(
+        extra_writes_from_nested_bodies_of(7, &Default::default(), &[&mixed]).contains_key("x")
+    );
+}
+
+// A descendant's own local still counts against the parent when the
+// descendant will not declare it: read before it is written, or captured too
+// under the same spelling. Its write then lands on the parent's variable.
+#[test]
+fn a_childs_local_it_does_not_declare_still_counts() {
+    use crate::ir::{LocalRef, SlotRef, Var};
+    let own = || {
+        Var::with_local(
+            "x",
+            LocalRef {
+                function: 8,
+                reg: 3,
+            },
+        )
+    };
+    let assign = |v: Var| Statement::Assign {
+        target: AssignTarget::Binding(Binding::Variable(v)),
+        value: Expression::constant(Constant::Integer(1)),
+    };
+    let read = |v: Var| Statement::Expr(Expression::Value(Value::Binding(Binding::Variable(v))));
+    let read_first = vec![read(own()), assign(own())];
+    assert!(
+        extra_writes_from_nested_bodies_of(7, &Default::default(), &[&read_first])
+            .contains_key("x")
+    );
+    let captured_too = vec![
+        assign(own()),
+        read(Var::with_slot("x", Some(SlotRef { owner: 7, slot: 0 }))),
+    ];
+    assert!(
+        extra_writes_from_nested_bodies_of(7, &Default::default(), &[&captured_too])
+            .contains_key("x")
+    );
+}
+
+// A name that is one of the parent's own slots always counts: a descendant
+// using it for a local of its own may still not declare it (A3 step 2a).
+#[test]
+fn a_write_under_the_parents_slot_name_counts() {
+    use crate::ir::{LocalRef, Var};
+    let assign = |v: Var| Statement::Assign {
+        target: AssignTarget::Binding(Binding::Variable(v)),
+        value: Expression::constant(Constant::Integer(1)),
+    };
+    let child = vec![assign(Var::with_local(
+        "x",
+        LocalRef {
+            function: 8,
+            reg: 3,
+        },
+    ))];
+    let slots = std::collections::HashSet::from(["x".to_string()]);
+    assert!(extra_writes_from_nested_bodies_of(7, &slots, &[&child]).contains_key("x"));
+}

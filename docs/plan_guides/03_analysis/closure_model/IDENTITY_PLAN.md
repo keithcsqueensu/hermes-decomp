@@ -818,6 +818,25 @@ count is by name). Stamps are read only to build the name sets; past
   `written_first_vars` applies only to the no-identity remainder. Acceptance: undeclared does
   not rise; the `capture_local` fixture passes; the count of names the fallback still decides
   is logged, and is step 5c's to bring down.
+
+  **The defect 2b is for, found measuring 2a (2026-11-03).** A nested function uses a scratch
+  variable spelled like a variable of an enclosing function and never declares it, so in the
+  printed JS its writes land on the enclosing one. Discord's `useHappeningNowData`: the outer
+  function's `const hasItem1 = has.has(...)` is a slot its closures capture; a callback inside
+  uses `hasItem1` as a temporary of its own (`hasItem1 = null != withoutUserCards; if
+  (hasItem1) ...`, a register of the callback by identity) with no `let`, and overwrites the
+  outer variable. Expensify's `fn` (module 2471) and `items` (module 4945) are the same shape.
+  It is older than identities: while the parent was a `let` (the child's write counted against
+  it by name) it was silent; 2a would have made the parent a `const` and the write a
+  `TypeError`, which is why 2a keeps counting writes under any enclosing slot name. 2b should
+  make the callback declare its own variable. First, confirm which rule keeps it undeclared:
+  the outer set by name (2b's target), or the declaration pass's skip of a name whose first use
+  is a read (`free_captured_vars`), which 2b as written does not touch; if the latter, add it to
+  2b (first use by identity). Then printing it under the same name shadows the outer one:
+  correct JS, confusing to read, and A4d2's (`capture_vs_local`) to rename. A fixture: a closure
+  whose scratch variable is spelled like a variable it captures, the outer one read after the
+  closure has run. Acceptance adds: 2a's guard on enclosing slot names can then narrow to the
+  names a descendant does not declare, and consts written stay at the ceiling.
 - **2c — what the splitting patches select, by identity.** `split_capture_and_local` takes as
   "the body's own local" the references carrying this function's `LocalRef` (not "unstamped and
   written first"), and still renames them as today. `drop_slot_lets_of_params` counts writes
@@ -873,6 +892,34 @@ then `value4.statusCode`); `throw value` and `return { value, done: true }`, whi
 bytecode takes from the parameter, still read it. Undeclared, unparsable and consts written
 unchanged on both bundles; gates pass.
 
+**2a done (2026-11-03).** `extra_writes_from_nested_bodies_of(parent, slots, bodies)`
+(`declarations/mod.rs`), used by `extra_writes_for_function` and the shared-body
+`copy_writes`: a descendant's write no longer counts against the parent when the name is the
+descendant's own and it declares it. That needs three things, each found by the ratchet on a
+first, looser rule: every reference of the name in the descendant carries a local of a function
+other than the parent (register, parameter or made), none a slot or nothing; its first use is
+not a read (`free_captured_vars`: such a name is never declared); and the name is none of the
+environment slot names the descendant's declaration pass takes for captures (the parent's, its
+ancestors' and those in between, `parent_slot_names` plus `ancestor_env_slots`). Without the
+last two, consts written rose to 3 / 4 / 6: descendants using a name for a scratch variable of
+their own without declaring it (step 2b's defect, below), whose writes land on the parent's
+variable, a `let` before and a `const` now.
+
+| | Equinox | Expensify | Discord |
+|---|---|---|---|
+| `const` lines | 219,717 -> 233,685 | 455,088 -> 477,486 | 795,374 -> 845,536 |
+| `let` lines | 111,703 -> 97,705 | 330,706 -> 308,288 | 394,176 -> 343,552 |
+| lines changed | 28,002 | 44,820 | 101,650 |
+| consts written | 1 -> 1 | 1 -> 1 | 0 -> 0 |
+| undeclared | 840 -> 840 | 10,300 -> 10,302 | 5,073 -> 5,102 |
+
+The undeclared rise is a bare `let` going away, not a new loss. Read: Discord's `tmp72` (22 of
+the 29), rrule's module, had `let tmp72;` at module top and nothing in the module assigning it;
+it was declared only because a nested function's write to its own `tmp72` counted by name, so
+`tmp72.FREQUENCIES = ...` read `undefined` before and reads an undeclared name now. The rest
+(Discord `tmp73` +6, `tmp51` +1, Expensify `tmp62` and `tmp123` +1) are names already
+undeclared, not read one by one. Unit tests cover the four rules; env fixtures and gates pass.
+
 #### Step 3 — inlining and object folding (planned 2026-11-03)
 
 **Where they run.** `inline_named_variables` at W13 (per function, keep set =
@@ -920,7 +967,7 @@ object shape-table index, not an environment slot.
 
 The W13 relocation question is settled: W13 moves nothing between bodies (A3.0b step 2).
 
-Steps 4 and 5 are each split (2026-10-29):
+#### Step 4 — the generator and async machinery (split 2026-10-29)
 
 **Step 4 detail (2026-11-03).** Where the code is: W15 `unwrap_async_wrappers`
 (`async_detection.rs`) replaces the wrapper's body with a clone of the innermost one and
@@ -979,6 +1026,9 @@ identity come from the W16c cleanup chain (`rename_variables_in_stmt`'s `Let` re
   locals' identity, its clash test can stop ignoring unstamped references in the step: a local
   carrying the step's `LocalRef` is a clash with a known other variable; only references with no
   identity stay ignored. That narrows by identity and needs no new name.
+
+#### Step 5 — naming and shared bodies (split 2026-10-29)
+
 - **5a — renaming by identity** (absorbs K4.5.3, K4.5.4 and K4.6, 2026-10-30).
   One operation, `rename_slot(all_ir, ctx, SlotRef, new_name)`, renames every `Var` carrying
   the slot in every body, and the context's name with it, and refuses when `new_name` is
@@ -1009,7 +1059,10 @@ identity come from the W16c cleanup chain (`rename_variables_in_stmt`'s `Let` re
   at codegen no higher than at the end of naming.
 - **5b — shared bodies by identity.** A copy of a shared body maps identities per creator
   scope; `separate_copy_names` and the rename half of `shared_body_variants` go. I1 at the
-  shared-body floor.
+  shared-body floor. (2026-11-03:) SC2 and SC3 of SELF_CREATING_SHARED_PLAN.md land here: the
+  map is keyed per creation site (A2c1's key), so a copy that creates itself maps its inner
+  site onto itself and the outer sites onto their copies. Acceptance adds `inlined_recursive`
+  (KNOWN today) passing and SC2's jQuery-shape round-trip snippet on v96 and v98.
 - **5c — the leftovers.** Every pass still renaming by spelling, from the guard's counts, each
   converted or shown to rename only locals it created. (2026-11-03:) The list as the guard
   shows it after step 1: W8 (IPA, 2,413 / 2,386 / 3,214), W16a2, W16b, W16f, W16g and W16h (step
@@ -1019,6 +1072,8 @@ identity come from the W16c cleanup chain (`rename_variables_in_stmt`'s `Let` re
   becomes a commit: give the `Var` the identity it renames from, a made identity, or show the
   binding is new and local to the pass. Exit: the guard reads 0 at every checkpoint from W6 on,
   and 0 per F stage; this is the "count must reach zero before A4" below.
+
+#### A3 exit
 
 During the transition a debug check reports every `Var` made without an identity, per pass;
 the count must reach zero before A4.

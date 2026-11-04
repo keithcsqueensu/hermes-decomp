@@ -789,6 +789,19 @@ impl PipelineContext {
     // here and `_null2` there) left the other spelling to codegen's
     // module-level `let`, which disappears as soon as any function in the
     // module declares that name for itself.
+    // Every name the function's own environment slots go by (the context's
+    // names and the names any body gives them), and its ancestors' slot names:
+    // a descendant's declaration pass takes such a name for a capture and does
+    // not declare it, whatever identity its write carries (A3 step 2a).
+    pub(super) fn parent_slot_names(&self, func_id: u32) -> HashSet<String> {
+        let mut names = self.own_env_slot_names(func_id);
+        names.extend(self.slot_names_of(func_id));
+        if let Some(above) = self.ancestor_env_slots.get(&func_id) {
+            names.extend(above.iter().cloned());
+        }
+        names
+    }
+
     pub(super) fn slot_names_of(&self, func_id: u32) -> HashSet<String> {
         // Slots order by owner first, so a function's slots are one range. The
         // context's slot list is not used: it misses a slot only closures touch.

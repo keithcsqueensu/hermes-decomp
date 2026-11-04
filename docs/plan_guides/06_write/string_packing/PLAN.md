@@ -141,7 +141,7 @@ turns the overlap guard from "usually true after a rebuild" into "never true for
 
 ## Plan
 
-**Status: P0, P1 and P2 shipped** (`write/patch/string_storage.rs`); P3 and P4 open. P2's
+**Status: P0, P1 and P2 shipped** (`write/patch/string_storage.rs`); P3 and P4 open, P3 behind the measurement P3a. P2's
 section records how it was built and measured; the P1 notes below are kept as they were. Before them, at
 `81c4e2a`, rebuilt storage was emitted unpacked and nothing checked the finished blob's entries
 against the intended text (`commit_image` reparsed the image but compared nothing).
@@ -255,6 +255,47 @@ This is where most of upstream's 838 lines live and where all the subtlety is
 (`potentialCycles_`, weighted edge ordering, chain merging). It buys the smallest share of the
 win. **Do not build it until P1+P2 have shipped and the remaining gap has been re-measured on a
 current bundle** — the numbers above say it is ~28% of the prize for ~70% of the complexity.
+
+**P3a — measure first, without building it (planned 2026-11-03).** P1 and P2 have shipped. The
+gap left to `hermesc` is 114,894 B on Equinox 11.43.0 (4,383,862 against 4,268,968) and 88,090 B
+on CoachRx 2.1.223 (2,511,506 against 2,423,416). How much of it is overlap is known only by
+extrapolation from 11.39.0. Two numbers settle it, on those two bundles:
+
+1. **P3a1 — ground truth, from `hermesc`'s own layout.** Read the shipped bundle's string table, each
+   entry's `(offset, length, isUTF16)`, sort by offset per kind, and classify every entry:
+   *standalone* (its bytes are its own), *contained* (its range lies inside another entry's:
+   P2), or *overlapping* (it starts inside another entry and runs past its end: P3). The sum of
+   entry lengths minus the bytes storage covers is the total saving, split into a contained part
+   and an overlap part, and the two must add up to unpacked minus shipped (the same cross-check as
+   the table above). No algorithm is involved: it is what `hermesc` gets from chaining today.
+2. **P3a2 — what a simple greedy gets.** On the roots P2 keeps (strings contained in no other), run the
+   textbook greedy shortest-superstring pass: join the pair with the longest suffix/prefix
+   overlap first, with union-find on chain ends so no cycle forms, and none of upstream's
+   weighted edge ordering or chain merging. Report bytes saved and time taken. A measurement
+   only, not wired into the packer: how much of (1) the cheap version recovers, so the 838 lines
+   buy only the difference.
+
+Two more numbers make the decision honest:
+- **P3a3 — the residue:** the post-P2 gap minus (1)'s overlap part, what P2 misses for reasons other
+  than overlap (pinned ids getting fresh bytes, the ASCII/UTF-16 split, alignment). If large, it
+  is a cheaper target than P3.
+- **P3a4 — after deflate -9**, for both layouts: the APK is what reaches a device, and deflate kept
+  about 28% of the raw difference before ("It survives compression").
+
+**What depends on what.** P3a1 needs only the shipped bundle; P3a2 only P2's kept roots; the two
+share nothing and can be done in either order or in parallel. P3a3 is arithmetic on P3a1's overlap
+part and the post-P2 gap above. P3a4 for the `hermesc` and P2 layouts needs neither; for the
+greedy layout, which the decision rule's deflated threshold is about, it follows P3a2. So: two
+independent pieces, a reader of `hermesc`'s layout (P3a1, then P3a3) and an experiment on the
+packer (P3a2, then its deflated size), with the deflate of the two existing layouts beside either.
+
+Where: a corpus test beside `a_packed_rebuild_recovers_storage_the_unpacked_one_spends`
+(`tests/corpus.rs`), printing a table like P2's. It needs the parsed table's offsets, which
+`dump --kind strings --json` does not print, so it reads them through the library.
+
+**Decision rule, fixed before measuring:** build P3 only if (2) recovers at least 50 KB raw or
+15 KB after deflate on Equinox 11.43.0, within P2's runtime budget (about half a second per
+`patch-string` on the 17 MB bundle). Otherwise record the numbers here and close P3.
 
 ### P4 — Expose the choice
 

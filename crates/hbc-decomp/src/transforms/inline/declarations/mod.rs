@@ -636,17 +636,52 @@ fn is_self_assignment_var(name: &str, value: &Expression) -> bool {
 //    by `insert_declarations` (harmless). Same-name shadowing may demote a
 //    parent `const` → `let`, which stays valid JS.
 pub fn extra_writes_from_nested_bodies(nested_bodies: &[&[Statement]]) -> BTreeMap<String, usize> {
+    nested_writes(None, nested_bodies)
+}
+
+// The same for the descendants of `parent`, by identity (IDENTITY_PLAN.md A3
+// step 2a): a name a descendant writes only as a local of a function other than
+// `parent` (its register, parameter or a binding a pass made there) is that
+// function's own variable, declared where it lives, and does not count. A write
+// to a slot, or to a variable with no identity, counts by name as before: a
+// printed name resolves lexically, whatever slot it stands for.
+//
+// `parent_slots` are the environment slot names a descendant's declaration pass
+// may take for captures (the parent's, its ancestors', those in between): a
+// write under one of those always counts. A descendant that uses such a name for a local of its
+// own may still not declare it (the declaration pass's outer set is by name,
+// step 2b), and its write then assigns the parent's slot; it did so before
+// identities too, but as a `let` it was silent and as a `const` it throws.
+pub fn extra_writes_from_nested_bodies_of(
+    parent: u32,
+    parent_slots: &std::collections::HashSet<String>,
+    nested_bodies: &[&[Statement]],
+) -> BTreeMap<String, usize> {
+    nested_writes(Some((parent, parent_slots)), nested_bodies)
+}
+
+fn nested_writes(
+    parent: Option<(u32, &std::collections::HashSet<String>)>,
+    nested_bodies: &[&[Statement]],
+) -> BTreeMap<String, usize> {
     let mut extra: BTreeMap<String, usize> = BTreeMap::new();
     for body in nested_bodies {
         let free = free_captured_vars(body);
         let mut writes: BTreeMap<String, usize> = BTreeMap::new();
         let mut lets = std::collections::HashSet::new();
         count_writes(body, &mut writes, &mut lets);
+        let foreign = parent
+            .map(|(p, slots)| {
+                let mut own = own_locals_declared_there(body, p, &free);
+                own.retain(|n| !slots.contains(n));
+                own
+            })
+            .unwrap_or_default();
 
         for (name, c) in writes {
             // Explicit `let/const name = …` in the child owns the binding; those
             // writes stay local and must not force the parent to `let`.
-            if lets.contains(&name) {
+            if lets.contains(&name) || foreign.contains(&name) {
                 continue;
             }
             if free.contains(&name) {
@@ -661,4 +696,66 @@ pub fn extra_writes_from_nested_bodies(nested_bodies: &[&[Statement]]) -> BTreeM
         }
     }
     extra
+}
+
+// The names that are the descendant's own and that it declares itself, so
+// that its writes cannot land on `parent`'s variable of the same spelling: every
+// reference of the name in `body` (reads, writes, `let`s) carries a register,
+// parameter or made identity of a function other than `parent`, none a slot or
+// nothing, and its first use is not a read (`free`: the declaration pass never
+// declares a name read first, and the write then assigns the enclosing one).
+// A name the body also captures (a stamped reference) is left out for the same
+// reason: the body does not declare it.
+fn own_locals_declared_there(
+    body: &[Statement],
+    parent: u32,
+    free: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    use crate::ir::{AssignTarget, Binding, Expression, Value, Var, Visitor};
+    use std::collections::HashMap;
+    struct W {
+        parent: u32,
+        // name -> (references, of which the descendant's own)
+        seen: HashMap<String, (usize, usize)>,
+    }
+    impl W {
+        fn see(&mut self, v: &Var) {
+            let own = v.slot.is_none() && v.local.is_some_and(|l| l.function != self.parent);
+            let e = self.seen.entry(v.name.clone()).or_default();
+            e.0 += 1;
+            e.1 += usize::from(own);
+        }
+    }
+    impl<'a> Visitor<'a> for W {
+        fn visit_statement(&mut self, s: &'a Statement) {
+            if let Statement::Let { name, .. } = s {
+                self.see(name);
+            }
+            self.walk_statement(s);
+        }
+        fn visit_expression(&mut self, e: &'a Expression) {
+            if let Expression::Value(Value::Binding(Binding::Variable(v))) = e {
+                self.see(v);
+            }
+            self.walk_expression(e);
+        }
+        fn visit_assign_target(&mut self, t: &'a AssignTarget) {
+            if let AssignTarget::Binding(Binding::Variable(v)) = t {
+                self.see(v);
+            }
+            self.walk_assign_target(t);
+        }
+    }
+    let mut w = W {
+        parent,
+        seen: HashMap::new(),
+    };
+    for s in body {
+        w.visit_statement(s);
+    }
+    w.seen
+        .into_iter()
+        .filter(|(name, (n, f))| *n > 0 && n == f && !free.contains(name))
+        .map(|(name, _)| name)
+        .collect()
 }

@@ -44,10 +44,11 @@ pub use generator::{
 pub use hoist_closures::{hoist_repeated_closures, hoist_repeated_closures_checked};
 pub use inline::{
     cleanup_noise, eliminate_immutable_aliases, extra_writes_from_nested_bodies,
-    fold_array_literals, fold_object_literals, inline_expressions, inline_named_variables,
-    inline_named_variables_keeping, insert_declarations, insert_declarations_with_extra_writes,
-    insert_declarations_with_outer, insert_declarations_with_slots, make_sanitized_names_distinct,
-    rename_reserved_words, simplify_arguments_copy, strip_hermes_this, written_first_vars,
+    extra_writes_from_nested_bodies_of, fold_array_literals, fold_object_literals,
+    inline_expressions, inline_named_variables, inline_named_variables_keeping,
+    insert_declarations, insert_declarations_with_extra_writes, insert_declarations_with_outer,
+    insert_declarations_with_slots, make_sanitized_names_distinct, rename_reserved_words,
+    simplify_arguments_copy, strip_hermes_this, written_first_vars,
 };
 pub use inline::{names_used_by_descendants, outer_names_used_by_descendants, renamed_reserved};
 pub use logic_simplify::simplify_logic_advanced;

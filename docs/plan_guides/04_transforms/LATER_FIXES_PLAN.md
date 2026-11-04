@@ -3,17 +3,24 @@
 Status: planned 2026-11-02. Item 1 and L1 done, L2 closed, 2026-11-03. This covers what is left after the loop header fixes and
 `for_of_nested_for` (see `scripts/build/roundtrip_known_failures.tsv`). Measurements are from the build at 6f3705d.
 
-**Overall order (agreed 2026-11-02),** across this plan, GENERATOR_LIFT_PLAN.md and
-`../03_analysis/closure_model/IDENTITY_PLAN.md`:
+**Overall order (agreed 2026-11-02, SELF_CREATING_SHARED_PLAN.md placed 2026-11-03),** across this plan,
+GENERATOR_LIFT_PLAN.md, `../03_analysis/closure_model/IDENTITY_PLAN.md` and
+`../03_analysis/closure_model/SELF_CREATING_SHARED_PLAN.md`:
 
 1. The loop items: `loop_header_self_branch`, `for_of_nested_for`, `for_of_empty_body`.
 2. L1, right after them. It throws at runtime and has the same loop-header shape.
 3. L2.
 4. Close A2: re-read A2e3b and A2e4 against the current build (measure, no code). Done 2026-11-03, both closed.
 5. A3.0, A3.0b step 2, A3 step 1 and step 2.0/2.0b (done 2026-11-03), A3 steps 2a-3.
-6. L5, before A3 step 4: every machine it lifts is one that 4a-4d need not carry.
-7. L3 and L4 (one gate run), beside A3 step 4: the same generator code.
-8. A3 steps 4a-5c, then A4.
+6. SC0 and SC1 of SELF_CREATING_SHARED_PLAN.md: the census of shared functions that create themselves, and the
+   parent for the plain-recursion case (c), which needs no copies. Cheap, and SC0 decides how much SC2 is worth.
+7. L5, before A3 step 4: every machine it lifts is one that 4a-4d need not carry.
+8. L3 and L4 (one gate run), beside A3 step 4: the same generator code.
+9. A3 steps 4.0-5a2.
+10. A3 step 5b together with SC2 and SC3: SC2's per-creation-site rename table is the copy machinery 5b
+    rewrites by identity, so it is built once, there. The `inlined_recursive` env fixture (KNOWN today) is the
+    acceptance test of both.
+11. A3 step 5c, then A4.
 
 **Item 1 done (2026-11-03).** `loop_header_self_branch` (e81184b), then one batch for the two for-of snippets:
 

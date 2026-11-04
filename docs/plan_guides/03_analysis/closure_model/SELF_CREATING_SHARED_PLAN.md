@@ -1,8 +1,16 @@
 # Impl plan — shared functions that create themselves
 
-Status: **proposed (2026-10-30).** Split out of IDENTITY_PLAN.md A2c, whose exit names the case
-(Expensify F71548). A2c1 built every block scope by its creation site; this is the half A2c
-cannot close by itself.
+Status: **proposed (2026-10-30); placed 2026-11-03.** Split out of IDENTITY_PLAN.md A2c, whose
+exit names the case (Expensify F71548). A2c1 built every block scope by its creation site; this
+is the half A2c cannot close by itself.
+
+**Where it sits** (the overall order in `../../04_transforms/LATER_FIXES_PLAN.md`): SC0 and SC1
+right after IDENTITY_PLAN.md A3 step 3, before L5. SC2 and SC3 are done inside A3 step 5b
+(shared bodies by identity), not before it: SC2's change is the shared-body rename table going
+per creation site, and 5b rewrites that table by identity; built on today's name-based copies it
+would be built twice. Today's failure is loud (an undeclared `closure_130_0`, a store to a
+placeholder), not a silent wrong value, so waiting costs little. The `inlined_recursive` env
+fixture, KNOWN today, is the acceptance test of SC2 and 5b both.
 
 ## 1. The case
 

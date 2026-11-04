@@ -754,7 +754,7 @@ that consumes exactly `length` bytes with nothing left over — a total-consumpt
 the whole corpus is the oracle here, and `tests/corpus.rs` already has the harness shape for
 it. Cross-check a handful against the source pattern text recovered from the string table.
 
-### P4 — Write-side RegExp *(only if a need appears)*
+### P4 — Write-side RegExp *(only if a need appears)* — not needed: P4a's donor trick covers it
 
 Nothing needs a *regex compiler* today, and the section-relative offsets mean nothing breaks
 without one. Listed only so the boundary is explicit. Do not build it speculatively.
@@ -762,6 +762,19 @@ without one. Listed only so the boundary is explicit. Do not build it speculativ
 "Write-side RegExp" as originally written meant *authoring a regex bytecode stream from a
 pattern string* — an assembler, which is why P4 was ordered behind P3's disassembler. That
 piece is still speculative and still nobody's. What follows is not that.
+
+**Made unnecessary by the donor trick (P4a), recorded 2026-11-03.** Every need P4 was listed
+for is met without an assembler: compile the pattern with `hermesc` into a throwaway donor
+`.hbc` (`var re = /…/flags;`), and transplant its entry with `regexp-set` (over an existing
+entry, in place or appended) or point a `CreateRegExp` at an entry with `regexp-repoint`. That
+works because the stream is self-contained and its offsets are storage-relative (RegExp,
+above), and because the same pattern compiles to the same bytes on the v96, v98 and v99
+compilers, so any of them is a donor for any supported version (shown v98 to v96). The
+reference compiler's output is also correct by construction, which an assembler of ours would
+have to be proven to be. `hermesc` builds for all three versions are on this machine
+(`C:/src/hermes-v96`, `-v98`, `-v99`, under `build/bin/Release/`). P4 stays closed unless a case arises the donor cannot cover: no `hermesc`
+available where the edit is made, or a stream `hermesc` would never emit (a hand-tuned
+`constraints` byte, say). Neither has come up.
 
 ### P4a — Put a chosen RegExp into a real bundle — ✅ **shipped** (archetypes A, B and C)
 

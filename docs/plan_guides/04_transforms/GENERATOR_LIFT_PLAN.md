@@ -405,10 +405,50 @@ branches back to itself printed as a one-block `do { header } while (test)` even
 fell out of the loop. That form is now kept for a loop of one block. Undeclared and raw unchanged; output +2 KB, +2 KB,
 +1 KB; lost blocks 10284, 9918, 7700.
 
-Open:
+Open (both closed since; see the grouped list below):
 - A labelled `for...of` with a nested loop still fails. It behaves the same in builds before this work and stays with the
   known failure `for_of_nested_for`.
 - `tmpN.e.r` and `Object.keys()` with a lost argument in a `for...in` in Expensify; `tmp20` in `dispatchReducerAction`.
+
+#### G3's open items, grouped (2026-11-03)
+
+The open notes above are spread over the stages that found them, and some were closed later elsewhere. Here they are in
+one place, each with where it is planned.
+
+**1. Machines that stay raw on v98 (the lift refuses).**
+- A `try` with both `catch` and `finally`: `fold_finally`'s `.return` sides do not match (`gen_try_catch_finally`, known
+  failure on v98). Planned: LATER_FIXES_PLAN.md L5.
+- `yield*` inside a machine (`gen_delegate`, known failure on v98). Planned: L5, only if a bundle needs it (none of the
+  raw machines prints `generatorSetDelegated`).
+- A `finally` with a branch or a `yield` of its own, and a `return` through a `finally` whose exit can throw (a call in
+  it, "several ways out"). Not planned yet; the rest of G3b.
+- The CFG lift's other refusals, as last counted (Expensify, Discord): "a register from the dispatch" 13, 37 (the dispatch
+  register is untraced), "no suspend" 6, 10 (2026-11-01), "protocol: unexpected branch" 8, 14 (after `finally`). Not
+  planned yet; the rest of G3b. Re-count from the `genlift` trace before planning: these predate the loop and
+  short-circuit work. Raw machines today: Equinox 0, Expensify 303, Discord 579 (`output_baseline.tsv`).
+
+**2. Wrong on v96, a different path from the lift.**
+- `finally` stays a catch and rethrow, so `.return()` skips it (`gen_try_finally`, `gen_finally_cases`,
+  `gen_try_catch_finally`, known failures on v96). Planned: L3.
+- `yield*` prints as its lowered delegation loop (`gen_delegate` on v96). Planned: L4.
+
+**3. Short-circuit shapes left from G3d.** `(a && b || c) && d`, and `a && b || c` in a loop when its copy is refused.
+`branch_and_or_assign` (two in a row) passes since "Short-circuit conditions", whose `collapse_tests` may cover these
+too, but neither has a snippet. Next: add one snippet per shape and check; small, with the loop items if they fail.
+
+**4. Trends and ratchets, not single bugs.**
+- Lost blocks (`structure=trace`), ratcheted: 10284, 9918, 7700. On Equinox about 3200 are held by a merge further out
+  and about 7100 are refused copies.
+- Expensify's raw ceiling sits above its refusals because module 1039's tail now prints on each of its 3 paths.
+- `.call(tmp` forms where a method read no longer crosses a store: correct and less readable. Today 593, 933, 11,713.
+
+**5. Recorded here as open, closed since** (listed so they are not reopened):
+- `for_of_nested_for`: LATER_FIXES_PLAN.md item 1 (2026-11-03).
+- `Object.keys()` with a lost argument, `tmp20`, `tmpN.e.r`: L1 and L2 (2026-11-03).
+- `_NullFlags` (`switch_case_break_if`): "A tail one arm gets around".
+- `branch_and_or_assign`: "Short-circuit conditions".
+- The bare import beside a broken tag (`Pressables;` then `<tmpResult.PressableOpacity>`, 343 on Discord after G3d):
+  "The undeclared gap" made the tag an expression. `<tmpResult.` tags today: 0, 6, 9. The few left are not traced.
 
 ### G4 — async (medium)
 

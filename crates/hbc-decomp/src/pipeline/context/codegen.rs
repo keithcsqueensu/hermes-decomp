@@ -128,7 +128,16 @@ impl PipelineContext {
             .iter()
             .filter_map(|id| self.all_ir.get(id).map(|s| s.as_slice()))
             .collect();
-        let mut extra = transforms::extra_writes_from_nested_bodies(&bodies);
+        // Slot names any descendant's declaration pass treats as captures:
+        // the parent's, and those of every function between it and them.
+        let mut slots = self.parent_slot_names(function_id);
+        for id in &nested_ids {
+            if let Some(above) = self.ancestor_env_slots.get(id) {
+                slots.extend(above.iter().cloned());
+            }
+        }
+        let mut extra =
+            transforms::extra_writes_from_nested_bodies_of(function_id, &slots, &bodies);
         // The shared bodies this function creates, as it renders them (a
         // module factory; `build_all_inline_bodies` relaxes the others).
         for (name, n) in self.copy_writes.get(&function_id).into_iter().flatten() {

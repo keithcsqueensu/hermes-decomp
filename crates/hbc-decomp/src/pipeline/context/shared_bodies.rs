@@ -268,7 +268,7 @@ impl PipelineContext {
                     // Reads the body as named; it need not be its parent.
                     let bodies: Vec<&[Statement]> =
                         family.iter().map(|id| prepared[id].1.as_slice()).collect();
-                    add_writes(&mut out.writes, g, &bodies);
+                    add_writes(&mut out.writes, g, &self.parent_slot_names(g), &bodies);
                     continue;
                 }
                 let creator: &[Statement] = match prepared.get(&g) {
@@ -347,7 +347,7 @@ impl PipelineContext {
                 if rename.iter().all(|(slot, new)| &wanted[slot] == new) {
                     let bodies: Vec<&[Statement]> =
                         family.iter().map(|id| prepared[id].1.as_slice()).collect();
-                    add_writes(&mut out.writes, g, &bodies);
+                    add_writes(&mut out.writes, g, &self.parent_slot_names(g), &bodies);
                     *census.entry("creator: same names").or_default() += 1;
                     continue;
                 }
@@ -369,7 +369,7 @@ impl PipelineContext {
                 };
                 let bodies: Vec<&[Statement]> =
                     made.iter().map(|(_, _, b)| b.1.as_slice()).collect();
-                add_writes(&mut out.writes, g, &bodies);
+                add_writes(&mut out.writes, g, &self.parent_slot_names(g), &bodies);
                 for (id, of, body) in made {
                     out.origin.insert(id, of);
                     prepared.insert(id, body);
@@ -417,10 +417,11 @@ pub(super) fn relax_written_consts(stmts: &mut [Statement], writes: &BTreeMap<St
 fn add_writes(
     writes: &mut BTreeMap<u32, BTreeMap<String, usize>>,
     g: u32,
+    slots: &HashSet<String>,
     bodies: &[&[Statement]],
 ) {
     let into = writes.entry(g).or_default();
-    for (name, n) in crate::transforms::extra_writes_from_nested_bodies(bodies) {
+    for (name, n) in crate::transforms::extra_writes_from_nested_bodies_of(g, slots, bodies) {
         *into.entry(name).or_default() += n;
     }
 }
